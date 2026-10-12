@@ -1,0 +1,31 @@
+# Local tooling
+.serena/
+.idea/
+.vscode/
+
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+
+# Python environments and caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Generated assets and runtime files
+node_modules/
+dist/
+build/
+*.log
+*.sqlite3
+
+# Operating system files
+.DS_Store
+Thumbs.db
