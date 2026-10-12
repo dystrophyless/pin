@@ -1,0 +1,3 @@
+# Disable Superpowers for this project; keep the shared installation intact.
+[plugins."superpowers@openai-curated-remote"]
+enabled = false
