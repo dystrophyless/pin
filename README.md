@@ -10,6 +10,8 @@ Product discovery and planning. The application has not been implemented yet.
 
 See [the brainstorm brief](PROJECT_BRAINSTORM.md) for agreed product behavior, technology choices, cost assumptions, research sources, and open questions.
 
+See [the proposed DDD architecture](docs/ARCHITECTURE.md) for bounded contexts, stack decisions, durable scheduling, AI and speech flows, billing, deployment, and verification requirements.
+
 ## Selected stack
 
 - Aiogram for the Telegram bot.
