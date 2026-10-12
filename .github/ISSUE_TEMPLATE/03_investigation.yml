@@ -1,0 +1,53 @@
+name: Investigation
+description: Answer a bounded question before making a product or technical decision.
+title: "[Investigation] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        An investigation delivers evidence and a decision recommendation. It does not authorize product implementation, purchases, deployment, or live user messaging.
+  - type: dropdown
+    id: workflow_status
+    attributes:
+      label: Workflow status
+      options:
+        - draft
+        - ready
+      default: 0
+    validations:
+      required: true
+  - type: textarea
+    id: question
+    attributes:
+      label: Question and decision context
+      description: The exact uncertainty, source BR/spec/brief, and which decision depends on the answer.
+    validations:
+      required: true
+  - type: textarea
+    id: probe
+    attributes:
+      label: Investigation scope and probe
+      description: Evidence sources, experiment or read-only checks, expected output, and explicitly excluded actions.
+    validations:
+      required: true
+  - type: textarea
+    id: limits
+    attributes:
+      label: Budget and authorization boundaries
+      description: Time/cost limits, permitted environment, data isolation, and any action requiring a separate instruction.
+    validations:
+      required: true
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: Dependencies and ownership
+      description: Owner, dependent issues, blockers, and priority. State none or unassigned where accurate.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria and evidence
+      description: What makes the answer useful? Include reproducible evidence, limitations, conclusion, and next decision; an inconclusive result can be valid if explained.
+    validations:
+      required: true

@@ -1,0 +1,97 @@
+name: SDD task
+description: Define one implementable increment linked to a specification.
+title: "[Task] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Define one observable outcome. Required fields collect a draft; they do not automatically approve its spec or make the issue ready. Keep task evidence in comments and update Workflow status in the body.
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Task kind
+      options:
+        - Product increment
+        - Technical foundation
+    validations:
+      required: true
+  - type: dropdown
+    id: workflow_status
+    attributes:
+      label: Workflow status
+      options:
+        - draft
+        - ready
+      default: 0
+    validations:
+      required: true
+  - type: textarea
+    id: specification
+    attributes:
+      label: Requirement and specification
+      description: Link the BR/spec and revision. For a small isolated change, explain the spec exemption and existing contract.
+    validations:
+      required: true
+  - type: textarea
+    id: increment
+    attributes:
+      label: Increment and context
+      description: One observable result, the user or system that benefits, and evidence of the problem.
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope
+      description: Behavior and surfaces included in this task.
+    validations:
+      required: true
+  - type: textarea
+    id: exclusions
+    attributes:
+      label: Out of scope
+      description: Exclusions and actual follow-up issue links, if any. State none if there are no exclusions.
+    validations:
+      required: true
+  - type: textarea
+    id: anchors
+    attributes:
+      label: Implementation anchors and invariants
+      description: Relevant verified code paths, reused contracts, behavior to preserve, and failure boundaries. State explicitly if no implementation exists.
+    validations:
+      required: true
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: Dependencies and ownership
+      description: Real issue references, owner, priority, and blocking decisions. Unassigned and none are valid when accurate.
+      placeholder: |
+        Depends on:
+        Blocks:
+        Owner:
+        Priority:
+        Blocking decisions and resume condition:
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: Checkable outcomes, including relevant negative/lifecycle behavior. Use stable AC IDs.
+      placeholder: "- [ ] AC-01: Given ..., when ..., then ..."
+    validations:
+      required: true
+  - type: textarea
+    id: verification
+    attributes:
+      label: Verification plan
+      description: Scenarios or available commands, expected results, isolated test environment, and required evidence. Proposed checks are not PASS records.
+    validations:
+      required: true
+  - type: textarea
+    id: delivery
+    attributes:
+      label: Delivery conditions
+      description: Does acceptance require local checks, merge, hosted proof, or deployment? Identify the owner and conditions without granting deployment permission.
+    validations:
+      required: true

@@ -1,0 +1,53 @@
+name: Verification gate
+description: Prove a complete issue package against its specification and delivery conditions.
+title: "[Gate] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A gate verifies integrated behavior. It does not quietly implement missing features. Link findings to authorized fixes or follow-up issues and distinguish local evidence from deployed proof.
+  - type: dropdown
+    id: workflow_status
+    attributes:
+      label: Workflow status
+      options:
+        - draft
+        - ready
+      default: 0
+    validations:
+      required: true
+  - type: textarea
+    id: package
+    attributes:
+      label: Specification and issue package
+      description: Exact spec revision, actual issue URLs, prerequisite/delivery conditions, and verification owner.
+    validations:
+      required: true
+  - type: textarea
+    id: contract
+    attributes:
+      label: Outcome and invariants to prove
+      description: The integrated user/system result, preserved behavior, and important failure/recovery boundaries.
+    validations:
+      required: true
+  - type: textarea
+    id: verification
+    attributes:
+      label: Verification matrix
+      description: AC IDs, scenarios/commands, expected outcomes, environment, evidence, and data isolation. Include relevant negative and sibling paths.
+    validations:
+      required: true
+  - type: textarea
+    id: limits
+    attributes:
+      label: Exclusions and evidence limits
+      description: What is not proved, what remains not run, and actions outside this gate's authorization.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria and verdict rules
+      description: Required proof, handling of HIGH/CRITICAL findings, accepted residual risks, delivery conditions, and acceptance owner.
+    validations:
+      required: true

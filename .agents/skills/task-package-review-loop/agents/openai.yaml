@@ -1,0 +1,4 @@
+interface:
+  display_name: "Task Package Review Loop"
+  short_description: "Check connected Pin issues before implementation"
+  default_prompt: "Use $task-package-review-loop to review this Pin specification and issue package before execution."

@@ -1,0 +1,74 @@
+name: Bug report
+description: Record a reproducible mismatch between expected and actual behavior.
+title: "[Bug] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not include credentials, raw private user data, or sensitive recordings. Record environment and revision so a failure can be reproduced. A suspected cause is a hypothesis until verified.
+  - type: dropdown
+    id: workflow_status
+    attributes:
+      label: Workflow status
+      options:
+        - draft
+        - ready
+      default: 0
+    validations:
+      required: true
+  - type: textarea
+    id: contract
+    attributes:
+      label: Expected behavior and contract
+      description: Link the relevant spec/issue or explain the established behavior that is violated.
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior and impact
+      description: What happened, who is affected, and what is directly observed versus suspected?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction and environment
+      description: Steps, input, revision/worktree boundary, time zone when relevant, frequency, and local/staging/production environment.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: Logs, screenshots, or test results with sensitive data removed. State unavailable evidence honestly.
+    validations:
+      required: true
+  - type: textarea
+    id: boundary
+    attributes:
+      label: Fix scope and exclusions
+      description: Known affected surfaces and behavior to preserve. Do not prescribe an unverified root cause as fact.
+    validations:
+      required: true
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: Dependencies and ownership
+      description: Depends on, Blocks, owner, priority, and open decisions. State none or unassigned where accurate.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: Original reproduction corrected, important regression behavior preserved, and any relevant sibling failure paths.
+    validations:
+      required: true
+  - type: textarea
+    id: verification
+    attributes:
+      label: Verification plan and delivery conditions
+      description: Focused reproduction/regression checks, expected outcomes, safe test data, required environment, and acceptance owner.
+    validations:
+      required: true

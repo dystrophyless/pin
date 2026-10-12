@@ -1,24 +1,14 @@
 # Pin
 
-A Telegram AI assistant that helps people organize their lives, remember commitments, and follow through on their plans.
+Pin's current product direction is a Telegram AI life organizer with reminders and gentle accountability. The project is at the product-brief stage; application code and infrastructure have not been established.
 
-Users describe tasks through text or voice. The assistant organizes one-off and recurring plans, sends reminders, and checks completion with gentle accountability.
+- [Product brainstorm](_docs/PROJECT_BRAINSTORM.md): existing product decisions, provisional recommendations, and open questions.
+- [DDD architecture](_docs/ARCHITECTURE.md): proposed bounded contexts, technology choices, and reliability design.
+- [Project handoff](_docs/HANDOFF.md): GitHub connection, entry points, and session continuity.
+- [Spec-driven development](_docs/sdd/README.md): English guides, templates, reviews, examples, and GitHub Issues workflow.
+- [Changelog](CHANGELOG.md): accepted repository changes.
+- [Agent instructions](AGENTS.md): project-specific working conventions.
 
-## Project status
+GitHub repository: [dystrophyless/pin](https://github.com/dystrophyless/pin). Task queue: [Issues](https://github.com/dystrophyless/pin/issues).
 
-Product discovery and planning. The application has not been implemented yet.
-
-See [the brainstorm brief](PROJECT_BRAINSTORM.md) for agreed product behavior, technology choices, cost assumptions, research sources, and open questions.
-
-See [the proposed DDD architecture](docs/ARCHITECTURE.md) for bounded contexts, stack decisions, durable scheduling, AI and speech flows, billing, deployment, and verification requirements.
-
-## Selected stack
-
-- Aiogram for the Telegram bot.
-- PostgreSQL, SQLAlchemy, and Alembic for persistence and migrations.
-- Qwen3.7 Flash for conversational AI.
-- Multilingual Whisper small through faster-whisper for local Russian and English voice transcription.
-
-Voice messages will be limited to three minutes. AWS Lightsail is the provisional hosting choice, subject to benchmarking.
-
-A landing website will explain the product and direct visitors to the Telegram bot.
+GitHub issue forms and the pull request template are prepared under `.github/`. They become available after these files are published on the remote default branch (`main`). This local Git checkout is connected to `origin`; the documentation changes have not been pushed. See HANDOFF for the current local/remote boundary.
