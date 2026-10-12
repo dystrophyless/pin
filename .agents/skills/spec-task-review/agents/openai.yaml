@@ -1,0 +1,4 @@
+interface:
+  display_name: "Spec and Task Review"
+  short_description: "Audit Pin specs and issues against actual evidence"
+  default_prompt: "Use $spec-task-review to audit this Pin specification and its linked GitHub issue."

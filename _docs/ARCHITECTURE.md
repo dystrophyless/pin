@@ -2,7 +2,7 @@
 
 Date: 2026-10-13. Status: **proposed architecture for review**.
 
-This document turns [the brainstorm brief](../PROJECT_BRAINSTORM.md) into concrete technical decisions. The user explicitly requested Domain-Driven Design. The modular-monolith approach and additional technologies below are recommendations, not previously approved implementation choices. This document does not authorize deployment, purchases, or implementation.
+This document turns [the brainstorm brief](PROJECT_BRAINSTORM.md) into concrete technical decisions. The user explicitly requested Domain-Driven Design. The modular-monolith approach and additional technologies below are recommendations, not previously approved implementation choices. This document does not authorize deployment, purchases, or implementation.
 
 ## 1. Architectural decision
 
