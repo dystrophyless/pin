@@ -74,6 +74,9 @@ class AccessUsageStore(Protocol):
     async def account_lifecycle(self, owner_id: UUID) -> AccountLifecycle:
         """Return whether the owner account is missing, present, or tombstoned."""
 
+    async def lock_account_lifecycle(self, owner_id: UUID) -> AccountLifecycle:
+        """Lock account lifecycle through caller authorization; missing stays missing."""
+
     async def reserve_usage(self, command: ReserveUsage) -> ReserveUsageResult:
         """Check current entitlement and reserve all requested dimensions atomically."""
 
