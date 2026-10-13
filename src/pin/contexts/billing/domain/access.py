@@ -346,6 +346,32 @@ class UsageLedger:
         self._reservations[request_id] = settled
         return settled
 
+    def resize_voice(self, request_id: str, voice_seconds: int, at: datetime) -> UsageReservation:
+        """Replace an open reservation's voice hold without changing its AI hold."""
+        _require_aware(at, "at")
+        if type(voice_seconds) is not int or voice_seconds <= 0:
+            raise ValueError("voice_seconds must be a positive integer")
+        reservation = self._get_reservation(request_id)
+        if reservation.voice_seconds <= 0:
+            raise InvalidTransition("reservation has no voice hold to resize")
+        self._require_open(reservation, at)
+        if reservation.voice_seconds == voice_seconds:
+            return reservation
+
+        snapshot = self.snapshot()
+        remaining_without_self = (
+            self.allowance.voice_seconds
+            - snapshot.consumed_voice_seconds
+            - snapshot.reserved_voice_seconds
+            + reservation.voice_seconds
+        )
+        if voice_seconds > remaining_without_self:
+            raise QuotaExceeded("resized voice hold exceeds the period allowance")
+
+        resized = replace(reservation, voice_seconds=voice_seconds)
+        self._reservations[request_id] = resized
+        return resized
+
     def refund(self, *, request_id: str, at: datetime) -> UsageReservation:
         _require_aware(at, "at")
         reservation = self._get_reservation(request_id)
