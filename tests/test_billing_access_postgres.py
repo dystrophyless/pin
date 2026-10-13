@@ -939,3 +939,78 @@ def test_deleted_account_with_active_paid_coverage_denies_every_operation(
             await engine.dispose()
 
     run_local_async(scenario)
+
+
+@pytest.mark.parametrize("mutation", ("delete", "expire"))
+def test_locked_access_fences_entitlement_changes_and_uses_current_instant(
+    billing_database: str, mutation: str
+) -> None:
+    async def scenario() -> None:
+        engine = create_engine(billing_database)
+        sessions = create_session_factory(engine)
+        owner_id, period_id = uuid4(), str(uuid4())
+        at = datetime.now(UTC)
+        try:
+            async with sessions() as session, session.begin():
+                _, ends_at = _seed_period(
+                    session, owner_id=owner_id, period_id=period_id, now=at
+                )
+            mutation_entered = asyncio.Event()
+
+            async def competing_mutation() -> None:
+                async with sessions() as session, session.begin():
+                    if mutation == "delete":
+                        account = await session.get(AccessAccountRecord, owner_id)
+                        assert account is not None
+                        account.deleted_at = at
+                    else:
+                        period = await session.scalar(
+                            select(AccessPeriodRecord).where(
+                                AccessPeriodRecord.owner_id == owner_id,
+                                AccessPeriodRecord.period_id == period_id,
+                            )
+                        )
+                        assert period is not None
+                        period.ends_at = at
+                    mutation_entered.set()
+                    await session.flush()
+
+            async with sessions() as session, session.begin():
+                store = SqlAlchemyAccessUsageStore(session)
+                current = await store.lock_access(
+                    CheckAccess(owner_id, Operation.REMINDER_DELIVERY, at)
+                )
+                assert current.allowed and current.period_id == period_id
+                missing = await store.lock_access(
+                    CheckAccess(uuid4(), Operation.REMINDER_DELIVERY, at)
+                )
+                assert not missing.allowed
+                # SQL locks preserve facts, but entitlement time still advances.
+                expired = await store.lock_access(
+                    CheckAccess(owner_id, Operation.REMINDER_DELIVERY, ends_at)
+                )
+                assert not expired.allowed and expired.denial is AccessDenial.ACCESS_EXPIRED
+                writer = asyncio.create_task(competing_mutation())
+                await asyncio.wait_for(mutation_entered.wait(), timeout=5)
+                done, _ = await asyncio.wait({writer}, timeout=0.05)
+                assert not done, "access facts must remain locked until caller commits"
+            await asyncio.wait_for(writer, timeout=5)
+            async with sessions() as session, session.begin():
+                decision = await SqlAlchemyAccessUsageStore(session).lock_access(
+                    CheckAccess(owner_id, Operation.REMINDER_DELIVERY, at)
+                )
+                assert not decision.allowed
+                assert decision.denial is (
+                    AccessDenial.ACCOUNT_DELETED
+                    if mutation == "delete"
+                    else AccessDenial.ACCESS_EXPIRED
+                )
+                assert await session.scalar(
+                    select(func.count()).select_from(UsageReservationRecord).where(
+                        UsageReservationRecord.owner_id == owner_id
+                    )
+                ) == 0
+        finally:
+            await engine.dispose()
+
+    run_local_async(scenario)

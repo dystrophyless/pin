@@ -37,3 +37,7 @@ uv run --frozen pytest -q tests/test_billing_access.py tests/test_billing_access
 ```
 
 The PostgreSQL tests exercise concurrent reservations, atomic AI/voice limits, period-bound retries, expiry/refund behavior, and deleted/unknown owners. The unit tests cover the pure entitlement and ledger rules.
+
+### Delivery authorization lock
+
+`AccessUsageStore.lock_access(CheckAccess)` locks the owner account first and that owner's entitlement rows in stable period-ID order, refreshes SQL state, and evaluates the supplied aware instant through the same domain policy as `check_access`. The caller owns commit/rollback. This read does not reserve quota or create access. Keep the locks through a durable send-start authorization, release the transaction before provider I/O, and evaluate a fresh instant at that authorization boundary: row locks do not stop natural time-based expiry. Multi-context coordinators must preserve their shared lock order. Later deletion/renewal operations must serialize through the account row when changing entitlement facts.
