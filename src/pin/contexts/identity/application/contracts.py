@@ -51,6 +51,8 @@ class IdentityStore(Protocol):
 
     async def get_preferences(self, owner_id: UUID) -> PreferencesSnapshot | None: ...
 
+    async def lock_preferences(self, owner_id: UUID) -> PreferencesSnapshot | None: ...
+
     async def begin_onboarding(
         self,
         *,

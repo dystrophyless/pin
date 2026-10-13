@@ -758,3 +758,95 @@ def test_private_quick_replies_are_owner_bound_versioned_and_single_use(
             await engine.dispose()
 
     run_local_async(scenario)
+
+
+def test_lock_preferences_refreshes_cached_snapshot_and_holds_the_row_lock(
+    onboarding_database: str,
+) -> None:
+    async def scenario() -> None:
+        engine = create_engine(onboarding_database)
+        sessions = create_session_factory(engine)
+        owner_id = uuid4()
+        try:
+            async with sessions() as session, session.begin():
+                inserted = await SqlAlchemyIdentityStore(session).save_preferences(
+                    owner_id=owner_id,
+                    expected_version=None,
+                    preferences=Preferences(language="en", home_zone="Asia/Almaty"),
+                )
+                assert inserted is not None
+
+            async with sessions() as lock_session:
+                async with lock_session.begin():
+                    store = SqlAlchemyIdentityStore(lock_session)
+                    cached = await store.get_preferences(owner_id)
+                    assert cached is not None and cached.version == 1
+                    assert cached.home_zone == "Asia/Almaty"
+
+                    async with sessions() as update_session, update_session.begin():
+                        update_store = SqlAlchemyIdentityStore(update_session)
+                        current = await update_store.get_preferences(owner_id)
+                        assert current is not None
+                        committed = await update_store.save_preferences(
+                            owner_id=owner_id,
+                            expected_version=current.version,
+                            preferences=Preferences(
+                                language=current.language,
+                                home_zone="Asia/Aqtobe",
+                                reminder_calendar_days=current.reminder_calendar_days,
+                                reminder_elapsed_hours=current.reminder_elapsed_hours,
+                                quiet_start=current.quiet_start,
+                                quiet_end=current.quiet_end,
+                                review_time=current.review_time,
+                                version=current.version + 1,
+                            ),
+                        )
+                        assert committed is not None
+
+                    locked = await store.lock_preferences(owner_id)
+                    assert locked is not None
+                    assert locked.version == 2 and locked.home_zone == "Asia/Aqtobe"
+
+                    update_started = asyncio.Event()
+                    update_committed = asyncio.Event()
+
+                    async def concurrent_update() -> None:
+                        async with sessions() as writer, writer.begin():
+                            writer_store = SqlAlchemyIdentityStore(writer)
+                            writer_current = await writer_store.get_preferences(owner_id)
+                            assert writer_current is not None
+                            update_started.set()
+                            result = await writer_store.save_preferences(
+                                owner_id=owner_id,
+                                expected_version=writer_current.version,
+                                preferences=Preferences(
+                                    language=writer_current.language,
+                                    home_zone=writer_current.home_zone,
+                                    reminder_calendar_days=writer_current.reminder_calendar_days,
+                                    reminder_elapsed_hours=writer_current.reminder_elapsed_hours,
+                                    quiet_start=writer_current.quiet_start,
+                                    quiet_end=writer_current.quiet_end,
+                                    review_time=writer_current.review_time.replace(hour=21),
+                                    version=writer_current.version + 1,
+                                ),
+                            )
+                            assert result is not None
+                        update_committed.set()
+
+                    writer_task = asyncio.create_task(concurrent_update())
+                    await asyncio.wait_for(update_started.wait(), timeout=2)
+                    await asyncio.sleep(0.15)
+                    assert not update_committed.is_set()
+
+                await asyncio.wait_for(update_committed.wait(), timeout=5)
+                await writer_task
+
+            async with sessions() as session:
+                final = await SqlAlchemyIdentityStore(session).get_preferences(owner_id)
+                assert final is not None and final.version == 3
+                assert final.home_zone == "Asia/Aqtobe"
+                assert final.review_time.hour == 21
+        finally:
+            await engine.dispose()
+
+    run_local_async(scenario)

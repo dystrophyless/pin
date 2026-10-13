@@ -27,6 +27,16 @@ class SqlAlchemyIdentityStore(IdentityStore):
         record = await self._session.get(PreferencesRecord, owner_id)
         return _snapshot(owner_id, record) if record else None
 
+    async def lock_preferences(self, owner_id: UUID) -> PreferencesSnapshot | None:
+        """Refresh and lock the preference row until the caller ends this transaction."""
+        record = await self._session.scalar(
+            select(PreferencesRecord)
+            .where(PreferencesRecord.owner_id == owner_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        return _snapshot(owner_id, record) if record else None
+
     async def begin_onboarding(
         self,
         *,

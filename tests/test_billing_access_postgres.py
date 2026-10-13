@@ -373,6 +373,33 @@ def test_return_does_not_restore_deleted_active_trial_coverage(billing_database:
     run_local_async(scenario)
 
 
+def test_check_access_refreshes_account_after_concurrent_deletion(billing_database: str) -> None:
+    async def scenario() -> None:
+        engine = create_engine(billing_database)
+        sessions = create_session_factory(engine)
+        owner_id, period_id = uuid4(), str(uuid4())
+        now = datetime.now(UTC)
+        try:
+            async with sessions() as writer, writer.begin():
+                _seed_period(writer, owner_id=owner_id, period_id=period_id, now=now)
+
+            async with sessions() as reader:
+                store = SqlAlchemyAccessUsageStore(reader)
+                query = CheckAccess(owner_id, Operation.AI_TURN, now)
+                assert (await store.check_access(query)).allowed
+                async with sessions() as writer, writer.begin():
+                    account = await writer.get(AccessAccountRecord, owner_id)
+                    assert account is not None
+                    account.deleted_at = now
+                decision = await store.check_access(query)
+                assert not decision.allowed
+                assert decision.denial is AccessDenial.ACCOUNT_DELETED
+        finally:
+            await engine.dispose()
+
+    run_local_async(scenario)
+
+
 def _reservation_command(
     *,
     owner_id,
