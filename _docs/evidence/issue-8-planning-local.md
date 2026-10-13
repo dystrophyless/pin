@@ -1,6 +1,6 @@
 # Issue #8: accepted local Planning foundation
 
-Date: 2026-10-13 (Asia/Qyzylorda). Direct Orchestrator acceptance under the owner's standing implementation/closure authority; GitHub publication/readback follows this checkpoint.
+Date: 2026-10-13 (Asia/Qyzylorda). Direct Orchestrator acceptance under the owner's standing implementation/closure authority; GitHub closure/completed/status:accepted readback confirmed: [acceptance comment](https://github.com/dystrophyless/pin/issues/8#issuecomment-6152831361).
 
 Verified source: `65c40df6b4edb69b7893021a3ed7100738136d92`, including one-off implementation `dd434aa` and Identity/Billing freshness guards `0d7b673`. Local commits are unpushed. Approved source: SPEC-001 section 11, current v0.5.
 
