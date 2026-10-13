@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import sys
-from datetime import UTC, datetime, time
+from datetime import UTC, date, datetime, time
 from pathlib import Path
 from typing import cast
 from uuid import UUID, uuid4
+from zoneinfo import ZoneInfo
 
 import pytest
 from alembic import command
@@ -19,12 +21,23 @@ from pin.adapters.telegram.application_worker import (
     process_application_job,
 )
 from pin.adapters.telegram.ingress import PostgresTelegramOwnerResolver, persist_update
+from pin.adapters.telegram.presentation.tokens import TelegramCallbackTokenRecord
 from pin.contexts.conversation.infrastructure.models import ProviderCallRecord
 from pin.contexts.identity.infrastructure.models import OnboardingRecord, PreferencesRecord
 from pin.contexts.notifications.infrastructure.models import ReminderIntentRecord
+from pin.contexts.planning.domain.plans import OneOffPlanDraft, PlanKind, resolve_schedule
+from pin.contexts.planning.domain.recurrence import (
+    RecurrenceFrequency,
+    RecurrenceRule,
+    RecurringPlanDraft,
+    project_recurrence,
+)
 from pin.contexts.planning.infrastructure.home_zone_change_models import (
     HomeZoneChangePreviewRecord,
 )
+from pin.contexts.planning.infrastructure.models import OccurrenceRecord, PlanItemRecord
+from pin.contexts.planning.infrastructure.series_models import SeriesOccurrenceRecord, SeriesRecord
+from pin.contexts.planning.infrastructure.series_store import SqlAlchemySeriesStore
 from pin.persistence import run_local_async
 from pin.persistence.db import create_engine as create_async_engine
 from pin.persistence.db import create_session_factory
@@ -104,6 +117,116 @@ async def _seed_owner(
             )
         )
     return owner_id
+
+
+async def _seed_task(
+    session: AsyncSession,
+    *,
+    owner_id: UUID,
+    title: str,
+    at: datetime,
+    day: date,
+    zone: str,
+) -> tuple[UUID, UUID]:
+    draft = OneOffPlanDraft(
+        kind=PlanKind.TASK,
+        title=title,
+        local_date=day,
+        local_time=time(12),
+        event_zone=zone,
+        reminders=(),
+    )
+    schedule = resolve_schedule(draft, default_zone="UTC", now=at)
+    plan_id, occurrence_id = uuid4(), uuid4()
+    session.add(
+        PlanItemRecord(id=plan_id, owner_id=owner_id, kind="task", title=title, version=1)
+    )
+    await session.flush()
+    session.add(
+        OccurrenceRecord(
+            id=occurrence_id,
+            owner_id=owner_id,
+            plan_item_id=plan_id,
+            kind=schedule.kind.value,
+            event_zone=schedule.event_zone,
+            local_date=schedule.local_date,
+            local_time=schedule.local_time,
+            fold=schedule.fold,
+            end_local_date=schedule.end_local_date,
+            end_local_time=schedule.end_local_time,
+            end_fold=schedule.end_fold,
+            starts_at=schedule.starts_at,
+            ends_at=schedule.ends_at,
+            deadline_at=schedule.deadline_at,
+            duration_seconds=schedule.duration_seconds,
+            state="open",
+            version=1,
+            reminder_preferences_version=1,
+        )
+    )
+    await session.flush()
+    return plan_id, occurrence_id
+
+
+async def _seed_weekly_series(
+    session: AsyncSession, *, owner_id: UUID, at: datetime, title: str = "Zone series"
+) -> tuple[UUID, list[UUID]]:
+    horizon = date(2026, 12, 1)
+    draft = RecurringPlanDraft(
+        kind=PlanKind.TASK,
+        title=title,
+        start_date=date(2026, 10, 19),
+        local_time=time(12),
+        event_zone="UTC",
+        recurrence=RecurrenceRule(
+            RecurrenceFrequency.WEEKLY, interval=1, weekdays=(0,), count=3
+        ),
+    )
+    projection = project_recurrence(
+        draft,
+        owner_id=owner_id,
+        default_zone="UTC",
+        default_reminders=(),
+        at=at,
+        through=horizon,
+    )
+    await SqlAlchemySeriesStore(session).persist_series(
+        owner_id=owner_id,
+        action_key=f"zone-runtime-seed-{uuid4()}",
+        payload_sha256="d" * 64,
+        approved_preferences_version=1,
+        draft=draft,
+        projection=projection,
+        effective_reminders=(),
+        default_zone="UTC",
+        quiet_zone="UTC",
+        quiet_start=time(22),
+        quiet_end=time(8),
+        at=at,
+        horizon_date=horizon,
+    )
+    series = await session.scalar(
+        select(SeriesRecord).where(SeriesRecord.owner_id == owner_id)
+    )
+    assert series is not None
+    occurrences = list(
+        (
+            await session.scalars(
+                select(OccurrenceRecord)
+                .join(
+                    SeriesOccurrenceRecord,
+                    SeriesOccurrenceRecord.occurrence_id == OccurrenceRecord.id,
+                )
+                .where(
+                    SeriesOccurrenceRecord.owner_id == owner_id,
+                    SeriesOccurrenceRecord.series_id == series.id,
+                )
+                .order_by(SeriesOccurrenceRecord.sequence)
+            )
+        ).all()
+    )
+    assert len(occurrences) == 3
+    return series.id, [row.id for row in occurrences]
 
 
 async def _persist(
@@ -199,6 +322,43 @@ def _callback_for(reply: dict[str, object], label: str) -> str:
                 assert isinstance(callback_data, str)
                 return callback_data
     raise AssertionError(f"button {label!r} was not rendered")
+
+
+def _callback_containing(reply: dict[str, object], label_fragment: str) -> str:
+    markup = cast(dict[str, object], reply["reply_markup"])
+    rows = cast(list[list[dict[str, object]]], markup["inline_keyboard"])
+    for row in rows:
+        for button in row:
+            callback_data = button.get("callback_data")
+            if label_fragment in str(button.get("text", "")) and isinstance(callback_data, str):
+                return callback_data
+    raise AssertionError(f"button containing {label_fragment!r} was not rendered")
+
+
+async def _callback_for_action(
+    sessions: async_sessionmaker[AsyncSession],
+    reply: dict[str, object],
+    *,
+    owner_id: UUID,
+    action: str,
+) -> str:
+    markup = cast(dict[str, object], reply["reply_markup"])
+    rows = cast(list[list[dict[str, object]]], markup["inline_keyboard"])
+    async with sessions() as session:
+        for row in rows:
+            for button in row:
+                token = button.get("callback_data")
+                if not isinstance(token, str):
+                    continue
+                token_hash = hashlib.sha256(token.encode("ascii")).hexdigest()
+                binding = await session.get(TelegramCallbackTokenRecord, token_hash)
+                if (
+                    binding is not None
+                    and binding.owner_id == owner_id
+                    and binding.action == action
+                ):
+                    return token
+    raise AssertionError(f"no rendered callback for action {action!r}")
 
 
 async def _prepare_zone_change(
@@ -342,6 +502,377 @@ def test_settings_home_zone_cancel_leaves_profile_unchanged(
                     await session.scalar(
                         select(HomeZoneChangePreviewRecord.id).where(
                             HomeZoneChangePreviewRecord.owner_id == owner_id
+                        )
+                    )
+                    is None
+                )
+        finally:
+            await engine.dispose()
+
+    run_local_async(scenario)
+
+
+def test_settings_reinterprets_only_selected_occurrence_and_preserves_other_zone(
+    home_zone_runtime_database_url: str,
+) -> None:
+    async def scenario() -> None:
+        engine = create_async_engine(home_zone_runtime_database_url)
+        sessions = create_session_factory(engine)
+        at = datetime(2026, 10, 14, 9, tzinfo=UTC)
+        suffix = uuid4().int % 1_000_000_000
+        bot_id, user_id = 6_300_000_000 + suffix, 7_300_000_000 + suffix
+        try:
+            owner_id = await _seed_owner(sessions, bot_id=bot_id, user_id=user_id)
+            async with sessions() as session, session.begin():
+                _, selected_id = await _seed_task(
+                    session,
+                    owner_id=owner_id,
+                    title="Selected home-zone occurrence",
+                    at=at,
+                    day=date(2026, 10, 20),
+                    zone="UTC",
+                )
+                _, preserved_id = await _seed_task(
+                    session,
+                    owner_id=owner_id,
+                    title="Unselected Paris occurrence",
+                    at=at,
+                    day=date(2026, 10, 21),
+                    zone="Europe/Paris",
+                )
+                preserved_before = await session.get(OccurrenceRecord, preserved_id)
+                assert preserved_before is not None
+                preserved_snapshot = (
+                    preserved_before.local_date,
+                    preserved_before.local_time,
+                    preserved_before.event_zone,
+                    preserved_before.starts_at,
+                )
+
+            review = await _prepare_zone_change(sessions, bot_id=bot_id, user_id=user_id, at=at)
+            _, scope_menu = await _dispatch(
+                sessions,
+                bot_id=bot_id,
+                user_id=user_id,
+                at=at,
+                callback=_callback_for(review, "Choose plans"),
+            )
+            _, selected_menu = await _dispatch(
+                sessions,
+                bot_id=bot_id,
+                user_id=user_id,
+                at=at,
+                callback=_callback_containing(scope_menu, "Selected home-zone occurrence"),
+            )
+            assert "Selected: 1 occurrence(s)" in str(selected_menu["plain_text"])
+            _, preview = await _dispatch(
+                sessions,
+                bot_id=bot_id,
+                user_id=user_id,
+                at=at,
+                callback=_callback_for(selected_menu, "Preview selected"),
+            )
+            preview_text = str(preview["plain_text"])
+            assert "Selected home-zone occurrence" in preview_text
+            assert "UTC →" in preview_text and "America/New_York" in preview_text
+            confirm_token = _callback_for(preview, "Confirm zone change")
+
+            async with sessions() as session:
+                pending = await session.get(OccurrenceRecord, selected_id)
+                assert pending is not None
+                assert (pending.event_zone, pending.local_date, pending.local_time) == (
+                    "UTC",
+                    date(2026, 10, 20),
+                    time(12),
+                )
+                assert pending.starts_at == datetime(2026, 10, 20, 12, tzinfo=UTC)
+
+            _, confirmed = await _dispatch(
+                sessions,
+                bot_id=bot_id,
+                user_id=user_id,
+                at=at,
+                callback=confirm_token,
+            )
+            assert confirmed["handling"] == "handled"
+            async with sessions() as session:
+                profile = await session.get(PreferencesRecord, owner_id)
+                selected = await session.get(OccurrenceRecord, selected_id)
+                preserved = await session.get(OccurrenceRecord, preserved_id)
+                assert profile is not None and (
+                    profile.home_zone,
+                    profile.version,
+                ) == ("America/New_York", 2)
+                assert selected is not None and (
+                    selected.version,
+                    selected.local_date,
+                    selected.local_time,
+                    selected.event_zone,
+                    selected.starts_at,
+                ) == (
+                    2,
+                    date(2026, 10, 20),
+                    time(12),
+                    "America/New_York",
+                    datetime(2026, 10, 20, 16, tzinfo=UTC),
+                )
+                assert preserved is not None and (
+                    preserved.local_date,
+                    preserved.local_time,
+                    preserved.event_zone,
+                    preserved.starts_at,
+                ) == preserved_snapshot
+                assert (
+                    await session.scalar(
+                        select(ProviderCallRecord.call_id).where(
+                            ProviderCallRecord.owner_id == owner_id
+                        )
+                    )
+                    is None
+                )
+        finally:
+            await engine.dispose()
+
+    run_local_async(scenario)
+
+
+def test_settings_reinterprets_selected_series_and_preserves_unselected_schedule(
+    home_zone_runtime_database_url: str,
+) -> None:
+    async def scenario() -> None:
+        engine = create_async_engine(home_zone_runtime_database_url)
+        sessions = create_session_factory(engine)
+        at = datetime(2026, 10, 14, 9, tzinfo=UTC)
+        suffix = uuid4().int % 1_000_000_000
+        bot_id, user_id = 6_400_000_000 + suffix, 7_400_000_000 + suffix
+        try:
+            owner_id = await _seed_owner(sessions, bot_id=bot_id, user_id=user_id)
+            async with sessions() as session, session.begin():
+                series_id, series_occurrence_ids = await _seed_weekly_series(
+                    session, owner_id=owner_id, at=at
+                )
+                _, preserved_id = await _seed_task(
+                    session,
+                    owner_id=owner_id,
+                    title="Unselected standalone task",
+                    at=at,
+                    day=date(2026, 10, 22),
+                    zone="Europe/Paris",
+                )
+                series_before = await session.get(SeriesRecord, series_id)
+                preserved_before = await session.get(OccurrenceRecord, preserved_id)
+                assert series_before is not None and preserved_before is not None
+                anchor_before = series_before.anchor_date
+                count_before = series_before.total_count
+                preserved_snapshot = (
+                    preserved_before.local_date,
+                    preserved_before.local_time,
+                    preserved_before.event_zone,
+                    preserved_before.starts_at,
+                )
+
+            review = await _prepare_zone_change(sessions, bot_id=bot_id, user_id=user_id, at=at)
+            _, scope_menu = await _dispatch(
+                sessions,
+                bot_id=bot_id,
+                user_id=user_id,
+                at=at,
+                callback=_callback_for(review, "Choose plans"),
+            )
+            _, selected_menu = await _dispatch(
+                sessions,
+                bot_id=bot_id,
+                user_id=user_id,
+                at=at,
+                callback=await _callback_for_action(
+                    sessions,
+                    scope_menu,
+                    owner_id=owner_id,
+                    action="home_zone_toggle_series",
+                ),
+            )
+            assert "Selected: 0 occurrence(s), 1 series" in str(selected_menu["plain_text"])
+            _, preview = await _dispatch(
+                sessions,
+                bot_id=bot_id,
+                user_id=user_id,
+                at=at,
+                callback=_callback_for(selected_menu, "Preview selected"),
+            )
+            preview_text = str(preview["plain_text"])
+            assert "Zone series" in preview_text
+            assert "UTC → America/New_York" in preview_text
+            confirm_token = _callback_for(preview, "Confirm zone change")
+
+            async with sessions() as session:
+                for occurrence_id in series_occurrence_ids:
+                    row = await session.get(OccurrenceRecord, occurrence_id)
+                    assert row is not None and row.event_zone == "UTC" and row.version == 1
+
+            _, confirmed = await _dispatch(
+                sessions,
+                bot_id=bot_id,
+                user_id=user_id,
+                at=at,
+                callback=confirm_token,
+            )
+            assert confirmed["handling"] == "handled"
+            async with sessions() as session:
+                profile = await session.get(PreferencesRecord, owner_id)
+                series = await session.get(SeriesRecord, series_id)
+                preserved = await session.get(OccurrenceRecord, preserved_id)
+                assert profile is not None and profile.home_zone == "America/New_York"
+                assert series is not None
+                assert (
+                    series.version,
+                    series.anchor_date,
+                    series.total_count,
+                    series.typed_draft["default_zone"],
+                ) == (2, anchor_before, count_before, "America/New_York")
+                for occurrence_id in series_occurrence_ids:
+                    row = await session.get(OccurrenceRecord, occurrence_id)
+                    assert row is not None
+                    assert (row.event_zone, row.local_time, row.version) == (
+                        "America/New_York",
+                        time(12),
+                        2,
+                    )
+                    assert row.starts_at == datetime.combine(
+                        row.local_date, time(12), tzinfo=ZoneInfo("America/New_York")
+                    ).astimezone(UTC)
+                assert preserved is not None and (
+                    preserved.local_date,
+                    preserved.local_time,
+                    preserved.event_zone,
+                    preserved.starts_at,
+                ) == preserved_snapshot
+                assert (
+                    await session.scalar(
+                        select(ProviderCallRecord.call_id).where(
+                            ProviderCallRecord.owner_id == owner_id
+                        )
+                    )
+                    is None
+                )
+        finally:
+            await engine.dispose()
+
+    run_local_async(scenario)
+
+
+def test_settings_foreign_owner_and_corrected_preview_tokens_do_not_write_plans(
+    home_zone_runtime_database_url: str,
+) -> None:
+    async def scenario() -> None:
+        engine = create_async_engine(home_zone_runtime_database_url)
+        sessions = create_session_factory(engine)
+        at = datetime(2026, 10, 14, 9, tzinfo=UTC)
+        suffix = uuid4().int % 1_000_000_000
+        bot_id = 6_500_000_000 + suffix
+        owner_user, foreign_user = 7_500_000_000 + suffix, 8_500_000_000 + suffix
+        try:
+            owner_id = await _seed_owner(sessions, bot_id=bot_id, user_id=owner_user)
+            foreign_owner = await _seed_owner(
+                sessions, bot_id=bot_id, user_id=foreign_user
+            )
+            async with sessions() as session, session.begin():
+                _, target_id = await _seed_task(
+                    session,
+                    owner_id=owner_id,
+                    title="Owner selected item",
+                    at=at,
+                    day=date(2026, 10, 20),
+                    zone="UTC",
+                )
+
+            review = await _prepare_zone_change(
+                sessions, bot_id=bot_id, user_id=owner_user, at=at
+            )
+            _, scope_menu = await _dispatch(
+                sessions,
+                bot_id=bot_id,
+                user_id=owner_user,
+                at=at,
+                callback=_callback_for(review, "Choose plans"),
+            )
+            _, selected_menu = await _dispatch(
+                sessions,
+                bot_id=bot_id,
+                user_id=owner_user,
+                at=at,
+                callback=_callback_containing(scope_menu, "Owner selected item"),
+            )
+            toggle_callback = _callback_containing(selected_menu, "Owner selected item")
+            _, preview = await _dispatch(
+                sessions,
+                bot_id=bot_id,
+                user_id=owner_user,
+                at=at,
+                callback=_callback_for(selected_menu, "Preview selected"),
+            )
+            confirm_token = _callback_for(preview, "Confirm zone change")
+
+            _, foreign_reply = await _dispatch(
+                sessions,
+                bot_id=bot_id,
+                user_id=foreign_user,
+                at=at,
+                callback=confirm_token,
+            )
+            assert "Confirm zone change" not in str(foreign_reply["plain_text"])
+            async with sessions() as session:
+                foreign_profile = await session.get(PreferencesRecord, foreign_owner)
+                assert foreign_profile is not None and (
+                    foreign_profile.home_zone,
+                    foreign_profile.version,
+                ) == ("UTC", 1)
+
+            _, corrected_menu = await _dispatch(
+                sessions,
+                bot_id=bot_id,
+                user_id=owner_user,
+                at=at,
+                callback=toggle_callback,
+            )
+            assert "Selected: 0 occurrence(s)" in str(corrected_menu["plain_text"])
+            _, stale_reply = await _dispatch(
+                sessions,
+                bot_id=bot_id,
+                user_id=owner_user,
+                at=at,
+                callback=confirm_token,
+            )
+            assert "changed" in str(stale_reply["plain_text"]).lower() or "expired" in str(
+                stale_reply["plain_text"]
+            ).lower()
+
+            async with sessions() as session:
+                profile = await session.get(PreferencesRecord, owner_id)
+                occurrence = await session.get(OccurrenceRecord, target_id)
+                assert profile is not None and (profile.home_zone, profile.version) == (
+                    "UTC",
+                    1,
+                )
+                assert occurrence is not None and (
+                    occurrence.state,
+                    occurrence.version,
+                    occurrence.local_date,
+                    occurrence.local_time,
+                    occurrence.event_zone,
+                    occurrence.starts_at,
+                ) == (
+                    "open",
+                    1,
+                    date(2026, 10, 20),
+                    time(12),
+                    "UTC",
+                    datetime(2026, 10, 20, 12, tzinfo=UTC),
+                )
+                assert (
+                    await session.scalar(
+                        select(OutboxEvent.id).where(
+                            OutboxEvent.owner_id == owner_id,
+                            OutboxEvent.event_type == "identity.home_zone_change.requested",
                         )
                     )
                     is None
