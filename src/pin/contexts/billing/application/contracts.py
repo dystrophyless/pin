@@ -29,6 +29,7 @@ class ReserveUsage:
 class ReserveUsageResult:
     access: AccessDecision
     reservation: UsageReservation | None
+    created: bool = False
 
 
 @dataclass(frozen=True, slots=True)

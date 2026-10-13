@@ -128,7 +128,7 @@ class SqlAlchemyAccessUsageStore(AccessUsageStore):
                 expires_at=command.expires_at,
             )
         )
-        return ReserveUsageResult(access, reservation)
+        return ReserveUsageResult(access, reservation, created=True)
 
     async def settle_usage(
         self,

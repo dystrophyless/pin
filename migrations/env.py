@@ -5,6 +5,7 @@ from logging.config import fileConfig
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
+from pin.adapters.telegram.ingress import TelegramIngressBotRecord, TelegramOwnerRecord
 from pin.adapters.telegram.presentation.tokens import TelegramCallbackTokenRecord
 from pin.bootstrap.config import ProcessRole, load_settings
 from pin.contexts.billing.infrastructure import models as billing_models  # noqa: F401
@@ -17,6 +18,8 @@ if config.config_file_name is not None:
 
 target_metadata = Base.metadata
 assert TelegramCallbackTokenRecord.metadata is target_metadata
+assert TelegramIngressBotRecord.metadata is target_metadata
+assert TelegramOwnerRecord.metadata is target_metadata
 
 
 def _database_url() -> str:
