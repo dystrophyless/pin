@@ -25,9 +25,26 @@ from pin.platform.models import InboxUpdate
 
 class _Session:
     active = False
+    scalar_calls = 0
 
     def begin(self) -> AbstractAsyncContextManager[None]:
         return _Transaction(self)
+
+    async def execute(self, _statement: object) -> _EmptyResult:
+        assert self.active
+        return _EmptyResult()
+
+    async def scalar(self, _statement: object) -> UUID | None:
+        assert self.active
+        self.scalar_calls += 1
+        # The first scalar is the live-job lease fence; later runtime lookup
+        # sees no pending mutation clarification for this owner.
+        return uuid4() if self.scalar_calls == 1 else None
+
+
+class _EmptyResult:
+    def all(self) -> tuple[()]:
+        return ()
 
 
 class _Transaction(AbstractAsyncContextManager[None]):
@@ -130,7 +147,7 @@ async def test_capture_runtime_calls_injected_provider_between_short_transaction
             self, received: ConversationContext, *, at: datetime, claim: JobClaim | None = None
         ) -> ModelFailure:
             assert not session.active
-            assert received is context
+            assert received == context
             assert at == datetime(2026, 10, 14, 9, tzinfo=UTC)
             tx_states.append(session.active)
             return ModelFailure(category=FailureCategory.INVALID_INPUT)
