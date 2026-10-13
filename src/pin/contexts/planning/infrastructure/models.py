@@ -100,6 +100,7 @@ class OccurrenceRecord(Base):
     duration_seconds: Mapped[int | None] = mapped_column(Integer)
     state: Mapped[str] = mapped_column(String(12), nullable=False, default="open")
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    reminder_preferences_version: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

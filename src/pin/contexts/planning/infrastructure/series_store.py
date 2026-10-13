@@ -17,7 +17,9 @@ from pin.contexts.planning.application.recurrence_contracts import (
 from pin.contexts.planning.domain.plans import (
     OffsetKind,
     PlanKind,
+    ReminderNotice,
     ReminderOffset,
+    ReminderOmission,
     ResolvedSchedule,
 )
 from pin.contexts.planning.domain.recurrence import (
@@ -28,7 +30,6 @@ from pin.contexts.planning.domain.recurrence import (
     RecurrenceProjection,
     RecurrenceRule,
     RecurringPlanDraft,
-    project_recurrence,
 )
 from pin.contexts.planning.infrastructure.models import (
     OccurrenceRecord,
@@ -76,10 +77,14 @@ class SqlAlchemySeriesStore(RecurrenceCommandStore):
         owner_id: UUID,
         action_key: str,
         payload_sha256: str,
+        approved_preferences_version: int,
         draft: RecurringPlanDraft,
         projection: RecurrenceProjection,
         effective_reminders: tuple[ReminderOffset, ...],
         default_zone: str,
+        quiet_zone: str,
+        quiet_start: time,
+        quiet_end: time,
         at: datetime,
         horizon_date: date,
     ) -> dict[str, object]:
@@ -109,7 +114,15 @@ class SqlAlchemySeriesStore(RecurrenceCommandStore):
             total_count=draft.recurrence.count,
             end_date=draft.recurrence.end_date,
             rule=_rule_payload(draft.recurrence),
-            typed_draft=_draft_payload(draft, effective_reminders, default_zone),
+            typed_draft=_draft_payload(
+                draft,
+                effective_reminders,
+                default_zone,
+                approved_preferences_version=approved_preferences_version,
+                quiet_zone=quiet_zone,
+                quiet_start=quiet_start,
+                quiet_end=quiet_end,
+            ),
         )
         self._session.add(series)
         await self._session.flush()
@@ -119,6 +132,7 @@ class SqlAlchemySeriesStore(RecurrenceCommandStore):
                 owner_id=owner_id,
                 plan_item_id=plan_item_id,
                 occurrence=occurrence,
+                approved_preferences_version=approved_preferences_version,
             )
             self._session.add(record)
             await self._session.flush()
@@ -152,6 +166,12 @@ class SqlAlchemySeriesStore(RecurrenceCommandStore):
                         "sequence": occurrence.sequence,
                         "schedule": _schedule_payload(occurrence),
                         "reminders": _reminders_payload(occurrence),
+                        "omitted_reminders": [
+                            _omission_payload(item) for item in occurrence.omitted_reminders
+                        ],
+                        "reminder_notices": [
+                            _notice_payload(item) for item in occurrence.reminder_notices
+                        ],
                     },
                 ),
             )
@@ -162,8 +182,10 @@ class SqlAlchemySeriesStore(RecurrenceCommandStore):
                     "sequence": occurrence.sequence,
                     "local_date": occurrence.schedule.local_date.isoformat(),
                     "omitted_reminders": [
-                        _reminder_payload(offset, due_at)
-                        for offset, due_at in occurrence.omitted_reminders
+                        _omission_payload(item) for item in occurrence.omitted_reminders
+                    ],
+                    "reminder_notices": [
+                        _notice_payload(item) for item in occurrence.reminder_notices
                     ],
                     "dst_gap_shift_seconds": occurrence.dst_gap_shift_seconds,
                     "repeated_time_choice": occurrence.repeated_time_choice,
@@ -211,7 +233,9 @@ class SqlAlchemySeriesStore(RecurrenceCommandStore):
         expected_version: int,
         through: date,
         at: datetime,
-        max_occurrences: int = 100,
+        projection: RecurrenceProjection,
+        approved_preferences_version: int,
+        max_occurrences: int = 1000,
     ) -> dict[str, object]:
         """Advance one locked generation cursor; retries cannot duplicate recurrence keys."""
         series = await self._session.scalar(
@@ -235,20 +259,10 @@ class SqlAlchemySeriesStore(RecurrenceCommandStore):
         )
         if item is None:
             raise SeriesNotFound("series plan item is missing")
-        draft, reminders, zone = _restore_draft(series.typed_draft)
-        projection = project_recurrence(
-            draft,
-            owner_id=owner_id,
-            default_zone=zone,
-            default_reminders=reminders,
-            at=at,
-            through=through,
-            max_occurrences=max_occurrences,
-            anchor=series.anchor_date,
-            first_sequence=series.next_sequence,
-            anchor_sequence=series.anchor_sequence,
-            total_count=series.total_count,
-        )
+        if len(projection.occurrences) > max_occurrences or max_occurrences > 1000:
+            raise ValueError("generation projection exceeds the requested batch bound")
+        if any(item.sequence < series.next_sequence for item in projection.occurrences):
+            raise ValueError("generation projection overlaps the persisted cursor")
         committed: list[dict[str, object]] = []
         for occurrence in projection.occurrences:
             # The lock fences concurrent generators; the database uniqueness key
@@ -265,6 +279,7 @@ class SqlAlchemySeriesStore(RecurrenceCommandStore):
                 owner_id=owner_id,
                 plan_item_id=item.id,
                 occurrence=occurrence,
+                approved_preferences_version=approved_preferences_version,
             )
             self._session.add(record)
             await self._session.flush()
@@ -298,6 +313,12 @@ class SqlAlchemySeriesStore(RecurrenceCommandStore):
                         "sequence": occurrence.sequence,
                         "schedule": _schedule_payload(occurrence),
                         "reminders": _reminders_payload(occurrence),
+                        "omitted_reminders": [
+                            _omission_payload(item) for item in occurrence.omitted_reminders
+                        ],
+                        "reminder_notices": [
+                            _notice_payload(item) for item in occurrence.reminder_notices
+                        ],
                     },
                 ),
             )
@@ -307,6 +328,12 @@ class SqlAlchemySeriesStore(RecurrenceCommandStore):
                     "recurrence_key": occurrence.recurrence_key,
                     "sequence": occurrence.sequence,
                     "local_date": occurrence.schedule.local_date.isoformat(),
+                    "omitted_reminders": [
+                        _omission_payload(item) for item in occurrence.omitted_reminders
+                    ],
+                    "reminder_notices": [
+                        _notice_payload(item) for item in occurrence.reminder_notices
+                    ],
                 }
             )
         series.next_sequence += len(projection.occurrences)
@@ -367,6 +394,10 @@ class SqlAlchemySeriesStore(RecurrenceCommandStore):
         change: RecurrenceExceptionDraft,
         projection: RecurrenceProjection,
         new_draft: RecurringPlanDraft,
+        approved_preferences_version: int,
+        quiet_zone: str,
+        quiet_start: time,
+        quiet_end: time,
         approval_projection_sha256: str,
         at: datetime,
     ) -> dict[str, object]:
@@ -466,6 +497,7 @@ class SqlAlchemySeriesStore(RecurrenceCommandStore):
             recurrence = projected[old.sequence]
             record.version += 1
             _apply_resolved_schedule(record, recurrence.schedule)
+            record.reminder_preferences_version = approved_preferences_version
             association.dst_gap_shift_seconds = recurrence.dst_gap_shift_seconds
             association.repeated_time_choice = recurrence.repeated_time_choice
             await self._session.execute(
@@ -490,6 +522,13 @@ class SqlAlchemySeriesStore(RecurrenceCommandStore):
                         "recurrence_key": association.recurrence_key,
                         "sequence": association.sequence,
                         "schedule": _schedule_payload(recurrence),
+                        "reminders": _reminders_payload(recurrence),
+                        "omitted_reminders": [
+                            _omission_payload(item) for item in recurrence.omitted_reminders
+                        ],
+                        "reminder_notices": [
+                            _notice_payload(item) for item in recurrence.reminder_notices
+                        ],
                         "scope": change.scope.value,
                     },
                 ),
@@ -501,6 +540,13 @@ class SqlAlchemySeriesStore(RecurrenceCommandStore):
                     "sequence": association.sequence,
                     "local_date": record.local_date.isoformat(),
                     "version": record.version,
+                    "reminders": _reminders_payload(recurrence),
+                    "omitted_reminders": [
+                        _omission_payload(item) for item in recurrence.omitted_reminders
+                    ],
+                    "reminder_notices": [
+                        _notice_payload(item) for item in recurrence.reminder_notices
+                    ],
                 }
             )
         if change.scope is RecurrenceExceptionScope.THIS_AND_FUTURE:
@@ -513,7 +559,13 @@ class SqlAlchemySeriesStore(RecurrenceCommandStore):
                 else new_draft.reminders
             )
             series.typed_draft = _draft_payload(
-                new_draft, effective_reminders, snapshot.default_zone
+                new_draft,
+                effective_reminders,
+                snapshot.default_zone,
+                approved_preferences_version=approved_preferences_version,
+                quiet_zone=quiet_zone,
+                quiet_start=quiet_start,
+                quiet_end=quiet_end,
             )
         series.version += 1
         remaining_count = (
@@ -653,6 +705,26 @@ class SqlAlchemySeriesStore(RecurrenceCommandStore):
             effective_reminders=reminders,
             default_zone=zone,
             occurrences=occurrences,
+            approved_preferences_version=(
+                cast(int, series.typed_draft["approved_preferences_version"])
+                if series.typed_draft.get("approved_preferences_version") is not None
+                else None
+            ),
+            quiet_zone=(
+                str(series.typed_draft["quiet_zone"])
+                if series.typed_draft.get("quiet_zone")
+                else None
+            ),
+            quiet_start=(
+                time.fromisoformat(str(series.typed_draft["quiet_start"]))
+                if series.typed_draft.get("quiet_start")
+                else None
+            ),
+            quiet_end=(
+                time.fromisoformat(str(series.typed_draft["quiet_end"]))
+                if series.typed_draft.get("quiet_end")
+                else None
+            ),
         )
 
     async def _add_reminders(
@@ -672,7 +744,11 @@ class SqlAlchemySeriesStore(RecurrenceCommandStore):
 
 
 def _new_occurrence(
-    *, owner_id: UUID, plan_item_id: UUID, occurrence: RecurrenceOccurrence
+    *,
+    owner_id: UUID,
+    plan_item_id: UUID,
+    occurrence: RecurrenceOccurrence,
+    approved_preferences_version: int,
 ) -> OccurrenceRecord:
     schedule = occurrence.schedule
     return OccurrenceRecord(
@@ -692,6 +768,7 @@ def _new_occurrence(
         duration_seconds=schedule.duration_seconds,
         state="open",
         version=1,
+        reminder_preferences_version=approved_preferences_version,
     )
 
 
@@ -746,6 +823,12 @@ def _exception_payload(
                 "recurrence_key": item.recurrence_key,
                 "schedule": _schedule_payload(item),
                 "reminders": _reminders_payload(item),
+                "omitted_reminders": [
+                    _omission_payload(omission) for omission in item.omitted_reminders
+                ],
+                "reminder_notices": [
+                    _notice_payload(notice) for notice in item.reminder_notices
+                ],
             }
             for item in projection.occurrences
         ],
@@ -768,6 +851,11 @@ def _draft_payload(
     draft: RecurringPlanDraft,
     reminders: tuple[ReminderOffset, ...],
     default_zone: str,
+    *,
+    approved_preferences_version: int,
+    quiet_zone: str,
+    quiet_start: time,
+    quiet_end: time,
 ) -> dict[str, object]:
     return {
         "kind": draft.kind.value,
@@ -785,6 +873,10 @@ def _draft_payload(
         else [_offset_payload(offset) for offset in draft.reminders],
         "effective_reminders": [_offset_payload(offset) for offset in reminders],
         "default_zone": default_zone,
+        "approved_preferences_version": approved_preferences_version,
+        "quiet_zone": quiet_zone,
+        "quiet_start": quiet_start.isoformat(),
+        "quiet_end": quiet_end.isoformat(),
         "recurrence": _rule_payload(draft.recurrence),
     }
 
@@ -880,6 +972,24 @@ def _reminder_payload(offset: ReminderOffset, due_at: datetime) -> dict[str, obj
         "amount": offset.amount,
         "source": offset.source,
         "due_at": _iso(due_at),
+    }
+
+
+def _omission_payload(omission: ReminderOmission) -> dict[str, object]:
+    return {
+        **_reminder_payload(omission.offset, omission.due_at),
+        "reason": omission.reason,
+    }
+
+
+def _notice_payload(notice: ReminderNotice) -> dict[str, object]:
+    return {
+        "kind": notice.kind,
+        "offset_kind": notice.offset.kind.value,
+        "offset_amount": notice.offset.amount,
+        "source": notice.offset.source,
+        "original_due_at": _iso(notice.original_due_at),
+        "due_at": _iso(notice.due_at),
     }
 
 

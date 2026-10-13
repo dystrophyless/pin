@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime
+from dataclasses import dataclass, replace
+from datetime import datetime, time
 from uuid import UUID
 
+from pin.contexts.planning.application.reminder_policy import apply_quiet_policy
 from pin.contexts.planning.domain.plans import (
     OneOffPlanDraft,
     ProposedPlan,
     ReminderOffset,
+    ReminderResolution,
     approval_projection_digest,
     payload_digest,
     propose_plan,
@@ -30,6 +32,9 @@ def preview_plan_batch(
     expected_preferences_version: int,
     default_zone: str,
     default_reminders: tuple[ReminderOffset, ...],
+    quiet_zone: str,
+    quiet_start: time,
+    quiet_end: time,
     at: datetime,
 ) -> PlanBatchPreview:
     """Resolve a typed batch exactly as it would be applied at a preview instant.
@@ -46,7 +51,7 @@ def preview_plan_batch(
     payload_sha256 = payload_digest(
         drafts, expected_preferences_version=expected_preferences_version
     )
-    plans = tuple(
+    raw_plans = tuple(
         propose_plan(
             owner_id,
             draft,
@@ -56,6 +61,16 @@ def preview_plan_batch(
         )
         for draft in drafts
     )
+    plans = tuple(
+        _apply_quiet_policy(
+            plan,
+            at=at,
+            quiet_zone=quiet_zone,
+            quiet_start=quiet_start,
+            quiet_end=quiet_end,
+        )
+        for plan in raw_plans
+    )
     return PlanBatchPreview(
         plans=plans,
         payload_sha256=payload_sha256,
@@ -63,5 +78,32 @@ def preview_plan_batch(
             drafts,
             expected_preferences_version=expected_preferences_version,
             plans=plans,
+            quiet_zone=quiet_zone,
+            quiet_start=quiet_start,
+            quiet_end=quiet_end,
         ),
+    )
+
+
+def _apply_quiet_policy(
+    plan: ProposedPlan,
+    *,
+    at: datetime,
+    quiet_zone: str,
+    quiet_start: time,
+    quiet_end: time,
+) -> ProposedPlan:
+    resolution, notices = apply_quiet_policy(
+        plan.occurrence.schedule,
+        ReminderResolution(plan.reminders, plan.omitted_reminders),
+        now=at,
+        quiet_zone=quiet_zone,
+        quiet_start=quiet_start,
+        quiet_end=quiet_end,
+    )
+    return replace(
+        plan,
+        reminders=resolution.scheduled,
+        omitted_reminders=resolution.omitted,
+        reminder_notices=notices,
     )

@@ -155,6 +155,16 @@ class ReminderOmission:
 
 
 @dataclass(frozen=True, slots=True)
+class ReminderNotice:
+    """Planning-owned view of a reminder policy notice."""
+
+    kind: str
+    offset: ReminderOffset
+    original_due_at: datetime
+    due_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
 class ReminderResolution:
     scheduled: tuple[ReminderSchedule, ...]
     omitted: tuple[ReminderOmission, ...]
@@ -192,6 +202,7 @@ class ProposedPlan:
     occurrence: Occurrence
     reminders: tuple[ReminderSchedule, ...]
     omitted_reminders: tuple[ReminderOmission, ...] = ()
+    reminder_notices: tuple[ReminderNotice, ...] = ()
 
 
 def propose_plan(
@@ -371,6 +382,9 @@ def approval_projection_digest(
     *,
     expected_preferences_version: int,
     plans: tuple[ProposedPlan, ...],
+    quiet_zone: str,
+    quiet_start: time,
+    quiet_end: time,
 ) -> str:
     """Fingerprint approved typed fields and their exact resolved schedule/reminders.
 
@@ -422,6 +436,17 @@ def approval_projection_digest(
                     }
                     for omitted in plan.omitted_reminders
                 ],
+                "reminder_notices": [
+                    {
+                        "kind": notice.kind,
+                        "offset_kind": notice.offset.kind.value,
+                        "offset_amount": notice.offset.amount,
+                        "source": notice.offset.source,
+                        "original_due_at": _utc_iso(notice.original_due_at),
+                        "due_at": _utc_iso(notice.due_at),
+                    }
+                    for notice in plan.reminder_notices
+                ],
             }
         )
     encoded = json.dumps(
@@ -430,6 +455,11 @@ def approval_projection_digest(
             "typed_payload_sha256": payload_digest(
                 drafts, expected_preferences_version=expected_preferences_version
             ),
+            "quiet_policy": {
+                "zone": quiet_zone,
+                "start": quiet_start.isoformat(),
+                "end": quiet_end.isoformat(),
+            },
             "plans": projection,
         },
         sort_keys=True,

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, time
 from typing import Protocol
 from uuid import UUID
 
@@ -57,10 +57,14 @@ class RecurrenceCommandStore(Protocol):
         owner_id: UUID,
         action_key: str,
         payload_sha256: str,
+        approved_preferences_version: int,
         draft: RecurringPlanDraft,
         projection: RecurrenceProjection,
         effective_reminders: tuple[ReminderOffset, ...],
         default_zone: str,
+        quiet_zone: str,
+        quiet_start: time,
+        quiet_end: time,
         at: datetime,
         horizon_date: date,
     ) -> dict[str, object]: ...
@@ -83,6 +87,10 @@ class RecurrenceCommandStore(Protocol):
         change: RecurrenceExceptionDraft,
         projection: RecurrenceProjection,
         new_draft: RecurringPlanDraft,
+        approved_preferences_version: int,
+        quiet_zone: str,
+        quiet_start: time,
+        quiet_end: time,
         approval_projection_sha256: str,
         at: datetime,
     ) -> dict[str, object]: ...
@@ -103,6 +111,10 @@ class RecurrenceClock(Protocol):
 
 
 class RecurrenceGeneratorStore(Protocol):
+    async def get_series_snapshot(
+        self, owner_id: UUID, series_id: UUID
+    ) -> SeriesSnapshot | None: ...
+
     async def generate_occurrences(
         self,
         *,
@@ -111,6 +123,8 @@ class RecurrenceGeneratorStore(Protocol):
         expected_version: int,
         through: date,
         at: datetime,
+        projection: RecurrenceProjection,
+        approved_preferences_version: int,
         max_occurrences: int = 1000,
     ) -> dict[str, object]: ...
 
@@ -141,4 +155,8 @@ class SeriesSnapshot:
     effective_reminders: tuple[ReminderOffset, ...]
     default_zone: str
     occurrences: tuple[SeriesOccurrenceSnapshot, ...]
+    approved_preferences_version: int | None = None
+    quiet_zone: str | None = None
+    quiet_start: time | None = None
+    quiet_end: time | None = None
 

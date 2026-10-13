@@ -14,7 +14,9 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from pin.contexts.planning.domain.plans import (
     OneOffPlanDraft,
     PlanKind,
+    ReminderNotice,
     ReminderOffset,
+    ReminderOmission,
     ResolvedSchedule,
     ScheduleNeedsClarification,
     propose_plan,
@@ -145,9 +147,10 @@ class RecurrenceOccurrence:
     recurrence_key: str
     schedule: ResolvedSchedule
     reminders: tuple[tuple[ReminderOffset, datetime], ...]
-    omitted_reminders: tuple[tuple[ReminderOffset, datetime], ...]
+    omitted_reminders: tuple[ReminderOmission, ...]
     dst_gap_shift_seconds: int = 0
     repeated_time_choice: str | None = None
+    reminder_notices: tuple[ReminderNotice, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -351,7 +354,7 @@ def _resolve_recurring_occurrence(
         recurrence_key=f"r1:{sequence}",
         schedule=proposal.occurrence.schedule,
         reminders=tuple((item.offset, item.due_at) for item in resolution.scheduled),
-        omitted_reminders=tuple((item.offset, item.due_at) for item in resolution.omitted),
+        omitted_reminders=resolution.omitted,
         dst_gap_shift_seconds=gap_seconds,
         repeated_time_choice=repeated_choice,
     )
@@ -470,12 +473,24 @@ def recurrence_projection_digest(
                 ],
                 "omitted_reminders": [
                     {
-                        "kind": offset.kind.value,
-                        "amount": offset.amount,
-                        "source": offset.source,
-                        "due_at": _utc_iso(due_at),
+                        "kind": omitted.offset.kind.value,
+                        "amount": omitted.offset.amount,
+                        "source": omitted.offset.source,
+                        "due_at": _utc_iso(omitted.due_at),
+                        "reason": omitted.reason,
                     }
-                    for offset, due_at in occurrence.omitted_reminders
+                    for omitted in occurrence.omitted_reminders
+                ],
+                "reminder_notices": [
+                    {
+                        "kind": notice.kind,
+                        "offset_kind": notice.offset.kind.value,
+                        "offset_amount": notice.offset.amount,
+                        "source": notice.offset.source,
+                        "original_due_at": _utc_iso(notice.original_due_at),
+                        "due_at": _utc_iso(notice.due_at),
+                    }
+                    for notice in occurrence.reminder_notices
                 ],
             }
             for occurrence in occurrences

@@ -111,6 +111,9 @@ async def create_confirmed_plan_batch(
         expected_preferences_version=command.expected_preferences_version,
         default_zone=preferences.home_zone,
         default_reminders=default_offsets,
+        quiet_zone=preferences.home_zone,
+        quiet_start=preferences.quiet_start,
+        quiet_end=preferences.quiet_end,
         at=now,
     )
 
@@ -179,6 +182,9 @@ async def create_confirmed_plan_batch(
         expected_preferences_version=command.expected_preferences_version,
         default_zone=current_preferences.home_zone,
         default_reminders=write_offsets,
+        quiet_zone=current_preferences.home_zone,
+        quiet_start=current_preferences.quiet_start,
+        quiet_end=current_preferences.quiet_end,
         at=write_at,
     )
     if write_preview.approval_projection_sha256 != preview.approval_projection_sha256:
@@ -187,6 +193,7 @@ async def create_confirmed_plan_batch(
         owner_id=authenticated_owner_id,
         action_key=command.action_key,
         payload_sha256=digest,
+        approved_preferences_version=command.expected_preferences_version,
         plans=write_preview.plans,
         at=write_at,
     )

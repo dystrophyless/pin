@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, time
 from uuid import UUID, uuid4
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from pin.contexts.planning.application.contracts import PlanCommandStore
+from pin.contexts.planning.application.reminder_policy import apply_quiet_policy
 from pin.contexts.planning.domain.plans import (
     Occurrence,
     OccurrenceState,
@@ -16,10 +17,12 @@ from pin.contexts.planning.domain.plans import (
     PlanKind,
     PlanVersionConflict,
     ProposedPlan,
+    ReminderNotice,
     ReminderOffset,
     ReminderOmission,
+    ReminderSchedule,
     ResolvedSchedule,
-    resolve_reminders,
+    resolve_reminder_projection,
 )
 from pin.contexts.planning.infrastructure.models import (
     OccurrenceRecord,
@@ -50,6 +53,7 @@ class SqlAlchemyPlanningStore(PlanCommandStore):
         owner_id: UUID,
         action_key: str,
         payload_sha256: str,
+        approved_preferences_version: int,
         plans: tuple[ProposedPlan, ...],
         at: datetime,
     ) -> dict[str, object]:
@@ -68,7 +72,9 @@ class SqlAlchemyPlanningStore(PlanCommandStore):
                 )
             )
             await self._session.flush()
-            self._session.add(_occurrence_record(occurrence))
+            occurrence_record = _occurrence_record(occurrence)
+            occurrence_record.reminder_preferences_version = approved_preferences_version
+            self._session.add(occurrence_record)
             for reminder in plan.reminders:
                 self._session.add(
                     ReminderRuleRecord(
@@ -93,6 +99,7 @@ class SqlAlchemyPlanningStore(PlanCommandStore):
                     occurred_at=at,
                     payload={
                         "plan_item_id": str(item.id),
+                        "approved_preferences_version": approved_preferences_version,
                         "kind": item.kind.value,
                         "event_zone": schedule.event_zone,
                         "local_date": schedule.local_date.isoformat(),
@@ -114,6 +121,9 @@ class SqlAlchemyPlanningStore(PlanCommandStore):
                         "omitted_reminders": [
                             _omitted_reminder_payload(omitted) for omitted in plan.omitted_reminders
                         ],
+                        "reminder_notices": [
+                            _reminder_notice_payload(notice) for notice in plan.reminder_notices
+                        ],
                     },
                 ),
             )
@@ -121,8 +131,12 @@ class SqlAlchemyPlanningStore(PlanCommandStore):
                 {
                     "plan_item_id": str(item.id),
                     "occurrence_id": str(occurrence.id),
+                    "reminders": [_reminder_payload(rule) for rule in plan.reminders],
                     "omitted_reminders": [
                         _omitted_reminder_payload(omitted) for omitted in plan.omitted_reminders
+                    ],
+                    "reminder_notices": [
+                        _reminder_notice_payload(notice) for notice in plan.reminder_notices
                     ],
                 }
             )
@@ -141,7 +155,11 @@ class SqlAlchemyPlanningStore(PlanCommandStore):
         owner_id: UUID,
         occurrence_id: UUID,
         expected_version: int,
+        approved_preferences_version: int,
         schedule: ResolvedSchedule,
+        quiet_zone: str,
+        quiet_start: time,
+        quiet_end: time,
         at: datetime,
     ) -> Occurrence:
         """Bounded mutation primitive; callers still require their own confirmed command."""
@@ -178,9 +196,18 @@ class SqlAlchemyPlanningStore(PlanCommandStore):
             ReminderOffset(OffsetKind(row.offset_kind), row.offset_amount, row.source)
             for row in reminders
         )
-        computed = resolve_reminders(schedule, offsets, now=at)
+        computed = resolve_reminder_projection(schedule, offsets, now=at)
+        resolution, notices = apply_quiet_policy(
+            schedule,
+            computed,
+            now=at,
+            quiet_zone=quiet_zone,
+            quiet_start=quiet_start,
+            quiet_end=quiet_end,
+        )
         due_by_offset = {
-            (rule.offset.kind.value, rule.offset.amount): rule.due_at for rule in computed
+            (rule.offset.kind.value, rule.offset.amount): rule.due_at
+            for rule in resolution.scheduled
         }
         for row in reminders:
             key = (row.offset_kind, row.offset_amount)
@@ -190,6 +217,7 @@ class SqlAlchemyPlanningStore(PlanCommandStore):
             else:
                 row.due_at = due_at
         _apply_schedule(record, updated)
+        record.reminder_preferences_version = approved_preferences_version
         await add_outbox_event(
             self._session,
             EventEnvelope(
@@ -208,6 +236,22 @@ class SqlAlchemyPlanningStore(PlanCommandStore):
                     "starts_at": _iso(schedule.starts_at),
                     "ends_at": _iso(schedule.ends_at),
                     "deadline_at": _iso(schedule.deadline_at),
+                    "reminders": [
+                        {
+                            "offset_kind": row.offset_kind,
+                            "offset_amount": row.offset_amount,
+                            "source": row.source,
+                            "due_at": row.due_at.astimezone(UTC).isoformat(),
+                        }
+                        for row in reminders
+                        if (row.offset_kind, row.offset_amount) in due_by_offset
+                    ],
+                    "reminder_notices": [
+                        _reminder_notice_payload(notice) for notice in notices
+                    ],
+                    "omitted_reminders": [
+                        _omitted_reminder_payload(omitted) for omitted in resolution.omitted
+                    ],
                 },
             ),
         )
@@ -236,6 +280,26 @@ def _occurrence_record(occurrence: Occurrence) -> OccurrenceRecord:
         state=occurrence.state.value,
         version=occurrence.version,
     )
+
+
+def _reminder_payload(reminder: ReminderSchedule) -> dict[str, object]:
+    return {
+        "offset_kind": reminder.offset.kind.value,
+        "offset_amount": reminder.offset.amount,
+        "source": reminder.offset.source,
+        "due_at": reminder.due_at.astimezone(UTC).isoformat(),
+    }
+
+
+def _reminder_notice_payload(notice: ReminderNotice) -> dict[str, object]:
+    return {
+        "kind": notice.kind,
+        "offset_kind": notice.offset.kind.value,
+        "offset_amount": notice.offset.amount,
+        "source": notice.offset.source,
+        "original_due_at": notice.original_due_at.astimezone(UTC).isoformat(),
+        "due_at": notice.due_at.astimezone(UTC).isoformat(),
+    }
 
 
 def _resolved_schedule(record: OccurrenceRecord) -> ResolvedSchedule:

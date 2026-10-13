@@ -42,6 +42,8 @@ from pin.contexts.planning.api import (
     IdempotencyConflict,
     OneOffPlanDraft,
     PlanKind,
+    PlanningScheduleChange,
+    SqlAlchemyPlanningScheduleSnapshotStore,
     StalePreview,
     create_confirmed_plan_batch,
 )
@@ -145,6 +147,9 @@ class PersistedTestProducer:
                 expected_preferences_version=preferences_version,
                 default_zone=preferences.home_zone,
                 default_reminders=defaults,
+                  quiet_zone=preferences.home_zone,
+                  quiet_start=preferences.quiet_start,
+                  quiet_end=preferences.quiet_end,
                 at=now,
             )
             await session.execute(
@@ -940,7 +945,11 @@ def test_reschedule_storage_primitive_preserves_occurrence_identity_and_versions
                 owner_id=owner_id,
                 occurrence_id=occurrence_id,
                 expected_version=1,
+                approved_preferences_version=1,
                 schedule=new_schedule,
+                quiet_zone="Asia/Almaty",
+                quiet_start=time(22),
+                quiet_end=time(8),
                 at=NOW,
             )
         assert updated.id == occurrence_id
@@ -963,5 +972,112 @@ def test_reschedule_storage_primitive_preserves_occurrence_identity_and_versions
                 ("planning.plan_created", 1),
                 ("planning.plan_rescheduled", 2),
             ]
+
+    run_local_async(scenario)
+
+
+def test_quiet_projection_is_the_persisted_and_published_schedule(planning_sessions) -> None:
+    async def scenario() -> None:
+        owner_id = uuid4()
+        await _seed_owner(planning_sessions, owner_id)
+        async with planning_sessions() as session, session.begin():
+            profile = await session.get(PreferencesRecord, owner_id)
+            assert profile is not None
+            profile.reminder_calendar_days = 0
+            profile.reminder_elapsed_hours = 1
+
+        verifier = PersistedTestProducer(planning_sessions)
+        drafts = (
+            OneOffPlanDraft(
+                PlanKind.TASK,
+                "Quiet-hour task",
+                date(2026, 10, 15),
+                time(8, 30),
+                "Asia/Almaty",
+            ),
+        )
+        command_ = ConfirmedPlanBatch(
+            "issue11-quiet-one-off",
+            1,
+            drafts,
+            await verifier.issue(owner_id=owner_id, drafts=drafts),
+        )
+        result = await _execute(planning_sessions, owner_id, command_, verifier)
+        occurrence_id = UUID(result["plans"][0]["occurrence_id"])
+        plan = result["plans"][0]
+        expected_due = datetime(2026, 10, 15, 3, tzinfo=UTC)
+        assert plan["reminders"] == [
+            {
+                "offset_kind": "elapsed_seconds",
+                "offset_amount": 3600,
+                "source": "default",
+                "due_at": expected_due.isoformat(),
+            }
+        ]
+        assert plan["reminder_notices"] == [
+            {
+                "kind": "quiet_deferred",
+                "offset_kind": "elapsed_seconds",
+                "offset_amount": 3600,
+                "source": "default",
+                "original_due_at": datetime(2026, 10, 15, 2, 30, tzinfo=UTC).isoformat(),
+                "due_at": expected_due.isoformat(),
+            }
+        ]
+
+        async with SqlAlchemyUnitOfWork(planning_sessions) as uow:
+            event = await uow.session.scalar(
+                select(OutboxEvent).where(OutboxEvent.aggregate_id == occurrence_id)
+            )
+            assert event is not None
+            snapshot = await SqlAlchemyPlanningScheduleSnapshotStore(
+                uow.session, SqlAlchemyIdentityStore(uow.session)
+            ).lock_schedule(
+                PlanningScheduleChange(
+                    event.id,
+                    event.event_type,
+                    event.aggregate_id,
+                    event.aggregate_version,
+                    event.owner_id,
+                )
+            )
+            assert snapshot is not None
+            assert snapshot.preferences_version == 1
+            assert snapshot.occurrences[0].approved_preferences_version == 1
+            assert snapshot.occurrences[0].reminders[0].due_at == expected_due
+            assert snapshot.occurrences[0].reminders[0].offset.source == "default"
+        async with planning_sessions() as session:
+            stored = await session.scalar(
+                select(ReminderRuleRecord).where(
+                    ReminderRuleRecord.occurrence_id == occurrence_id
+                )
+            )
+            assert stored is not None and stored.due_at == expected_due
+            occurrence = await session.get(OccurrenceRecord, occurrence_id)
+            assert occurrence is not None and occurrence.reminder_preferences_version == 1
+
+        # Exercise the same outbox consumer used by the runtime. Its durable
+        # intent must exactly preserve the approved final instant and provenance.
+        from pin.adapters.telegram.application_worker import (
+            process_pending_reminder_schedules,
+        )
+        from pin.contexts.notifications.infrastructure.models import ReminderIntentRecord
+
+        await process_pending_reminder_schedules(planning_sessions, now=NOW, limit=1000)
+        async with planning_sessions() as session:
+            intent = await session.scalar(
+                select(ReminderIntentRecord).where(
+                    ReminderIntentRecord.occurrence_id == occurrence_id,
+                    ReminderIntentRecord.state == "scheduled",
+                )
+            )
+            assert intent is not None
+            assert (
+                intent.due_at,
+                intent.offset_kind,
+                intent.offset_amount,
+                intent.source,
+                intent.preferences_version,
+            ) == (expected_due, "elapsed_seconds", 3600, "default", 1)
 
     run_local_async(scenario)

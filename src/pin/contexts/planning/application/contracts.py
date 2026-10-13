@@ -66,6 +66,7 @@ class PlanCommandStore(Protocol):
         owner_id: UUID,
         action_key: str,
         payload_sha256: str,
+        approved_preferences_version: int,
         plans: tuple[ProposedPlan, ...],
         at: datetime,
     ) -> dict[str, object]: ...

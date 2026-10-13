@@ -214,6 +214,9 @@ def test_this_and_future_reanchors_with_remaining_total_count_and_history() -> N
         owner_id=snapshot.owner_id,
         at=datetime(2026, 5, 1, tzinfo=UTC),
         through=date(2027, 6, 3),
+        quiet_zone="UTC",
+        quiet_start=time(22),
+        quiet_end=time(8),
     )
     assert preview.remaining_count == 6
     assert [item.schedule.local_date for item in preview.projection.occurrences] == [
@@ -253,6 +256,9 @@ def test_interval_series_move_restarts_interval_from_new_date() -> None:
         owner_id=snapshot.owner_id,
         at=datetime(2026, 5, 1, tzinfo=UTC),
         through=date(2027, 6, 9),
+        quiet_zone="UTC",
+        quiet_start=time(22),
+        quiet_end=time(8),
     )
     assert [item.schedule.local_date for item in preview.projection.occurrences] == [
         date(2026, 6, 8),
@@ -283,6 +289,9 @@ def test_single_occurrence_exception_does_not_reanchor_series() -> None:
         owner_id=snapshot.owner_id,
         at=datetime(2026, 5, 1, tzinfo=UTC),
         through=date(2026, 6, 11),
+        quiet_zone="UTC",
+        quiet_start=time(22),
+        quiet_end=time(8),
     )
     assert [item.schedule.local_date for item in preview.projection.occurrences] == [
         date(2026, 6, 10)
@@ -313,4 +322,7 @@ def test_exception_cannot_reopen_terminal_history() -> None:
             owner_id=snapshot.owner_id,
             at=datetime(2026, 5, 1, tzinfo=UTC),
             through=date(2027, 6, 9),
+            quiet_zone="UTC",
+            quiet_start=time(22),
+            quiet_end=time(8),
         )
