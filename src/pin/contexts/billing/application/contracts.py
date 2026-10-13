@@ -28,6 +28,14 @@ class ReserveUsage:
 
 
 @dataclass(frozen=True, slots=True)
+class ResizeVoiceUsage:
+    owner_id: UUID
+    request_id: str
+    voice_seconds: int
+    at: datetime
+
+
+@dataclass(frozen=True, slots=True)
 class ReserveUsageResult:
     access: AccessDecision
     reservation: UsageReservation | None
@@ -79,6 +87,14 @@ class AccessUsageStore(Protocol):
 
     async def reserve_usage(self, command: ReserveUsage) -> ReserveUsageResult:
         """Check current entitlement and reserve all requested dimensions atomically."""
+
+    async def resize_voice_usage(self, command: ResizeVoiceUsage) -> UsageReservation:
+        """Resize an open voice hold against its original period in the caller's UoW."""
+
+    async def get_usage_reservation(
+        self, owner_id: UUID, request_id: str
+    ) -> UsageReservation | None:
+        """Read an owner's reservation without creating or changing usage facts."""
 
     async def settle_usage(
         self,

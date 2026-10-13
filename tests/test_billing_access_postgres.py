@@ -10,7 +10,8 @@ from uuid import uuid4
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import func, select
+from sqlalchemy import create_engine as sync_create_engine
+from sqlalchemy import func, make_url, select, text
 
 from pin.contexts.billing.api import (
     AccessDenial,
@@ -22,6 +23,7 @@ from pin.contexts.billing.api import (
     QuotaExceeded,
     ReservationState,
     ReserveUsage,
+    ResizeVoiceUsage,
     SqlAlchemyAccessUsageStore,
     StartTrial,
     TrialActivationStatus,
@@ -51,6 +53,27 @@ def billing_database() -> Iterator[str]:
     )
     if not database_url:
         pytest.skip("set PIN_TEST_BILLING_DATABASE_URL to a disposable PostgreSQL database")
+    url = make_url(database_url)
+    if (
+        url.host != "127.0.0.1"
+        or url.port != 51017
+        or not (url.database or "").startswith("pin_issue6_")
+    ):
+        raise RuntimeError("billing tests require the designated pin_issue6_ test database")
+    guard_engine = sync_create_engine(database_url)
+    try:
+        with guard_engine.connect() as connection:
+            data_directory = connection.scalar(text("SHOW data_directory"))
+            database_name = connection.scalar(text("SELECT current_database()"))
+        normalized_data_directory = str(data_directory).replace("\\", "/").rstrip("/").casefold()
+        if (
+            normalized_data_directory
+            != "c:/users/roman/appdata/local/temp/pin-issue2-eeadfd1-20261013"
+            or database_name != url.database
+        ):
+            raise RuntimeError("billing tests connected outside the designated disposable cluster")
+    finally:
+        guard_engine.dispose()
     command.upgrade(_alembic_config(database_url), "head")
     yield database_url
 
@@ -125,6 +148,224 @@ def test_account_lifecycle_distinguishes_missing_present_and_tombstoned(
                 assert missing_access.denial is AccessDenial.ACCOUNT_DELETED
                 assert expired_access.denial is AccessDenial.ACCESS_EXPIRED
                 assert deleted_access.denial is AccessDenial.ACCOUNT_DELETED
+        finally:
+            await engine.dispose()
+
+    run_local_async(scenario)
+
+
+def test_voice_resize_reads_are_owner_scoped_and_preserve_original_period(
+    billing_database: str,
+) -> None:
+    async def scenario() -> None:
+        engine = create_engine(billing_database)
+        sessions = create_session_factory(engine)
+        owner_id, expired_owner = uuid4(), uuid4()
+        now = datetime.now(UTC)
+        expires_at = now + timedelta(minutes=5)
+        try:
+            async with sessions() as session, session.begin():
+                _, period_end = _seed_period(
+                    session,
+                    owner_id=owner_id,
+                    period_id="original-trial",
+                    now=now,
+                    ai_limit=2,
+                    voice_limit=100,
+                )
+                result = await SqlAlchemyAccessUsageStore(session).reserve_usage(
+                    _reservation_command(
+                        owner_id=owner_id,
+                        request_id="prepared-voice",
+                        at=now,
+                        expires_at=expires_at,
+                        ai_turns=0,
+                        voice_seconds=20,
+                        operation=Operation.VOICE_TRANSCRIPTION,
+                    )
+                )
+                assert result.created and result.reservation is not None
+                # A newer entitlement must not move the hold away from its trial period.
+                session.add(
+                    AccessPeriodRecord(
+                        owner_id=owner_id,
+                        period_id="current-paid",
+                        policy_kind=PeriodKind.PAID.value,
+                        policy_version="paid-v1",
+                        starts_at=now - timedelta(seconds=1),
+                        ends_at=now + timedelta(days=30),
+                        ai_turn_limit=1000,
+                        voice_second_limit=3600,
+                    )
+                )
+                _seed_period(
+                    session,
+                    owner_id=expired_owner,
+                    period_id="expired-hold",
+                    now=now,
+                    ai_limit=2,
+                    voice_limit=100,
+                )
+                assert period_end > expires_at
+                expired = await SqlAlchemyAccessUsageStore(session).reserve_usage(
+                    _reservation_command(
+                        owner_id=expired_owner,
+                        request_id="expiring-voice",
+                        at=now,
+                        expires_at=now + timedelta(hours=1),
+                        ai_turns=0,
+                        voice_seconds=20,
+                        operation=Operation.VOICE_TRANSCRIPTION,
+                    )
+                )
+                assert expired.created and expired.reservation is not None
+
+            async with sessions() as reader:
+                reader_store = SqlAlchemyAccessUsageStore(reader)
+                before = await reader_store.get_usage_reservation(owner_id, "prepared-voice")
+                assert before is not None and before.period_id == "original-trial"
+                async with sessions() as writer, writer.begin():
+                    resized = await SqlAlchemyAccessUsageStore(writer).resize_voice_usage(
+                        ResizeVoiceUsage(owner_id, "prepared-voice", 60, now + timedelta(seconds=1))
+                    )
+                    assert resized.period_id == "original-trial"
+                    assert resized.voice_seconds == 60 and resized.ai_turns == 0
+                refreshed = await reader_store.get_usage_reservation(owner_id, "prepared-voice")
+                assert refreshed == resized
+                assert await reader_store.get_usage_reservation(uuid4(), "prepared-voice") is None
+                assert await reader_store.get_usage_reservation(owner_id, "unknown") is None
+
+            async with sessions() as session, session.begin():
+                with pytest.raises(QuotaExceeded):
+                    await SqlAlchemyAccessUsageStore(session).resize_voice_usage(
+                        ResizeVoiceUsage(
+                            owner_id, "prepared-voice", 101, now + timedelta(seconds=2)
+                        )
+                    )
+            async with sessions() as session:
+                stored = await SqlAlchemyAccessUsageStore(session).get_usage_reservation(
+                    owner_id, "prepared-voice"
+                )
+                assert stored == resized
+                assert (
+                    await session.scalar(
+                        select(func.count())
+                        .select_from(UsageReservationRecord)
+                        .where(UsageReservationRecord.owner_id == owner_id)
+                    )
+                    == 1
+                )
+
+            async with sessions() as session, session.begin():
+                account = await session.get(AccessAccountRecord, owner_id)
+                assert account is not None
+                account.deleted_at = now + timedelta(seconds=3)
+            async with sessions() as session, session.begin():
+                with pytest.raises(InvalidTransition, match="entitlement"):
+                    await SqlAlchemyAccessUsageStore(session).resize_voice_usage(
+                        ResizeVoiceUsage(owner_id, "prepared-voice", 50, now + timedelta(seconds=4))
+                    )
+                with pytest.raises(InvalidTransition):
+                    await SqlAlchemyAccessUsageStore(session).resize_voice_usage(
+                        ResizeVoiceUsage(
+                            expired_owner, "expiring-voice", 30, now + timedelta(hours=1)
+                        )
+                    )
+            async with sessions() as session:
+                unchanged = await SqlAlchemyAccessUsageStore(session).get_usage_reservation(
+                    owner_id, "prepared-voice"
+                )
+                expired = await SqlAlchemyAccessUsageStore(session).get_usage_reservation(
+                    expired_owner, "expiring-voice"
+                )
+                assert unchanged == resized
+                assert expired is not None and expired.voice_seconds == 20
+        finally:
+            await engine.dispose()
+
+    run_local_async(scenario)
+
+
+def test_concurrent_voice_resize_and_reservation_cannot_overspend(
+    billing_database: str,
+) -> None:
+    async def scenario() -> None:
+        engine = create_engine(billing_database)
+        sessions = create_session_factory(engine)
+        owner_id, now = uuid4(), datetime.now(UTC)
+        expires_at = now + timedelta(minutes=5)
+        try:
+            async with sessions() as session, session.begin():
+                _seed_period(
+                    session,
+                    owner_id=owner_id,
+                    period_id="voice-capacity",
+                    now=now,
+                    ai_limit=2,
+                    voice_limit=100,
+                )
+                initial = await SqlAlchemyAccessUsageStore(session).reserve_usage(
+                    _reservation_command(
+                        owner_id=owner_id,
+                        request_id="top-up",
+                        at=now,
+                        expires_at=expires_at,
+                        ai_turns=0,
+                        voice_seconds=20,
+                        operation=Operation.VOICE_TRANSCRIPTION,
+                    )
+                )
+                assert initial.created and initial.reservation is not None
+
+            async def resize() -> bool:
+                try:
+                    async with sessions() as session, session.begin():
+                        await SqlAlchemyAccessUsageStore(session).resize_voice_usage(
+                            ResizeVoiceUsage(owner_id, "top-up", 70, now + timedelta(seconds=1))
+                        )
+                    return True
+                except QuotaExceeded:
+                    return False
+
+            async def reserve() -> bool:
+                try:
+                    async with sessions() as session, session.begin():
+                        result = await SqlAlchemyAccessUsageStore(session).reserve_usage(
+                            _reservation_command(
+                                owner_id=owner_id,
+                                request_id="competitor",
+                                at=now + timedelta(seconds=1),
+                                expires_at=expires_at,
+                                ai_turns=0,
+                                voice_seconds=40,
+                                operation=Operation.VOICE_TRANSCRIPTION,
+                            )
+                        )
+                        assert result.created and result.reservation is not None
+                    return True
+                except QuotaExceeded:
+                    return False
+
+            outcomes = await asyncio.gather(resize(), reserve())
+            assert sorted(outcomes) == [False, True]
+            async with sessions() as session:
+                store = SqlAlchemyAccessUsageStore(session)
+                reservations = [
+                    await store.get_usage_reservation(owner_id, request_id)
+                    for request_id in ("top-up", "competitor")
+                ]
+                total_reserved = sum(
+                    item.voice_seconds
+                    for item in reservations
+                    if item is not None and item.state is ReservationState.RESERVED
+                )
+                rows = await session.scalar(
+                    select(func.count())
+                    .select_from(UsageReservationRecord)
+                    .where(UsageReservationRecord.owner_id == owner_id)
+                )
+                assert total_reserved <= 100
+                assert rows == 2 if outcomes[1] else rows == 1
         finally:
             await engine.dispose()
 
@@ -836,9 +1077,14 @@ def test_refund_and_expiry_release_reservations_and_fence_late_work(
                 )
             async with sessions() as session, session.begin():
                 count = await SqlAlchemyAccessUsageStore(session).expire_reservations(
-                    at=expiry, limit=10
+                    at=expiry, limit=1000
                 )
-                assert count == 1
+                assert 1 <= count <= 1000
+            async with sessions() as session:
+                expired = await SqlAlchemyAccessUsageStore(session).get_usage_reservation(
+                    owner_id, "crashed-request"
+                )
+                assert expired is not None and expired.state is ReservationState.EXPIRED
             async with sessions() as session, session.begin():
                 with pytest.raises(InvalidTransition):
                     await SqlAlchemyAccessUsageStore(session).settle_usage(

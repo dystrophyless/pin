@@ -312,3 +312,131 @@ def test_invalid_period_and_naive_clock_values_are_rejected() -> None:
             at=NOW,
             expires_at=NOW + timedelta(seconds=1),
         )
+
+
+def test_voice_resize_uses_its_own_hold_and_releases_decreased_quota() -> None:
+    ledger = UsageLedger("trial", Allowance(2, 100), NOW + timedelta(days=7))
+    expiry = NOW + timedelta(minutes=1)
+    ledger.reserve(
+        request_id="first",
+        period_id="trial",
+        ai_turns=1,
+        voice_seconds=70,
+        at=NOW,
+        expires_at=expiry,
+    )
+    ledger.reserve(
+        request_id="second",
+        period_id="trial",
+        ai_turns=0,
+        voice_seconds=30,
+        at=NOW,
+        expires_at=expiry,
+    )
+
+    resized = ledger.resize_voice("first", 40, NOW + timedelta(seconds=1))
+    assert resized.voice_seconds == 40
+    assert ledger.snapshot().remaining_voice_seconds == 30
+    ledger.resize_voice("second", 60, NOW + timedelta(seconds=2))
+    assert ledger.snapshot().reserved_voice_seconds == 100
+
+
+def test_voice_resize_preserves_ai_hold_and_same_quantity_is_idempotent() -> None:
+    ledger = UsageLedger("trial", Allowance(1, 100), NOW + timedelta(days=7))
+    ledger.reserve(
+        request_id="combined",
+        period_id="trial",
+        ai_turns=1,
+        voice_seconds=20,
+        at=NOW,
+        expires_at=NOW + timedelta(minutes=1),
+    )
+
+    resized = ledger.resize_voice("combined", 80, NOW + timedelta(seconds=1))
+    assert (resized.ai_turns, resized.voice_seconds, resized.created_at, resized.expires_at) == (
+        1,
+        80,
+        NOW,
+        NOW + timedelta(minutes=1),
+    )
+    assert ledger.resize_voice("combined", 80, NOW + timedelta(seconds=2)) == resized
+    assert ledger.snapshot().reserved_ai_turns == 1
+    assert ledger.snapshot().reserved_voice_seconds == 80
+
+
+@pytest.mark.parametrize("units", [0, -1, True, 1.5])
+def test_voice_resize_rejects_malformed_units_without_state_change(units: int) -> None:
+    ledger = UsageLedger("trial", Allowance(1, 100), NOW + timedelta(days=7))
+    ledger.reserve(
+        request_id="voice",
+        period_id="trial",
+        ai_turns=0,
+        voice_seconds=20,
+        at=NOW,
+        expires_at=NOW + timedelta(minutes=1),
+    )
+    before = ledger.reservation("voice")
+
+    with pytest.raises(ValueError):
+        ledger.resize_voice("voice", units, NOW + timedelta(seconds=1))
+    assert ledger.reservation("voice") == before
+
+
+def test_voice_resize_rejects_overflow_missing_wrong_kind_and_terminal_holds() -> None:
+    ledger = UsageLedger("trial", Allowance(1, 100), NOW + timedelta(days=7))
+    expiry = NOW + timedelta(minutes=1)
+    ledger.reserve(
+        request_id="voice",
+        period_id="trial",
+        ai_turns=0,
+        voice_seconds=90,
+        at=NOW,
+        expires_at=expiry,
+    )
+    ledger.reserve(
+        request_id="other",
+        period_id="trial",
+        ai_turns=0,
+        voice_seconds=10,
+        at=NOW,
+        expires_at=expiry,
+    )
+    before = ledger.reservation("voice")
+    with pytest.raises(QuotaExceeded):
+        ledger.resize_voice("voice", 91, NOW + timedelta(seconds=1))
+    assert ledger.reservation("voice") == before
+    with pytest.raises(InvalidTransition):
+        ledger.resize_voice("missing", 1, NOW + timedelta(seconds=1))
+
+    ledger.reserve(
+        request_id="ai-only",
+        period_id="trial",
+        ai_turns=1,
+        voice_seconds=0,
+        at=NOW,
+        expires_at=expiry,
+    )
+    with pytest.raises(InvalidTransition):
+        ledger.resize_voice("ai-only", 1, NOW + timedelta(seconds=1))
+
+    ledger.settle(
+        request_id="voice",
+        ai_turns=0,
+        voice_seconds=20,
+        at=NOW + timedelta(seconds=2),
+    )
+    with pytest.raises(InvalidTransition):
+        ledger.resize_voice("voice", 30, NOW + timedelta(seconds=3))
+
+    expired_ledger = UsageLedger("trial", Allowance(1, 100), NOW + timedelta(days=7))
+    expired_ledger.reserve(
+        request_id="expired",
+        period_id="trial",
+        ai_turns=0,
+        voice_seconds=20,
+        at=NOW,
+        expires_at=expiry,
+    )
+    expired_ledger.expire(at=expiry)
+    with pytest.raises(InvalidTransition):
+        expired_ledger.resize_voice("expired", 30, expiry)

@@ -14,6 +14,7 @@ from pin.contexts.billing.application.contracts import (
     CheckAccess,
     ReserveUsage,
     ReserveUsageResult,
+    ResizeVoiceUsage,
     StartTrial,
     TrialActivationResult,
     TrialActivationStatus,
@@ -309,6 +310,51 @@ class SqlAlchemyAccessUsageStore(AccessUsageStore):
         _store_terminal(record, settled, at)
         return settled
 
+    async def resize_voice_usage(self, command: ResizeVoiceUsage) -> UsageReservation:
+        if command.at.tzinfo is None or command.at.utcoffset() is None:
+            raise ValueError("at must be timezone-aware")
+        if type(command.voice_seconds) is not int or command.voice_seconds <= 0:
+            raise ValueError("voice_seconds must be a positive integer")
+
+        record = await self._reservation_for_update(command.owner_id, command.request_id)
+        account = await self._session.scalar(
+            select(AccessAccountRecord)
+            .where(AccessAccountRecord.owner_id == command.owner_id)
+            .execution_options(populate_existing=True)
+        )
+        active = await self._active_periods(command.owner_id, command.at, lock=False)
+        access = decide_access(
+            AccessAccount(
+                tuple(_period_from_record(row) for row in active),
+                deleted=account is None or account.deleted_at is not None,
+            ),
+            Operation.VOICE_TRANSCRIPTION,
+            command.at,
+        )
+        if not access.allowed:
+            raise InvalidTransition("voice entitlement is not currently active")
+
+        period_row = await self._period_for_update(command.owner_id, record.period_id)
+        if period_row is None:
+            raise InvalidTransition("reservation period no longer exists")
+        ledger, _ = await self._ledger(period_row, lock=True)
+        resized = ledger.resize_voice(command.request_id, command.voice_seconds, command.at)
+        record.reserved_voice_seconds = resized.voice_seconds
+        return resized
+
+    async def get_usage_reservation(
+        self, owner_id: UUID, request_id: str
+    ) -> UsageReservation | None:
+        record = await self._session.scalar(
+            select(UsageReservationRecord)
+            .where(
+                UsageReservationRecord.owner_id == owner_id,
+                UsageReservationRecord.request_id == request_id,
+            )
+            .execution_options(populate_existing=True)
+        )
+        return _reservation_from_record(record) if record is not None else None
+
     async def refund_usage(
         self, *, owner_id: UUID, request_id: str, at: datetime
     ) -> UsageReservation:
@@ -383,6 +429,7 @@ class SqlAlchemyAccessUsageStore(AccessUsageStore):
                 AccessPeriodRecord.owner_id == owner_id,
                 AccessPeriodRecord.period_id == period_id,
             )
+            .execution_options(populate_existing=True)
             .with_for_update()
         )
         return record
@@ -401,6 +448,7 @@ class SqlAlchemyAccessUsageStore(AccessUsageStore):
         account = await self._session.scalar(
             select(AccessAccountRecord)
             .where(AccessAccountRecord.owner_id == owner_id)
+            .execution_options(populate_existing=True)
             .with_for_update()
         )
         if account is None:
@@ -414,6 +462,7 @@ class SqlAlchemyAccessUsageStore(AccessUsageStore):
                 UsageReservationRecord.owner_id == owner_id,
                 UsageReservationRecord.request_id == request_id,
             )
+            .execution_options(populate_existing=True)
             .with_for_update()
         )
         if record is None:
@@ -436,6 +485,7 @@ class SqlAlchemyAccessUsageStore(AccessUsageStore):
                 UsageReservationRecord.period_id == period.period_id,
             )
             .order_by(UsageReservationRecord.request_id)
+            .execution_options(populate_existing=True)
             .with_for_update()
             if lock
             else select(UsageReservationRecord)
