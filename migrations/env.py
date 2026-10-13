@@ -14,6 +14,7 @@ from pin.contexts.conversation.infrastructure.models import (
     ProviderCallRecord,
 )
 from pin.contexts.identity.infrastructure import models as identity_models  # noqa: F401
+from pin.contexts.planning.infrastructure import models as planning_models  # noqa: F401
 from pin.persistence.models import Base
 from pin.platform import models as platform_models  # noqa: F401
 
@@ -29,6 +30,9 @@ assert ConversationTurnResultRecord.metadata is target_metadata
 assert ProviderCallRecord.metadata is target_metadata
 assert identity_models.PreferencesRecord.metadata is target_metadata
 assert identity_models.OnboardingRecord.metadata is target_metadata
+assert planning_models.PlanItemRecord.metadata is target_metadata
+assert planning_models.OccurrenceRecord.metadata is target_metadata
+assert planning_models.ReminderRuleRecord.metadata is target_metadata
 
 
 def _database_url() -> str:
