@@ -24,7 +24,9 @@ The method is a bounded batch primitive, not a running scheduler. The applicatio
 
 ## Scope and verification
 
-This contract covers access periods and user-facing usage only. Trial activation/onboarding, payment receipts or refunds, provider/model cost accounting, automatic scheduler setup, and retention policy are owned elsewhere and are not implemented here.
+Trial activation is owned by Billing and runs through `SqlAlchemyAccessUsageStore.activate_trial(StartTrial(...))` on the caller's existing session/transaction. It creates one seven-day period with 250 AI turns and 900 voice seconds. The ingress-established owner and trusted Telegram identity are checked together; one Telegram identity cannot activate for another owner. Concurrent confirmation is serialized on the owner row. A replay returns the original trial fact, while an active paid period is returned unchanged. A minimal owner/Telegram trial marker survives account deletion to prevent a returning identity from receiving a second trial; it does not restore the deleted profile or plans. Account removal must soft-delete the Billing account and preserve periods/reservations so return can restore active paid access with its original usage facts. Reconfirmation clears the soft-delete flag only when an active paid period exists; expired paid periods remain inactive. The caller must commit the same transaction as its onboarding confirmation.
+
+This contract does not cover payment receipts/refunds, provider/model cost accounting, automatic scheduler setup, or broader retention policy.
 
 Run the access unit and PostgreSQL integration tests with a disposable PostgreSQL database configured in `PIN_TEST_BILLING_DATABASE_URL`:
 

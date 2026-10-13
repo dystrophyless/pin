@@ -13,6 +13,7 @@ from pin.contexts.conversation.infrastructure.models import (
     ConversationTurnResultRecord,
     ProviderCallRecord,
 )
+from pin.contexts.identity.infrastructure import models as identity_models  # noqa: F401
 from pin.persistence.models import Base
 from pin.platform import models as platform_models  # noqa: F401
 
@@ -26,6 +27,8 @@ assert TelegramIngressBotRecord.metadata is target_metadata
 assert TelegramOwnerRecord.metadata is target_metadata
 assert ConversationTurnResultRecord.metadata is target_metadata
 assert ProviderCallRecord.metadata is target_metadata
+assert identity_models.PreferencesRecord.metadata is target_metadata
+assert identity_models.OnboardingRecord.metadata is target_metadata
 
 
 def _database_url() -> str:
