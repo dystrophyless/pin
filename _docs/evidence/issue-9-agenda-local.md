@@ -1,6 +1,6 @@
 # Issue #9: accepted local agenda increment
 
-Date: 2026-10-14 (Asia/Qyzylorda). Direct Orchestrator acceptance under the owner's standing implementation/closure authority. GitHub publication/readback follows this checkpoint.
+Date: 2026-10-14 (Asia/Qyzylorda). Direct Orchestrator acceptance under the owner's standing implementation/closure authority. GitHub closure/completed/status:accepted readback confirmed: [acceptance comment](https://github.com/dystrophyless/pin/issues/9#issuecomment-6153629777).
 
 Verified source: `bd0461f12e39f4814e1a9d8cca8da372b8014253`, including accepted Planning source `65c40df`. Local and unpushed. Approved requirements: SPEC-001 section 11 (current v0.5), K04 / AC09, and the unchanged live issue #9 contract. Recurrence's concurrent unfinished source was excluded from this committed snapshot; its working-tree edits and metadata registration were preserved.
 
