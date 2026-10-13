@@ -4,21 +4,30 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from pin.adapters.telegram.agenda import (
+    agenda_command,
+    handle_agenda_callback,
+    handle_agenda_command,
+    remember_agenda_navigation,
+)
 from pin.adapters.telegram.ingress import PostgresTelegramOwnerResolver, private_actor
 from pin.adapters.telegram.onboarding import (
     DispatchDisposition,
     PrivateMessageResult,
     handle_private_text,
 )
+from pin.adapters.telegram.presentation.agenda import AgendaReply
 from pin.adapters.telegram.presentation.callbacks import (
     CallbackTokens,
     InvalidCallbackToken,
 )
+from pin.adapters.telegram.presentation.formatting import escape_markdown_v2
 from pin.adapters.telegram.presentation.onboarding import OnboardingReply, render_onboarding
 from pin.adapters.telegram.presentation.tokens import SqlAlchemyCallbackTokenStore
 from pin.contexts.billing.api import (
@@ -108,9 +117,10 @@ async def process_application_job(
 
         store = SqlAlchemyIdentityStore(session)
         trial_activator = _BillingTrialActivator(session)
+        agenda_reply: AgendaReply | None = None
         if is_callback:
             callback_data = callback.get("data") if isinstance(callback, dict) else None
-            result = await _handle_callback(
+            result, agenda_reply = await _handle_callback(
                 session,
                 store,
                 owner_id=inbox.owner_id,
@@ -124,16 +134,33 @@ async def process_application_job(
             if not isinstance(message_text, str):
                 await complete_job(session, claim)
                 return
-            result = await handle_private_text(
-                store,
-                owner_id=inbox.owner_id,
-                telegram_user_id=telegram_user_id,
-                text=message_text,
-                now=now.astimezone(UTC),
-                trial_activator=trial_activator,
-            )
-        reply_markup = await _reply_markup(session, store, inbox.owner_id, result.reply, now)
-        if result.reply is not None:
+            view = agenda_command(message_text)
+            profile = await store.get_preferences(inbox.owner_id) if view is not None else None
+            if view is not None and profile is not None:
+                agenda_reply = await handle_agenda_command(
+                    session,
+                    owner_id=inbox.owner_id,
+                    preferences=profile,
+                    view=view,
+                    now=now.astimezone(UTC),
+                )
+                result = PrivateMessageResult(
+                    disposition=DispatchDisposition.HANDLED,
+                    onboarding=OnboardingResult("unhandled", preferences=profile),
+                    reply=None,
+                )
+            else:
+                result = await handle_private_text(
+                    store,
+                    owner_id=inbox.owner_id,
+                    telegram_user_id=telegram_user_id,
+                    text=message_text,
+                    now=now.astimezone(UTC),
+                    trial_activator=trial_activator,
+                )
+        reply = agenda_reply or result.reply
+        reply_markup = await _reply_markup(session, store, inbox.owner_id, reply, now)
+        if reply is not None:
             version = max(1, claim.conversation_sequence or 1)
             await add_outbox_event(
                 session,
@@ -148,8 +175,8 @@ async def process_application_job(
                     causation_id=claim.job_id,
                     payload={
                         "chat_id": telegram_user_id,
-                        "markdown": result.reply.markdown,
-                        "plain_text": result.reply.plain_text,
+                        "markdown": reply.markdown,
+                        "plain_text": reply.plain_text,
                         "handling": result.disposition.value,
                         "source_job_id": str(claim.job_id),
                         **({"reply_markup": reply_markup} if reply_markup else {}),
@@ -229,13 +256,12 @@ async def _handle_callback(
     data: object,
     now: datetime,
     trial_activator: _BillingTrialActivator,
-) -> PrivateMessageResult:
+) -> tuple[PrivateMessageResult, AgendaReply | None]:
     draft = await store.get_onboarding(owner_id)
     profile = await store.get_preferences(owner_id)
     active_draft = draft if draft is not None and draft.step != "complete" else None
-    current_version = (
-        active_draft.version if active_draft is not None else profile.version if profile else 0
-    )
+    profile_version = profile.version if profile else 0
+    onboarding_version = active_draft.version if active_draft is not None else profile_version
     language = (
         profile.language
         if profile
@@ -250,9 +276,35 @@ async def _handle_callback(
         binding = await callbacks.consume(
             data,
             actor_id=owner_id,
-            current_target_version=current_version,
+            current_target_versions={
+                "agenda_page": profile_version,
+                "agenda_completed": profile_version,
+                "settings": profile_version,
+                "answer": onboarding_version,
+                "cancel": onboarding_version,
+            },
             now=now,
         )
+        agenda_reply = (
+            await handle_agenda_callback(
+                session,
+                owner_id=owner_id,
+                preferences=profile,
+                binding=binding,
+                now=now,
+            )
+            if profile
+            else None
+        )
+        if agenda_reply is not None and profile is not None:
+            return (
+                PrivateMessageResult(
+                    disposition=DispatchDisposition.HANDLED,
+                    onboarding=OnboardingResult("unhandled", preferences=profile),
+                    reply=None,
+                ),
+                agenda_reply,
+            )
         if (
             binding.action == "settings"
             and binding.target_id == "settings"
@@ -285,13 +337,16 @@ async def _handle_callback(
             }.get(value, value)
         else:
             raise InvalidCallbackToken("callback action does not match current state")
-        return await handle_private_text(
-            store,
-            owner_id=owner_id,
-            telegram_user_id=telegram_user_id,
-            text=text,
-            now=now,
-            trial_activator=trial_activator,
+        return (
+            await handle_private_text(
+                store,
+                owner_id=owner_id,
+                telegram_user_id=telegram_user_id,
+                text=text,
+                now=now,
+                trial_activator=trial_activator,
+            ),
+            None,
         )
     except InvalidCallbackToken:
         state = "draft_conflict" if active_draft else "not_in_progress"
@@ -300,10 +355,29 @@ async def _handle_callback(
             preferences=profile,
             draft=dict(active_draft.values) if active_draft else None,
         )
-        return PrivateMessageResult(
-            disposition=DispatchDisposition.HANDLED,
-            onboarding=result,
-            reply=render_onboarding(result),
+        recovery = (
+            "For an agenda page, send /today or /week to open a fresh view."
+            if language == "en"
+            else "Чтобы открыть актуальную повестку, отправьте /today или /week."
+        )
+        recovery_reply = render_onboarding(result)
+        if recovery_reply is not None:
+            recovery_reply = replace(
+                recovery_reply,
+                markdown=f"{recovery_reply.markdown}\n\n{escape_markdown_v2(recovery)}",
+                plain_text=f"{recovery_reply.plain_text}\n\n{recovery}",
+            )
+        else:
+            recovery_reply = OnboardingReply(
+                escape_markdown_v2(recovery), recovery, handling="handled"
+            )
+        return (
+            PrivateMessageResult(
+                disposition=DispatchDisposition.HANDLED,
+                onboarding=result,
+                reply=recovery_reply,
+            ),
+            None,
         )
 
 
@@ -311,7 +385,7 @@ async def _reply_markup(
     session: AsyncSession,
     store: SqlAlchemyIdentityStore,
     owner_id: UUID,
-    reply: OnboardingReply | None,
+    reply: OnboardingReply | AgendaReply | None,
     now: datetime,
 ) -> dict[str, object] | None:
     if reply is None or not reply.buttons:
@@ -325,12 +399,20 @@ async def _reply_markup(
     for button in reply.buttons:
         version = (
             profile.version
+            if button.action.startswith("agenda_") and profile
+            else profile.version
             if button.action == "settings" and profile
             else active_draft.version
             if active_draft
             else 0
         )
         target_id = button.value
+        await remember_agenda_navigation(
+            session,
+            owner_id=owner_id,
+            action=button.action,
+            target_id=target_id,
+        )
         if active_draft is not None and button.action in {"answer", "cancel"}:
             target_id = f"{active_draft.draft_id}|{button.value}"
         token = await callbacks.issue(
