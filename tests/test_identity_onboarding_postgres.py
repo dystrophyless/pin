@@ -5,6 +5,7 @@ import os
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import cast
 from uuid import uuid4
 
 import pytest
@@ -208,23 +209,40 @@ def test_cancel_and_preview_are_non_mutating_and_zone_change_is_handed_off(
         bot_id = 987654 + uuid4().int % 1_000_000
         try:
 
-            async def send(update_id: int, text: str) -> None:
+            async def send(
+                update_id: int, text: str | None = None, *, callback: str | None = None
+            ) -> dict[str, object]:
                 nonlocal owner_id
                 now = datetime.now(UTC)
+                if callback is None:
+                    update_payload: dict[str, object] = {
+                        "update_id": update_id,
+                        "message": {
+                            "message_id": update_id,
+                            "date": int(now.timestamp()),
+                            "chat": {"id": telegram_user_id, "type": "private"},
+                            "from": {"id": telegram_user_id, "is_bot": False},
+                            "text": text,
+                        },
+                    }
+                else:
+                    update_payload = {
+                        "update_id": update_id,
+                        "callback_query": {
+                            "id": f"onboarding-zone-{uuid4().hex}",
+                            "from": {"id": telegram_user_id, "is_bot": False},
+                            "message": {
+                                "message_id": update_id,
+                                "chat": {"id": telegram_user_id, "type": "private"},
+                            },
+                            "data": callback,
+                        },
+                    }
                 async with sessions() as session, session.begin():
                     receipt = await persist_update(
                         session,
                         bot_id=bot_id,
-                        payload={
-                            "update_id": update_id,
-                            "message": {
-                                "message_id": update_id,
-                                "date": int(now.timestamp()),
-                                "chat": {"id": telegram_user_id, "type": "private"},
-                                "from": {"id": telegram_user_id, "is_bot": False},
-                                "text": text,
-                            },
-                        },
+                        payload=update_payload,
                         owner_resolver=PostgresTelegramOwnerResolver(),
                     )
                     assert receipt is not None and receipt.accepted
@@ -241,6 +259,26 @@ def test_cancel_and_preview_are_non_mutating_and_zone_change_is_handed_off(
                 claim = await claim_application_job(sessions, worker_id="onboarding-test")
                 assert claim is not None
                 await process_application_job(sessions, claim, now=now)
+                async with sessions() as session:
+                    event = await session.scalar(
+                        select(OutboxEvent).where(
+                            OutboxEvent.event_type == "telegram.reply.requested",
+                            OutboxEvent.causation_id == claim.job_id,
+                        )
+                    )
+                    assert event is not None
+                    return cast(dict[str, object], event.payload["payload"])
+
+            def callback_for(reply: dict[str, object], label: str) -> str:
+                markup = cast(dict[str, object], reply["reply_markup"])
+                rows = cast(list[list[dict[str, object]]], markup["inline_keyboard"])
+                for row in rows:
+                    for button in row:
+                        if button.get("text") == label:
+                            data = button.get("callback_data")
+                            assert isinstance(data, str)
+                            return data
+                raise AssertionError(f"button {label!r} was not rendered")
 
             await send(100, "/start")
             await send(101, "/cancel")
@@ -284,7 +322,27 @@ def test_cancel_and_preview_are_non_mutating_and_zone_change_is_handed_off(
             await send(114, "Asia/Aqtobe")
             await send(115, "keep")
             await send(116, "keep")
-            await send(117, "confirm")
+            review = await send(117, "confirm")
+            async with sessions() as session:
+                before_confirmation = await session.get(PreferencesRecord, owner_id)
+                assert before_confirmation is not None
+                assert before_confirmation.home_zone == baseline_zone
+                assert before_confirmation.version == baseline_version
+                assert not [
+                    event
+                    for event in await _owner_events(session, owner_id)
+                    if event.owner_id == owner_id
+                    and event.event_type == "identity.home_zone_change.requested"
+                ]
+            preview = await send(
+                126, callback=callback_for(review, "Keep local schedules")
+            )
+            async with sessions() as session:
+                still_pending = await session.get(PreferencesRecord, owner_id)
+                assert still_pending is not None
+                assert still_pending.home_zone == baseline_zone
+                assert still_pending.version == baseline_version
+            await send(127, callback=callback_for(preview, "Confirm zone change"))
             async with sessions() as session:
                 profile = await session.get(PreferencesRecord, owner_id)
                 assert profile is not None
