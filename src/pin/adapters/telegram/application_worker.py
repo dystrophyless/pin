@@ -16,6 +16,7 @@ from pin.adapters.telegram.agenda import (
     handle_agenda_command,
     remember_agenda_navigation,
 )
+from pin.adapters.telegram.capture import PlanningAssistant, process_capture_application_job
 from pin.adapters.telegram.ingress import PostgresTelegramOwnerResolver, private_actor
 from pin.adapters.telegram.onboarding import (
     DispatchDisposition,
@@ -71,11 +72,19 @@ async def claim_application_job(
 
 
 async def process_application_job(
-    sessions: async_sessionmaker[AsyncSession], claim: JobClaim, *, now: datetime
+    sessions: async_sessionmaker[AsyncSession],
+    claim: JobClaim,
+    *,
+    now: datetime,
+    assistant: PlanningAssistant | None = None,
 ) -> None:
     """Apply one fenced work item and persist its reply request atomically."""
     if now.tzinfo is None or now.utcoffset() is None:
         raise ValueError("application worker clock must be timezone-aware")
+    if await process_capture_application_job(
+        sessions, claim, now=now, assistant=assistant
+    ):
+        return
     async with sessions() as session, session.begin():
         receipt = await record_job_effect_once(
             session,
@@ -213,7 +222,10 @@ async def process_application_job(
 
 
 async def run_application_worker(
-    sessions: async_sessionmaker[AsyncSession], *, worker_id: str
+    sessions: async_sessionmaker[AsyncSession],
+    *,
+    worker_id: str,
+    assistant: PlanningAssistant | None = None,
 ) -> None:
     while True:
         try:
@@ -225,7 +237,9 @@ async def run_application_worker(
             await asyncio.sleep(POLL_SECONDS)
             continue
         try:
-            await process_application_job(sessions, claim, now=datetime.now(UTC))
+            await process_application_job(
+                sessions, claim, now=datetime.now(UTC), assistant=assistant
+            )
         except Exception as error:
             logger.error(
                 "application_job_failed: job_id=%s error=%s",

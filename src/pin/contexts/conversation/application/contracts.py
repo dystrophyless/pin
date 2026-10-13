@@ -10,7 +10,66 @@ from typing import Protocol
 from uuid import UUID
 
 from pin.contexts.conversation.application.dto import ConversationContext, ModelOutcome
+from pin.contexts.conversation.domain.capture import CaptureDraft
 from pin.platform.jobs import JobClaim
+
+
+@dataclass(frozen=True, slots=True)
+class CaptureBegin:
+    draft: CaptureDraft
+    input_state: str
+    response: dict[str, object] | None
+    is_new_input: bool
+
+
+@dataclass(frozen=True, slots=True)
+class CaptureProofPart:
+    key: str
+    preview_id: UUID
+    projection_sha256: str
+
+
+class CaptureStore(Protocol):
+    """Caller-UoW persistence port for durable draft and proof operations."""
+
+    async def begin(
+        self, *, owner_id: UUID, input_key: str, text: str, at: datetime, expires_at: datetime
+    ) -> CaptureBegin: ...
+
+    async def persist_draft(self, draft: CaptureDraft, *, expected_version: int) -> None: ...
+
+    async def complete_input(
+        self,
+        *,
+        owner_id: UUID,
+        input_key: str,
+        state: str,
+        response: dict[str, object],
+        at: datetime,
+    ) -> None: ...
+
+    async def issue_proofs(
+        self,
+        *,
+        owner_id: UUID,
+        draft_id: UUID,
+        preview_version: int,
+        parts: tuple[CaptureProofPart, ...],
+        issued_at: datetime,
+        expires_at: datetime,
+    ) -> str: ...
+
+    async def rotate_proofs(
+        self, *, owner_id: UUID, draft_id: UUID, preview_version: int, at: datetime
+    ) -> str: ...
+
+    async def get_draft(self, *, owner_id: UUID, draft_id: UUID) -> CaptureDraft | None: ...
+
+    async def revoke_proofs(self, *, owner_id: UUID, draft_id: UUID, at: datetime) -> None: ...
+
+    async def locate_confirmation(
+        self, *, owner_id: UUID, credential: str, at: datetime
+    ) -> tuple[UUID, int] | None: ...
 
 
 @dataclass(frozen=True, slots=True)

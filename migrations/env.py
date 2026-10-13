@@ -9,6 +9,7 @@ from pin.adapters.telegram.ingress import TelegramIngressBotRecord, TelegramOwne
 from pin.adapters.telegram.presentation.tokens import TelegramCallbackTokenRecord
 from pin.bootstrap.config import ProcessRole, load_settings
 from pin.contexts.billing.infrastructure import models as billing_models  # noqa: F401
+from pin.contexts.conversation.infrastructure import capture_models
 from pin.contexts.conversation.infrastructure.models import (
     ConversationTurnResultRecord,
     ProviderCallRecord,
@@ -35,6 +36,10 @@ assert TelegramIngressBotRecord.metadata is target_metadata
 assert TelegramOwnerRecord.metadata is target_metadata
 assert ConversationTurnResultRecord.metadata is target_metadata
 assert ProviderCallRecord.metadata is target_metadata
+assert capture_models.CaptureSequenceRecord.metadata is target_metadata
+assert capture_models.CaptureDraftRecord.metadata is target_metadata
+assert capture_models.CaptureInputRecord.metadata is target_metadata
+assert capture_models.CaptureConfirmationRecord.metadata is target_metadata
 assert identity_models.PreferencesRecord.metadata is target_metadata
 assert identity_models.OnboardingRecord.metadata is target_metadata
 assert planning_models.PlanItemRecord.metadata is target_metadata

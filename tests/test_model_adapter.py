@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from pathlib import Path
+from typing import cast
 from uuid import UUID
 
 import httpx
 import pytest
 
 from pin.bootstrap.config import load_model_smoke_settings
+from pin.contexts.conversation.application.capture import _candidates, _preview
 from pin.contexts.conversation.application.contracts import (
     CallStart,
     CallUsage,
@@ -24,12 +26,17 @@ from pin.contexts.conversation.application.dto import (
     ModelSuccess,
     PlanSnapshot,
     PreferenceSnapshot,
+    ProposalBatch,
     RelativeReminder,
+    Reply,
     TargetSnapshot,
+    TaskSchedule,
 )
 from pin.contexts.conversation.application.service import (
     _RESULT_SCHEMA_JSON,
+    CAPTURE_MAX_OUTPUT_TOKENS,
     MAX_CALLS,
+    MAX_OUTPUT_TOKENS,
     ROUTE,
     BoundedPlanningAssistant,
 )
@@ -48,6 +55,7 @@ from pin.contexts.conversation.infrastructure.smoke import (
     preview_payload,
     validate_live_catalog,
 )
+from pin.contexts.identity.api import PreferencesSnapshot
 
 NOW = datetime(2026, 10, 13, 10, tzinfo=UTC)
 OWNER = UUID("e232952d-3f9a-4f3d-a65a-09073dd06686")
@@ -147,9 +155,7 @@ def _context(
         language=language,
         input_kind=input_kind,
         text=(
-            "Перенеси задачу на завтра"
-            if language is SourceLanguage.RU
-            else "Move it to tomorrow"
+            "Перенеси задачу на завтра" if language is SourceLanguage.RU else "Move it to tomorrow"
         ),
         reference_date=date(2026, 10, 13),
         timezone="Asia/Qyzylorda",
@@ -187,6 +193,7 @@ def _assistant(
     allowance: FakeAllowance | None = None,
     *,
     max_calls: int = MAX_CALLS,
+    max_output_tokens: int = MAX_OUTPUT_TOKENS,
 ) -> tuple[BoundedPlanningAssistant, FakeUsageRecorder, FakeAllowance]:
     recorder = usage or FakeUsageRecorder()
     access = allowance or FakeAllowance()
@@ -197,6 +204,7 @@ def _assistant(
             allowance=access,
             now=lambda: NOW,
             max_calls=max_calls,
+            max_output_tokens=max_output_tokens,
         ),
         recorder,
         access,
@@ -311,9 +319,339 @@ async def test_english_create_works_without_any_existing_plan_or_target() -> Non
     proposal_schema = json.loads(_RESULT_SCHEMA_JSON)["$defs"]["ActionProposal"]
     assert "target_id" not in proposal_schema["required"]
     assert "expected_version" not in proposal_schema["required"]
-    assert '"operation":"propose_create_plan","fields":{"title":"Project review"' in (
+    assert '"operation":"propose_create_plan","fields":{"title":"Project review"' in (system_prompt)
+
+
+@pytest.mark.asyncio
+async def test_create_batch_is_strictly_normalized_and_replayed_without_another_call() -> None:
+    batch = {
+        "kind": "proposal_batch",
+        "schema_version": 1,
+        "language": "en",
+        "actions": [
+            {
+                "kind": "proposal",
+                "language": "en",
+                "operation": "propose_create_plan",
+                "fields": {
+                    "title": "Read chapter",
+                    "schedule": {
+                        "kind": "task",
+                        "local_date": "2026-10-14",
+                        "timing": "untimed",
+                    },
+                    "reminders": [],
+                },
+            },
+            {
+                "kind": "proposal",
+                "language": "en",
+                "operation": "propose_create_plan",
+                "fields": {
+                    "title": "Team review",
+                    "schedule": {
+                        "kind": "appointment",
+                        "local_start": "2026-10-15T10:00:00",
+                        "timezone": "Asia/Qyzylorda",
+                        "duration_minutes": 30,
+                    },
+                    "recurrence": {
+                        "frequency": "weekly",
+                        "weekdays": [3],
+                        "occurrence_count": 4,
+                    },
+                    "reminders": [
+                        {
+                            "kind": "relative",
+                            "basis": "elapsed",
+                            "amount": 2,
+                            "unit": "hour",
+                            "provenance": "explicit",
+                        }
+                    ],
+                    "reminder_mode": "override",
+                },
+            },
+        ],
+    }
+    content = json.dumps(batch)
+    transport = FakeTransport(_provider_response(content))
+    assistant, recorder, _ = _assistant(transport)
+    context = _context(language=SourceLanguage.EN).model_copy(
+        update={"request_id": "batch-turn", "text": "Read chapter tomorrow and review weekly."}
+    )
+
+    outcome = await assistant.interpret(context, at=NOW)
+
+    assert isinstance(outcome, ModelSuccess)
+    assert isinstance(outcome.result, ProposalBatch)
+    assert [item.fields.title for item in outcome.result.actions] == [
+        "Read chapter",
+        "Team review",
+    ]
+    assert outcome.result.actions[0].fields.reminders == ()
+    assert outcome.result.actions[1].fields.reminder_mode == "override"
+    system_prompt = str(transport.payloads[0]["messages"][0]["content"])
+    assert "2 to 10 create-only actions" in system_prompt
+
+    replay_transport = FakeTransport()
+    replay_assistant, _, _ = _assistant(
+        replay_transport,
+        usage=recorder,
+        allowance=FakeAllowance(ReservationStatus.REPLAY),
+    )
+    replay = await replay_assistant.interpret(context, at=NOW)
+
+    assert isinstance(replay, ModelSuccess)
+    assert isinstance(replay.result, ProposalBatch)
+    assert replay.result == outcome.result
+    assert replay_transport.payloads == []
+
+
+def _ten_plan_batch() -> dict[str, object]:
+    actions = []
+    for index in range(10):
+        actions.append(
+            {
+                "kind": "proposal",
+                "language": "en",
+                "operation": "propose_create_plan",
+                "fields": {
+                    "title": f"Task {index + 1}",
+                    "schedule": {
+                        "kind": "task",
+                        "local_date": (NOW.date() + timedelta(days=8 + index)).isoformat(),
+                        "local_time": "09:00:00",
+                        "timezone": "UTC",
+                        "timing": "timed",
+                    },
+                },
+            }
+        )
+    return {
+        "kind": "proposal_batch",
+        "schema_version": 1,
+        "language": "en",
+        "actions": actions,
+    }
+
+
+@pytest.mark.asyncio
+async def test_capture_budget_normalizes_and_previews_all_ten_items() -> None:
+    batch = _ten_plan_batch()
+    transport = FakeTransport(_provider_response(json.dumps(batch), "gen-ten-plans"))
+    assistant, _, _ = _assistant(transport, max_output_tokens=CAPTURE_MAX_OUTPUT_TOKENS)
+    context = _context(language=SourceLanguage.EN).model_copy(
+        update={"request_id": "capture-ten-items", "text": "Create all ten plans."}
+    )
+
+    outcome = await assistant.interpret(context, at=NOW)
+
+    assert isinstance(outcome, ModelSuccess)
+    assert isinstance(outcome.result, ProposalBatch)
+    assert len(outcome.result.actions) == 10
+    assert [action.fields.title for action in outcome.result.actions] == [
+        f"Task {index + 1}" for index in range(10)
+    ]
+    request = transport.payloads[0]
+    assert request["max_tokens"] == CAPTURE_MAX_OUTPUT_TOKENS
+    assert MAX_OUTPUT_TOKENS == 512
+
+    preferences = PreferencesSnapshot(
+        owner_id=OWNER,
+        language="en",
+        home_zone="UTC",
+        reminder_calendar_days=0,
+        reminder_elapsed_hours=0,
+        quiet_start=time(22),
+        quiet_end=time(8),
+        review_time=time(18),
+        version=1,
+    )
+    candidates, question = _candidates(outcome.result.actions, preferences, NOW)
+    assert question is None and candidates is not None and len(candidates) == 10
+    preview, _proofs = _preview(OWNER, candidates, preferences, NOW)
+    preview_items = cast(list[dict[str, object]], preview["items"])
+    assert isinstance(preview_items, list) and len(preview_items) == 10
+    assert [item["details"]["title"] for item in preview_items] == [
+        f"Task {index + 1}" for index in range(10)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_batch_correction_prompt_requires_complete_replacement_and_can_clarify() -> None:
+    original = _ten_plan_batch()
+    original["actions"] = cast(list[object], original["actions"])[:2]
+    corrected = json.loads(json.dumps(original))
+    corrected_actions = cast(list[dict[str, object]], corrected["actions"])
+    first_fields = cast(dict[str, object], corrected_actions[0]["fields"])
+    first_fields["title"] = "Updated task one"
+    first_schedule = cast(dict[str, object], first_fields["schedule"])
+    first_schedule["local_time"] = "10:30:00"
+
+    transport = FakeTransport(
+        _provider_response(json.dumps(original), "gen-original-batch"),
+        _provider_response(json.dumps(corrected), "gen-corrected-batch"),
+        _provider_response(
+            '{"kind":"reply","language":"en","text":"Which Friday should I use?"}',
+            "gen-clarification",
+        ),
+    )
+    assistant, _, _ = _assistant(
+        transport,
+        max_output_tokens=CAPTURE_MAX_OUTPUT_TOKENS,
+    )
+    initial_context = _context(language=SourceLanguage.EN).model_copy(
+        update={
+            "request_id": "capture-batch-original",
+            "text": "Create two plans.",
+        }
+    )
+    initial = await assistant.interpret(initial_context, at=NOW)
+    assert isinstance(initial, ModelSuccess) and isinstance(initial.result, ProposalBatch)
+
+    pending = json.dumps(
+        [action.model_dump(mode="json", exclude_unset=True) for action in initial.result.actions],
+        separators=(",", ":"),
+    )
+    correction_context = _context(language=SourceLanguage.EN).model_copy(
+        update={
+            "request_id": "capture-batch-correction",
+            "text": (
+                "Prior conversation:\nuser: create two plans\n\n"
+                "Pending normalized plan proposals:\n"
+                f"{pending}\n\nCurrent user turn:\nChange the first time to 10:30."
+            ),
+        }
+    )
+    replacement = await assistant.interpret(correction_context, at=NOW)
+    assert isinstance(replacement, ModelSuccess)
+    assert isinstance(replacement.result, ProposalBatch)
+    assert [action.fields.title for action in replacement.result.actions] == [
+        "Updated task one",
+        "Task 2",
+    ]
+    corrected_schedule = replacement.result.actions[0].fields.schedule
+    assert isinstance(corrected_schedule, TaskSchedule)
+    assert corrected_schedule.local_time is not None
+    assert corrected_schedule.local_time.isoformat() == "10:30:00"
+    assert replacement.result.actions[1] == initial.result.actions[1]
+    correction_messages = cast(list[dict[str, str]], transport.payloads[1]["messages"])
+    system_prompt = correction_messages[0]["content"]
+    assert "return a complete replacement batch" in system_prompt
+    assert "retain every unmodified pending item and all previously clarified field values" in (
         system_prompt
     )
+    assert "Never return only the changed item" in system_prompt
+    assert "Pending normalized plan proposals" in str(transport.payloads[1]["messages"])
+
+    clarification_context = correction_context.model_copy(
+        update={
+            "request_id": "capture-batch-clarification",
+            "text": correction_context.text + " I cannot tell which Friday.",
+        }
+    )
+    clarified = await assistant.interpret(clarification_context, at=NOW)
+    assert isinstance(clarified, ModelSuccess)
+    assert isinstance(clarified.result, Reply)
+    assert clarified.result.text == "Which Friday should I use?"
+
+
+@pytest.mark.asyncio
+async def test_truncated_valid_looking_batch_is_rejected_without_storing_success() -> None:
+    partial = _ten_plan_batch()
+    partial["actions"] = cast(list[object], partial["actions"])[:2]
+    response = _provider_response(json.dumps(partial), "gen-truncated-batch")
+    choices = cast(list[dict[str, object]], response["choices"])
+    choices[0]["finish_reason"] = "length"
+    transport = FakeTransport(response)
+    assistant, usage, allowance = _assistant(
+        transport,
+        max_output_tokens=CAPTURE_MAX_OUTPUT_TOKENS,
+    )
+
+    outcome = await assistant.interpret(
+        _context(language=SourceLanguage.EN).model_copy(
+            update={"request_id": "capture-truncated-batch"}
+        ),
+        at=NOW,
+    )
+
+    assert isinstance(outcome, ModelFailure)
+    assert outcome.category is FailureCategory.INVALID_OUTPUT
+    assert outcome.provider_request_id == "gen-truncated-batch"
+    assert outcome.usage_recorded
+    assert len(transport.payloads) == 1
+    assert usage.reported[0][2] == "truncated_output"
+    assert usage.results == {}
+    assert allowance.settled == []
+    assert allowance.refunded == [(OWNER, "capture-truncated-batch")]
+
+
+def test_assistant_output_token_limit_has_historical_default_and_hard_cap() -> None:
+    assert MAX_OUTPUT_TOKENS == 512
+    for value in (0, CAPTURE_MAX_OUTPUT_TOKENS + 1):
+        with pytest.raises(ValueError, match="max_output_tokens"):
+            BoundedPlanningAssistant(
+                transport=FakeTransport(),
+                usage=FakeUsageRecorder(),
+                allowance=FakeAllowance(),
+                now=lambda: NOW,
+                max_output_tokens=value,
+            )
+
+
+@pytest.mark.asyncio
+async def test_create_reminder_modes_preserve_defaults_and_reject_wrong_shapes() -> None:
+    base = {
+        "kind": "proposal",
+        "language": "en",
+        "operation": "propose_create_plan",
+        "fields": {"title": "Review"},
+    }
+    defaulted = json.dumps(base)
+    empty = json.dumps({**base, "fields": {"title": "Review", "reminders": []}})
+    explicit = json.dumps(
+        {
+            **base,
+            "fields": {
+                "title": "Review",
+                "reminders": [
+                    {
+                        "kind": "relative",
+                        "basis": "elapsed",
+                        "amount": 2,
+                        "unit": "hour",
+                        "provenance": "explicit",
+                    }
+                ],
+                "reminder_mode": "only",
+            },
+        }
+    )
+    transport = FakeTransport(
+        _provider_response(defaulted, "gen-reminder-default"),
+        _provider_response(empty, "gen-reminder-empty"),
+        _provider_response(explicit, "gen-reminder-only"),
+    )
+    assistant, _, _ = _assistant(transport)
+
+    first = await assistant.interpret(_context(language=SourceLanguage.EN), at=NOW)
+    second = await assistant.interpret(
+        _context(language=SourceLanguage.EN).model_copy(update={"request_id": "empty"}),
+        at=NOW,
+    )
+    third = await assistant.interpret(
+        _context(language=SourceLanguage.EN).model_copy(update={"request_id": "only"}),
+        at=NOW,
+    )
+
+    assert isinstance(first, ModelSuccess) and isinstance(first.result, ActionProposal)
+    assert "reminders" not in first.result.fields.model_fields_set
+    assert isinstance(second, ModelSuccess) and isinstance(second.result, ActionProposal)
+    assert second.result.fields.reminders == ()
+    assert isinstance(third, ModelSuccess) and isinstance(third.result, ActionProposal)
+    assert third.result.fields.reminder_mode == "only"
 
 
 @pytest.mark.asyncio
@@ -326,10 +664,7 @@ async def test_repair_receives_only_sanitized_schema_diagnostics() -> None:
             "fields": {"title": 12, "debug_secret": "do not echo this value"},
         }
     )
-    corrected = (
-        '{"kind":"reply","language":"en",'
-        '"text":"I can help create that appointment."}'
-    )
+    corrected = '{"kind":"reply","language":"en","text":"I can help create that appointment."}'
     transport = FakeTransport(
         _provider_response(invalid, "gen-schema-invalid"),
         _provider_response(corrected, "gen-schema-repaired"),
@@ -589,36 +924,36 @@ def test_proposal_time_and_repeat_contract_keeps_calendar_elapsed_and_dst_fields
     )
 
     payload = {
-            "schedule": {
-                "kind": "appointment",
-                "local_start": "2026-11-01T01:30:00",
-                "timezone": "America/New_York",
-                "local_end": "2026-11-01T02:30:00",
+        "schedule": {
+            "kind": "appointment",
+            "local_start": "2026-11-01T01:30:00",
+            "timezone": "America/New_York",
+            "local_end": "2026-11-01T02:30:00",
+        },
+        "recurrence": {
+            "frequency": "monthly",
+            "month_day": 31,
+            "interval": 1,
+            "ends_on": None,
+            "occurrence_count": 10,
+        },
+        "reminders": [
+            {
+                "kind": "relative",
+                "basis": "calendar_day",
+                "amount": 1,
+                "unit": "day",
+                "provenance": "explicit",
             },
-            "recurrence": {
-                "frequency": "monthly",
-                "month_day": 31,
-                "interval": 1,
-                "ends_on": None,
-                "occurrence_count": 10,
+            {
+                "kind": "relative",
+                "basis": "elapsed",
+                "amount": 24,
+                "unit": "hour",
+                "provenance": "default",
             },
-            "reminders": [
-                {
-                    "kind": "relative",
-                    "basis": "calendar_day",
-                    "amount": 1,
-                    "unit": "day",
-                    "provenance": "explicit",
-                },
-                {
-                    "kind": "relative",
-                    "basis": "elapsed",
-                    "amount": 24,
-                    "unit": "hour",
-                    "provenance": "default",
-                },
-            ],
-        }
+        ],
+    }
     fields = ProposalFields.model_validate_json(json.dumps(payload), strict=True)
     assert isinstance(fields.schedule, AppointmentSchedule)
     assert fields.recurrence is not None and fields.recurrence.month_day == 31
@@ -629,29 +964,33 @@ def test_proposal_time_and_repeat_contract_keeps_calendar_elapsed_and_dst_fields
     assert fields.reminders[1].basis == "elapsed"
     with pytest.raises(ValueError, match="calendar days and elapsed"):
         ProposalFields.model_validate_json(
-            json.dumps({
-                "reminders": [
-                    {
-                        "kind": "relative",
-                        "basis": "calendar_day",
-                        "amount": 24,
-                        "unit": "hour",
-                        "provenance": "explicit",
-                    }
-                ]
-            }),
+            json.dumps(
+                {
+                    "reminders": [
+                        {
+                            "kind": "relative",
+                            "basis": "calendar_day",
+                            "amount": 24,
+                            "unit": "hour",
+                            "provenance": "explicit",
+                        }
+                    ]
+                }
+            ),
             strict=True,
         )
     with pytest.raises(ValueError, match="duration"):
         ProposalFields.model_validate_json(
-            json.dumps({
-                "schedule": {
-                    "kind": "appointment",
-                    "local_start": "2026-11-01T01:30:00-04:00",
-                    "timezone": "America/New_York",
-                    "duration_minutes": 30,
+            json.dumps(
+                {
+                    "schedule": {
+                        "kind": "appointment",
+                        "local_start": "2026-11-01T01:30:00-04:00",
+                        "timezone": "America/New_York",
+                        "duration_minutes": 30,
+                    }
                 }
-            }),
+            ),
             strict=True,
         )
 
@@ -665,9 +1004,7 @@ def test_context_validation_rejects_invalid_zone_and_owner_id_in_plan_row() -> N
             }
         )
     raw = _context().model_dump()
-    raw["plans"] = (
-        {"id": PLAN, "version": 1, "title": "x", "status": "open", "owner_id": OWNER},
-    )
+    raw["plans"] = ({"id": PLAN, "version": 1, "title": "x", "status": "open", "owner_id": OWNER},)
     with pytest.raises(ValueError, match="owner_id"):
         ConversationContext.model_validate(raw)
 

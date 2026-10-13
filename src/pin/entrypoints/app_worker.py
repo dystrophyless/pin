@@ -4,9 +4,19 @@ import argparse
 import logging
 import os
 import socket
+from datetime import UTC, datetime
 
 from pin.adapters.telegram.application_worker import run_application_worker
 from pin.bootstrap.config import ProcessRole, SettingsError, load_settings
+from pin.contexts.conversation.application.service import (
+    CAPTURE_MAX_OUTPUT_TOKENS,
+    BoundedPlanningAssistant,
+)
+from pin.contexts.conversation.infrastructure.openrouter import OpenRouterTransport
+from pin.contexts.conversation.infrastructure.usage import (
+    SqlAlchemyProviderUsageRecorder,
+    SqlAlchemyTurnAllowance,
+)
 from pin.observability import configure_logging
 from pin.persistence import create_engine, create_session_factory, run_local_async
 
@@ -29,11 +39,23 @@ def main() -> None:
     engine = create_engine(settings.database_url.get_secret_value())
     sessions = create_session_factory(engine)
     worker_id = f"app-{socket.gethostname()}-{os.getpid()}"
+    assert settings.openrouter_api_key is not None
+    provider = OpenRouterTransport(api_key=settings.openrouter_api_key)
+    assistant = BoundedPlanningAssistant(
+        transport=provider,
+        usage=SqlAlchemyProviderUsageRecorder(sessions),
+        allowance=SqlAlchemyTurnAllowance(sessions),
+        now=lambda: datetime.now(UTC),
+        max_output_tokens=CAPTURE_MAX_OUTPUT_TOKENS,
+    )
 
     async def run() -> None:
         try:
-            await run_application_worker(sessions, worker_id=worker_id)
+            await run_application_worker(
+                sessions, worker_id=worker_id, assistant=assistant
+            )
         finally:
+            await provider.aclose()
             await engine.dispose()
 
     try:

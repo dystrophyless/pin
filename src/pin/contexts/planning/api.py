@@ -27,6 +27,7 @@ from pin.contexts.planning.application.contracts import (
     ConfirmationGrant,
     ConfirmationProof,
     ConfirmationVerifier,
+    PlanCommandStore,
 )
 from pin.contexts.planning.application.preview import PlanBatchPreview, preview_plan_batch
 from pin.contexts.planning.application.schedule_snapshot import (
@@ -102,6 +103,7 @@ from pin.contexts.planning.recurrence_api import (
 )
 
 __all__ = [
+    "PlanCommandStore",
     "SqlAlchemyAgendaReadStore",
     "AgendaEntry",
     "AgendaPage",
