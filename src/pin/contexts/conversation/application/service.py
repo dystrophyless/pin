@@ -49,6 +49,12 @@ _SYSTEM = "\n".join(
         "proposal with kind, language, operation, target_id, expected_version, and fields. "
         "Language is ru or en. Proposal operation must be exactly one of propose_create_plan, "
         "propose_change_occurrence, propose_change_series, propose_complete, propose_cancel.",
+        "propose_create_plan creates a new plan and does not require any existing plan or target. "
+        "For create, omit or set target_id and expected_version to null; put the new plan data "
+        "in fields, with a title and a schedule when the request specifies one. Existing target "
+        "IDs and versions are only for change, complete, and cancel operations. When a user "
+        "clearly asks to create a plan, do not refuse because the snapshot has no existing plans; "
+        "ask only if information needed for that request is genuinely missing.",
         "Fields may contain title, description, schedule, recurrence, and reminders. Omit fields "
         "that are unchanged; use null only when removing a value.",
         "Use schedule discriminators kind=appointment, deadline, or task. Appointment fields are "
