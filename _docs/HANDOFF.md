@@ -73,3 +73,9 @@ Live task state belongs to issues; this checkpoint is not a parallel backlog.
 - Do not append all session history; keep the latest checkpoint here and use issues/PRs for durable execution history.
 
 Owner override recorded 2026-10-13: implementation reviewers are not required; follow direct executor evidence and Orchestrator verification under the local-only scope.
+
+## Latest execution evidence — 2026-10-13
+
+Telegram presentation #4 has local acceptance at commit `4e9d524`: real dedicated private-chat RU/EN smoke returned four successful pages and the owner confirmed both languages/buttons render correctly. Evidence: [render record](evidence/issue-4-telegram-render.md). GitHub closure remains pending because the connector is currently unavailable; do not infer remote acceptance from this checkpoint.
+
+Durable work #3 and access #6 remain unfinished, with partial source and tests in the worktree. Luna executors were resumed after a usage-limit failure; access core currently passes 13 unit tests. Billing ORM/migration integration waits for the platform migration seam to stabilize. No Docker/deployment/reviewer agents or pushes are authorized for this local phase.
