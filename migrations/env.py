@@ -7,7 +7,9 @@ from sqlalchemy import engine_from_config, pool
 
 from pin.adapters.telegram.presentation.tokens import TelegramCallbackTokenRecord
 from pin.bootstrap.config import ProcessRole, load_settings
+from pin.contexts.billing.infrastructure import models as billing_models  # noqa: F401
 from pin.persistence.models import Base
+from pin.platform import models as platform_models  # noqa: F401
 
 config = context.config
 if config.config_file_name is not None:
