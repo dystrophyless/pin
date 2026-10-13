@@ -2,11 +2,15 @@
 
 Pin repository: [dystrophyless/pin](https://github.com/dystrophyless/pin). Queue: [Issues](https://github.com/dystrophyless/pin/issues).
 
+For full-cycle feature requests, use the role, model, permission, and acceptance policy in [orchestration.md](../../orchestration.md). Plan/review-only requests remain narrower. Publisher transfers reviewed task contracts and the Orchestrator's authorized decisions; it does not decide product scope or acceptance.
+
 ## What lives where
 
 BR/spec files are versioned contracts in `_docs/`. GitHub Issues are the execution records. PRs carry implementation diffs and review. HANDOFF links to these records and preserves only the latest session checkpoint.
 
-Do not create a second local task backlog. A local Markdown issue draft is temporary and must be marked `not synchronized`; it is not a GitHub issue until created.
+Before publication, store and groom each task in its own `_docs/task-drafts/<spec-id>/<task-slug>.md` file, marked `not synchronized`. Specifications contain only a concise task index with titles, intended outcomes, and draft/issue links. Do not put detailed tasks in the spec or a combined task document.
+
+When publication is authorized, create each issue from its reviewed draft, convert draft dependency links to real issue references, and update the spec index. Then replace published draft bodies with short issue-link stubs, preserving the reviewed revision in Git history when available. Unpublished drafts remain local. After publication, edit the issue rather than maintaining a second local task backlog; change the spec only for shared requirements/contracts.
 
 ## Issue identity and contents
 
@@ -32,8 +36,8 @@ The issue body heading `Workflow status` is the canonical task state. In an issu
 | `ready` | Required decisions, dependencies, scope, and verification are executable | Open |
 | `in_progress` | Authorized execution has begun | Open |
 | `blocked` | A named prerequisite or decision prevents progress; record resume condition | Open |
-| `verified` | Agreed checks passed with evidence; waiting for acceptance/delivery | Open |
-| `accepted` | Owner explicitly accepted the concrete result and delivery conditions are met | Closed |
+| `verified` | Agreed checks passed with evidence; acceptance or required delivery is still pending | Open |
+| `accepted` | Human or recorded delegated acceptance covers the concrete result and delivery conditions are met | Closed |
 | `cancelled` | Owner explicitly withdrew the work; record reason | Closed |
 
 Normal progression: `draft -> ready -> in_progress -> verified -> accepted`. Any open state can become blocked; record the previous state and condition for resuming. A cancelled task is distinct from accepted work. Reopening an accepted issue requires a recorded reason and an updated workflow state; a new independent problem usually belongs in a new issue.
@@ -61,10 +65,10 @@ The prepared issue forms have no automatic labels or assignees so they do not de
 - Link work before acceptance with `Related to #123` and an ordinary issue URL. It creates a reference without requesting automatic closure.
 - Avoid `Closes`, `Fixes`, or `Resolves` references in PR bodies and commit messages before acceptance. GitHub can close an issue when those references reach the default branch.
 - A merged PR is implementation delivery evidence; it is not automatically product acceptance or a verified deployment.
-- After verification, the owner can explicitly accept the concrete revision/evidence. Record the acceptance and whether merge/deploy is part of the agreed delivery conditions.
-- Close only when acceptance and those conditions are met, or the owner explicitly cancels the issue. If acceptance occurred before merge but merge is required, remain `verified`/open until delivery is complete and record the acceptance comment.
+- After verification, use explicit human acceptance or the full-cycle request's recorded rule-based delegation. The Orchestrator must establish that the independent review, AC/evidence, and delivery gates are met; the Publisher only records the decision.
+- Close only when acceptance and those conditions are met, or the owner explicitly cancels the issue. If acceptance occurred before merge but merge is required, remain `verified`/open until delivery is complete and record the acceptance basis. Do not invent human approval or waive an unmet delivery condition.
 
-An agent must have authorization to post comments, edit issues, merge, or close. Explicit user instructions govern those actions; this workflow does not itself grant permission.
+An agent must have authorization for external changes. The user's chosen full-cycle convention delegates the in-scope issue lifecycle as specified in orchestration.md; record the exact feature request and its restrictions. It does not grant merge/deployment/commit/push permission. An isolated plan/review request grants no publication authority.
 
 ## Setup and live access
 

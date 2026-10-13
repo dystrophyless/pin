@@ -2,6 +2,8 @@
 
 Local draft: not synchronized. Remove this sentence after creating a real GitHub issue.
 
+Create one file per task under `_docs/task-drafts/<spec-id>/<task-slug>.md`. Use the complete body below for grooming and subsequent issue creation. The spec should link this file in its concise task index rather than repeat its contents. After publication, replace the local body with an issue-link stub and maintain the task in GitHub.
+
 ## Task kind
 
 Product increment / Technical foundation / Bug fix / Investigation / Verification gate

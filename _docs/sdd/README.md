@@ -4,7 +4,9 @@ Pin uses spec-driven development: versioned requirements and specifications defi
 
 ## Workflow
 
-`User need -> BR -> specification -> GitHub issue package -> package review -> implementation -> verification -> acceptance -> handoff`
+`Requirements (BR if needed) -> specification -> specification review -> individual task drafts -> task grooming -> package review -> GitHub issues -> implementation -> independent review -> verification -> acceptance -> integration gate -> handoff`
+
+For end-to-end implementation, follow the [development orchestration](../orchestration.md): the main agent coordinates clean-context Planner/Reviewer assignments and GPT-6 Luna Executors/Publishers. A feature request can run the complete authorized cycle without manual stage-by-stage dispatch.
 
 Start with the [workflow and documentation conventions](guides/doc-conventions.md) and [GitHub Issues workflow](guides/github-issues-workflow.md).
 
@@ -13,6 +15,7 @@ Start with the [workflow and documentation conventions](guides/doc-conventions.m
 | Product brief | [_docs/PROJECT_BRAINSTORM.md](../PROJECT_BRAINSTORM.md) | Preserve decisions, proposals, and unresolved product questions |
 | Business requirements | `_docs/business-requirements/BR-NNN_<slug>.md` | User problem, desired outcome, success signals |
 | Specification | `_docs/specifications/SPEC-NNN_<slug>.md` | Intended behavior, contracts, invariants, acceptance criteria |
+| Unpublished task | `_docs/task-drafts/<spec-id>/<task-slug>.md` | One complete task description, its dependencies, AC, verification, and grooming |
 | Execution task, bug, investigation, gate | GitHub Issue | Scope, ownership, dependencies, status, evidence, acceptance |
 | Implementation review | PR and issue comments | Changed behavior, review findings, verification, residual risks |
 | Session continuity | [_docs/HANDOFF.md](../HANDOFF.md) | Connection, entry points, latest session checkpoint |
@@ -56,7 +59,9 @@ The following local files are ready for a connected repository:
 
 Publish them to the intended repository's default branch to enable the issue chooser. The forms do not assume labels, assignees, a milestone, or a GitHub Project already exist. Optional labels and Project setup are documented in the GitHub guide; they are not created by this package.
 
-Do not duplicate issues into a local task queue. If GitHub is not connected or unavailable, use the Markdown task template for temporary drafts outside the authoritative backlog, clearly marked `not synchronized`. Assign a real GitHub issue number only after creation.
+Before publication, write and groom each task in its own draft file using the Markdown task template; mark it `not synchronized`. Keep only titles, intended outcomes, and links in the specification's task index. Do not put detailed task bodies in the specification or a combined task document.
+
+After publication, update the index and dependencies to real issue references, replace published local draft bodies with issue-link stubs, and maintain tasks in GitHub. Unpublished drafts stay local. Grooming changes individual drafts/issues; update the spec only for shared requirements or contracts. Assign real GitHub issue numbers only after creation.
 
 ## Process size
 

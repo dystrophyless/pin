@@ -13,6 +13,7 @@ _docs/
   HANDOFF.md
   business-requirements/BR-NNN_<slug>.md
   specifications/SPEC-NNN_<slug>.md
+  task-drafts/<spec-id>/<task-slug>.md
   sdd/
     README.md
     guides/
@@ -42,6 +43,7 @@ _docs/
 |---|---|
 | Product evidence and desired outcome | Approved BR and linked primary sources |
 | Accepted behavior, invariants, contracts | Approved spec and decision record |
+| Unpublished task scope, AC, dependencies, grooming | One Markdown draft per task under `_docs/task-drafts/<spec-id>/` |
 | Task scope, AC, dependencies, owner, progress | GitHub issue body |
 | Execution/review history | Issue comments, PR review, linked artifacts |
 | Actual behavior and verification result | Current code and executed evidence |
@@ -49,6 +51,8 @@ _docs/
 | Accepted release history | CHANGELOG |
 
 If two locations disagree, identify the conflict and affected work. A summary must not silently override its source. Optional GitHub labels/Project fields mirror task workflow status; issue body remains the canonical record.
+
+A specification contains a concise task index (title, intended outcome, draft/issue link), not full task descriptions. Groom unpublished tasks in their individual files, published tasks in their issues, and change the spec only for shared requirement/contract findings. After publication, replace draft task bodies with issue-link stubs and preserve the reviewed revision in Git history when available. Do not retain a second editable task backlog or aggregate all task bodies into one document.
 
 ## Statuses
 
