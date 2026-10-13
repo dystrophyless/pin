@@ -51,3 +51,19 @@ Parent verified a source snapshot of ingress/billing revision `9be51464c8fb345d4
 Initial snapshot verification found an empty-PID readiness race in the old crash test and missing callback tables in the parent-created formatting fixture. The test now atomically publishes its fully written PID; the formatting fixture was migrated before rerunning. Final full committed-snapshot suite passed **97 tests, no skips, in 41.77 seconds** (chunk `65d712`). Ruff, mypy (48 source files), and architecture passed (chunk `418fdf`). This isolated suite excludes unaccepted model code.
 
 The exact ingress snapshot then passed Alembic head/check/base/head/check with no drift. All six owned databases were dropped and absence verified after checking cluster ownership (chunk `d72da2`). The source snapshot remains available for inspection. Direct Orchestrator verification satisfies #5's local transport AC and delivery conditions; GitHub closure/readback is recorded separately. Billing API metadata extension has real PostgreSQL reservation replay/concurrency proof in the same regression. No model or full MVP acceptance follows from this result.
+
+Publisher read back #5 closed/completed with `status:accepted`: [evidence comment](https://github.com/dystrophyless/pin/issues/5#issuecomment-6143544899). [The #6 extension comment](https://github.com/dystrophyless/pin/issues/6#issuecomment-6143552806) records Billing API metadata proof while preserving its accepted state. No commits were pushed.
+
+## Third model attempt and current boundary
+
+Creation-clarification revision `c22401c8e79ad330971fba5c1e2c9de70caf42d6` passed parent full regression **131/131, no skips, 40.46 seconds** (chunk `8e6b2e`), Ruff/mypy 62 files/architecture (chunk `7f960b`). No schema change followed the previously verified `conversation_model_0002` migration in that correction.
+
+The next distinct synthetic run reserved the entire original eight-call estimate ($0.00509632) for the first unknown outcome, plus already reported $0.000062514; five remaining-call slots had a new estimate $0.00333820, within the aggregate $0.01 ceiling. It produced a valid Russian task and then an invalid English proposal; the one repair produced an English refusal instead of an appointment proposal. The smoke exited 1 at its English proposal-kind gate (chunk `fcb3d3`).
+
+| Provider request ID | Reported cost USD | Result |
+|---|---|---|
+| `gen-1791887418-XJzz3rjCe6xreKvFmwMt` | 0.000034620000 | Valid Russian task proposal |
+| `gen-1791887421-aYG438gSyu6Oybc1lcQD` | 0.000031792900 | Invalid English output, retained financial receipt |
+| `gen-1791887423-BW4zaHXEBR8TYCaztfLJ` | 0.000039560000 | Valid English reply, failed requested appointment outcome |
+
+All five reported calls across later attempts sum to $0.0001684869; one original call remains unknown (ledger inspection chunk `dc197b`). Six calls have been used, leaving two under the aggregate eight-call bound. No plan was applied. The executor is adding grounded output schema and repair diagnostics before the final bounded proof. Issue #13 remains open; valid JSON replies alone do not prove English appointment creation.
