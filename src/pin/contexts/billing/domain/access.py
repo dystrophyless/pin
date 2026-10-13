@@ -12,6 +12,12 @@ class PeriodKind(StrEnum):
     PAID = "paid"
 
 
+class AccountLifecycle(StrEnum):
+    MISSING = "missing"
+    PRESENT = "present"
+    DELETED = "deleted"
+
+
 class Operation(StrEnum):
     CREATE_PLAN = "create_plan"
     RESCHEDULE_PLAN = "reschedule_plan"

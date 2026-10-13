@@ -10,6 +10,7 @@ from uuid import UUID
 
 from pin.contexts.billing.domain.access import (
     AccessDecision,
+    AccountLifecycle,
     Operation,
     UsageReservation,
 )
@@ -66,6 +67,9 @@ class AccessUsageStore(Protocol):
 
     async def check_access(self, query: CheckAccess) -> AccessDecision:
         """Return current entitlement rights for one owner and operation."""
+
+    async def account_lifecycle(self, owner_id: UUID) -> AccountLifecycle:
+        """Return whether the owner account is missing, present, or tombstoned."""
 
     async def reserve_usage(self, command: ReserveUsage) -> ReserveUsageResult:
         """Check current entitlement and reserve all requested dimensions atomically."""

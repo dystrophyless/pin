@@ -22,6 +22,7 @@ from pin.contexts.billing.domain.access import (
     AccessAccount,
     AccessDecision,
     AccessPeriod,
+    AccountLifecycle,
     Allowance,
     InvalidTransition,
     Operation,
@@ -167,6 +168,18 @@ class SqlAlchemyAccessUsageStore(AccessUsageStore):
             deleted=account_record is None or account_record.deleted_at is not None,
         )
         return decide_access(account, query.operation, query.at)
+
+    async def account_lifecycle(self, owner_id: UUID) -> AccountLifecycle:
+        account_record = await self._session.scalar(
+            select(AccessAccountRecord)
+            .where(AccessAccountRecord.owner_id == owner_id)
+            .execution_options(populate_existing=True)
+        )
+        if account_record is None:
+            return AccountLifecycle.MISSING
+        if account_record.deleted_at is not None:
+            return AccountLifecycle.DELETED
+        return AccountLifecycle.PRESENT
 
     async def reserve_usage(self, command: ReserveUsage) -> ReserveUsageResult:
         if command.operation not in {Operation.AI_TURN, Operation.VOICE_TRANSCRIPTION}:

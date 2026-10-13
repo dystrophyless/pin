@@ -8,6 +8,8 @@ Access periods use half-open UTC windows: `starts_at <= now < ends_at`. Trial po
 
 `CheckAccess` allows plan viewing, completion, and cancellation without an active period. AI turns, voice transcription, plan creation, rescheduling, and reminder delivery require an active period. A deleted or unknown account is denied. Quota limits are applied when reserving AI or voice units, not by the entitlement-only access check. Exhausted quota does not itself pause a reminder; expired access does.
 
+`SqlAlchemyAccessUsageStore.account_lifecycle(owner_id)` returns `MISSING`, `PRESENT`, or `DELETED` from the current Billing account row. `PRESENT` includes accounts whose entitlement has expired. Consumers may use this lifecycle fact for private-reply privacy decisions; operation access must still use `CheckAccess`.
+
 ## Reservation and finalization
 
 Each reservation is owned by one user and binds a unique request ID to one immutable access period and a fixed requested quantity. A request can reserve at most one AI turn; voice seconds may be reserved at the same time. The caller supplies an aware expiry deadline. The deadline must be after creation and cannot exceed the period end; Billing does not invent a timeout duration. The AI and voice dimensions are checked and reserved together, so neither can be charged when the combined request exceeds either allowance.
