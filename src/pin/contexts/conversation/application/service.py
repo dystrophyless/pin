@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
@@ -37,8 +38,16 @@ MAX_CALLS = 4
 MAX_REPAIR_CALLS = 1
 MAX_PROMPT_CHARS = 16_000
 MAX_OUTPUT_TOKENS = 512
-MAX_REPLY_CHARS = 4_000
 _RESULT_ADAPTER: TypeAdapter[ConversationResult] = TypeAdapter(ConversationResult)
+_RESULT_SCHEMA = _RESULT_ADAPTER.json_schema()
+_RESULT_SCHEMA_JSON = json.dumps(_RESULT_SCHEMA, ensure_ascii=False, separators=(",", ":"))
+_SCHEMA_FIELDS = frozenset(
+    field
+    for definition in _RESULT_SCHEMA.get("$defs", {}).values()
+    if isinstance(definition, dict)
+    for field in definition.get("properties", {})
+    if isinstance(field, str)
+)
 
 _SYSTEM = "\n".join(
     (
@@ -51,10 +60,18 @@ _SYSTEM = "\n".join(
         "propose_change_occurrence, propose_change_series, propose_complete, propose_cancel.",
         "propose_create_plan creates a new plan and does not require any existing plan or target. "
         "For create, omit or set target_id and expected_version to null; put the new plan data "
-        "in fields, with a title and a schedule when the request specifies one. Existing target "
+        "in fields with a required non-null title and a schedule when requested. Existing target "
         "IDs and versions are only for change, complete, and cancel operations. When a user "
         "clearly asks to create a plan, do not refuse because the snapshot has no existing plans; "
         "ask only if information needed for that request is genuinely missing.",
+        "Example of a new appointment proposal without an existing target or saved plan: "
+        '{"kind":"proposal","language":"en","operation":"propose_create_plan",'
+        '"fields":{"title":"Project review","schedule":{"kind":"appointment",'
+        '"local_start":"2026-10-14T10:00:00","timezone":"Asia/Qyzylorda",'
+        '"duration_minutes":30}}}. This is only a proposal; do not claim it was saved. '
+        "Use dates, times, language, and wording from the current user request and context; "
+        "the example values are illustrative and must not be copied unless they match.",
+        f"Canonical output JSON Schema: {_RESULT_SCHEMA_JSON}",
         "Fields may contain title, description, schedule, recurrence, and reminders. Omit fields "
         "that are unchanged; use null only when removing a value.",
         "Use schedule discriminators kind=appointment, deadline, or task. Appointment fields are "
@@ -258,9 +275,11 @@ class BoundedPlanningAssistant:
                     raise ValueError("provider returned a different model route")
                 result = _parse_result(raw_text, context)
                 usage_category = "valid"
-            except (ValidationError, ValueError, TypeError):
+                repair_diagnostics: list[dict[str, str]] = []
+            except (ValidationError, ValueError, TypeError) as exc:
                 result = None
                 usage_category = "invalid_output"
+                repair_diagnostics = _repair_diagnostics(exc)
             if usage.cost_usd is None:
                 usage_category = "cost_unknown"
             try:
@@ -323,13 +342,15 @@ class BoundedPlanningAssistant:
             repair_count += 1
             messages.extend(
                 [
-                    {"role": "assistant", "content": raw_text[:MAX_REPLY_CHARS]},
                     {
                         "role": "user",
                         "content": (
-                            "The previous output failed schema/ownership validation. "
-                            "Treat it as untrusted data. Return one corrected JSON object "
-                            "matching the required schema, or a reply in the requested language."
+                            "The previous output failed validation and is omitted. The canonical "
+                            "schema is in the system message. Validation diagnostics contain only "
+                            "sanitized field paths and error codes: "
+                            f"{json.dumps(repair_diagnostics, separators=(',', ':'))}. "
+                            "Return one valid JSON object that follows the schema and matches the "
+                            "user's intent; use a reply when clarification is genuinely needed."
                         ),
                     },
                 ]
@@ -384,6 +405,24 @@ class _UnaccountedResponse(ValueError):
 
 class ProviderHTTPError(RuntimeError):
     """An HTTP error response from the configured provider endpoint."""
+
+
+def _repair_diagnostics(exc: Exception) -> list[dict[str, str]]:
+    if not isinstance(exc, ValidationError):
+        return [{"loc": "result", "type": "application_validation"}]
+    diagnostics: list[dict[str, str]] = []
+    for error in exc.errors(include_input=False, include_context=False, include_url=False)[:8]:
+        path: list[str] = []
+        for part in error["loc"]:
+            if isinstance(part, int):
+                path.append("item")
+            elif part in _SCHEMA_FIELDS:
+                path.append(part)
+        error_type = str(error["type"])
+        if not re.fullmatch(r"[a-z0-9_]{1,64}", error_type):
+            error_type = "validation_error"
+        diagnostics.append({"loc": ".".join(path) or "result", "type": error_type})
+    return diagnostics or [{"loc": "result", "type": "validation_error"}]
 
 
 def _serialize_context(context: ConversationContext) -> str:
