@@ -56,8 +56,8 @@ Remaining limitations:
 
 ```text
 Acceptance — YYYY-MM-DD
-Accepted by:
-Authorization source: direct user instruction or owner approval URL
+Accepted by: human owner or Orchestrator under recorded rule-based delegation
+Authorization source: exact full-cycle user instruction/delegation or owner approval URL
 Issue / spec revision accepted:
 Implementation revision and evidence accepted:
 Delivery conditions and whether they are met:
@@ -66,7 +66,7 @@ Follow-up issues:
 Closure: accepted and closed, or acceptance recorded while awaiting delivery
 ```
 
-Do not fill this record on the owner's behalf without actual acceptance. A test result or merged PR is not an acceptance source.
+Use this record only for actual human acceptance or a documented delegated acceptance decision whose review, evidence, and delivery gates are met. Do not claim the human personally reviewed the result when acceptance was delegated. A test result or merged PR alone is not an acceptance source.
 
 ## Blocker / cancellation record
 

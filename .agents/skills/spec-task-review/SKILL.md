@@ -11,7 +11,9 @@ Review the requested specification and task as executable contracts against actu
 
 Read [AGENTS.md](../../../AGENTS.md), the requested spec/issue revisions and latest discussion, linked BR, relevant architecture, and [HANDOFF](../../../_docs/HANDOFF.md). Use the [decomposition guide](../../../_docs/sdd/guides/task-decomposition-guide.md) when task boundaries are under review.
 
-An issue body owns scope, AC, dependencies, ownership, and workflow status. A spec defines accepted behavior. Identify disagreements explicitly instead of silently choosing the convenient version.
+A separate task draft owns its full description and grooming before publication; a published issue body owns scope, AC, dependencies, ownership, and workflow status afterward. A spec defines shared accepted behavior and contains only a concise task index with titles, outcomes, and draft/issue links. Identify disagreements explicitly instead of silently choosing the convenient version.
+
+For authorized grooming, edit each unpublished task in its own `_docs/task-drafts/<spec-id>/<task-slug>.md` file or edit the published issue when GitHub updates are authorized. Change the spec only for shared requirement/contract findings. If detailed tasks are embedded in a spec or combined document, flag the structural gap; when restructuring is authorized, extract individual drafts preserving all prior grooming details and replace the aggregate bodies with a concise index. Do not fix the gap by adding further detailed task sections to the spec.
 
 When GitHub, implementation, or runtime evidence is missing, separate what the documents guarantee from what remains unproved. A local issue draft is not a published issue.
 

@@ -3,7 +3,7 @@
 Status: draft
 Created: YYYY-MM-DD
 Owner: decision owner
-BR / sources: actual requirement links
+Brief / BR / sources: actual requirement links; a separate BR is optional if the brief supplies the requirements
 Approval: not approved; record approver, date, and exact revision when approved
 
 ## Goal and increment
@@ -51,13 +51,21 @@ Describe schema, compatibility, migration, rollout, and rollback when needed. St
 |---|---|---|---|
 | AC-01 | Replace with a reproducible check | Observable result | Local/runtime/deployed boundary |
 
-## Issue package and traceability
+## Task index
 
-| Requirement / rule | GitHub issue | Verification evidence |
+| Task title | Intended outcome | Individual draft / GitHub issue |
 |---|---|---|
-| Actual BR/spec rule ID | Actual URL, or explicitly not created | Link once executed |
+| Actual outcome-oriented title | One concise observable result | Link to a separate draft before publication, or the actual issue afterward |
 
-Issue bodies own live statuses and dependencies. This table maps contracts to work and proof.
+Keep complete task descriptions, task-specific AC, implementation steps, verification plans, and grooming findings in individual task drafts or issues. Do not embed them below this table or combine them into a detailed task appendix.
+
+## Requirement traceability
+
+| Requirement / rule | Task draft / GitHub issue | Verification evidence |
+|---|---|---|
+| Actual brief/BR/spec rule ID | Individual draft link, or actual issue URL | Link once executed |
+
+Unpublished drafts own their task details and grooming. Published issue bodies own live statuses and dependencies. These tables map contracts to work and proof without duplicating task bodies.
 
 ## Rollout and delivery conditions
 

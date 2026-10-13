@@ -13,6 +13,8 @@ Read [AGENTS.md](../../../AGENTS.md) and the [GitHub Issues workflow](../../../_
 
 Record actual spec revisions and issue references, intended outcome, dependencies/order, sources of truth, invariants, ownership/write boundaries, preserved behavior, and final proof. Distinguish local drafts from live issues. Start with the coherent goal before isolated wording edits.
 
+Before publication, the package is the shared spec plus one complete Markdown draft per task under `_docs/task-drafts/<spec-id>/`. After publication, review the actual issues. The spec contains only a concise task index (titles, intended outcomes, draft/issue links), not full task descriptions or a detailed task appendix.
+
 ## Review cross-task consistency
 
 Look for conflicting authorities, overlapping writes, duplicated/missing ownership, assumptions that a prerequisite already happened, incompatible AC, hidden cleanup scope, missing recovery paths, and a final gate unable to prove the integrated outcome.
@@ -24,6 +26,8 @@ Read relevant code and evidence where available. If only documents are supplied,
 ## Patch the affected package
 
 When fixes are authorized, update every affected spec/issue rather than only the file where the finding appeared. Keep boundaries executable, verification explicit, and exclusions honest. Mark local patches awaiting GitHub synchronization.
+
+Apply task-local grooming fixes to the individual draft files or authorized issue updates. Change the spec only when shared requirements/contracts or its concise index change. If tasks are embedded or aggregated, authorized restructuring must extract separate drafts without losing previous decisions, AC, dependencies, or verification plans; do not consolidate the package into detailed spec sections. Published drafts become issue-link stubs rather than a second editable backlog.
 
 Known CRITICAL/HIGH contradictions that invalidate the package must be resolved or re-scoped before dependent implementation. Changing approved behavior requires an owner decision. Readiness is not acceptance of implementation.
 

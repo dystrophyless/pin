@@ -11,7 +11,7 @@ This file is a compact entry point, not a backlog or copied task-status table. L
 | Local project | `D:\Program\python\pin` |
 | Git repository | Initialized; local branch `main` |
 | GitHub repository | [dystrophyless/pin](https://github.com/dystrophyless/pin), verified read-only on 2026-10-13 |
-| Issues URL | [Pin Issues](https://github.com/dystrophyless/pin/issues); no issues returned by the live issue search at this checkpoint |
+| Issues URL | [Pin Issues](https://github.com/dystrophyless/pin/issues); 28 task issues confirmed; live issue bodies own scope, dependencies and workflow status |
 | Optional GitHub Project | Not configured; not required for this workflow |
 | Remote default branch | `main`; HEAD `3106612277d3315117546285330c9253ac804c39` at this checkpoint |
 | Local Git connection | `origin` points to `https://github.com/dystrophyless/pin.git`; local commits have not been pushed |
@@ -22,14 +22,15 @@ Recheck remote state at session start. A `git ls-remote` check on 2026-10-13 con
 
 - Existing source brief: [PROJECT_BRAINSTORM.md](PROJECT_BRAINSTORM.md). It is a product brief, not an approved implementation plan.
 - [SDD documentation](sdd/README.md) defines the workflow, templates, GitHub issue forms, PR template, project review skills, and examples.
-- There is no application code, approved implementation spec, or established application test command in this local project at this checkpoint. No live task queue verification was performed in this commit session. The SDD package is local and has not been pushed.
-- Product decisions remain open in the brainstorm, including confirmation policy, date/recurrence semantics, billing, retention, and architecture details. Consult the brief instead of duplicating them here.
+- There is no application code or established application test command. [SPEC-001](specifications/SPEC-001_pin_mvp.md) is the approved MVP baseline; section 11 records the user's resolved product decisions and routine technical details.
+- [The MVP issue index](specifications/SPEC-001_pin_mvp_tasks.md) links to 28 published issues, with 95 real dependency edges and reverse Blocks. Local published drafts are link stubs. Task implementation, runtime qualification and release evidence remain pending.
 - Price, provider-capability, hosting, and benchmark statements in the brainstorm are historical research; revalidate the relevant claims before making production commitments.
 
 ## Start or resume work
 
 1. Verify the local checkout, working-tree changes, remote, and selected issue against the intended Pin repository.
 2. Read [AGENTS.md](../AGENTS.md) and the [SDD workflow](sdd/README.md).
+   For feature execution, read [orchestration.md](orchestration.md) and establish the current stage, authorized actions, artifact revisions, and model/effort assignments before dispatching subagents.
 3. Read the assigned issue and its latest comments, linked spec/BR, dependencies, PRs, and evidence. Check the current `Workflow status` section.
 4. If several issues form one behavior change, identify the package and use [$task-package-review-loop](../.agents/skills/task-package-review-loop/SKILL.md) before execution.
 5. Resume the first unresolved step within the authorized issue. If GitHub is unavailable, use a local draft explicitly marked `not synchronized`; do not report a live status change.
@@ -50,14 +51,15 @@ Labels are optional and must be created before these filtered searches are usefu
 
 ## Last session checkpoint
 
-- Issue: none; current work concerns local process documentation and project skills.
-- Linked spec: none; no product implementation contract is approved.
-- Last completed action: prepare the local SDD documentation commit, reconcile moved-document links and Git connection statements, and verify project-local Ponytail and Superpowers disabling.
-- Remote changes: none.
-- Next setup action: push the local commits and templates only when explicitly authorized; verify the remote entry points afterward.
-- Next planning action: select one product increment from the brainstorm, resolve its blocking decisions, and draft its BR/spec and issue package.
+- Assignment: publish the reviewed MVP task package; do not implement tasks.
+- Linked spec: [SPEC-001 v0.2](specifications/SPEC-001_pin_mvp.md), with the real issue index in section 12.
+- Last completed action: reconcile existing issues #1–#28 with all reviewed draft hashes, finish real dependency links/readiness statuses, and replace local task bodies with issue-link stubs.
+- Live entry point: [Pin Issues](https://github.com/dystrophyless/pin/issues). [Runtime foundation #1](https://github.com/dystrophyless/pin/issues/1) is the next candidate for separately authorized execution; check its current body/status first.
+- Remaining owner decisions: late initial check-in/recovery-summary interaction, future-series anchor/count, and deletion-return rights/linkage. Qualification still needs an approved rubric/workload and actual evidence.
+- Repository boundary: source documents and issue-index edits are local and unpushed; no commit/push or implementation performed.
+- Next action: execute a selected ready issue only when requested; resolve affected owner decisions before dependent whole-task execution.
 
-For a future session, replace this checkpoint with the active issue URL, exact revision/worktree boundary, last evidence comment or artifact, unresolved blocker, and next concrete action. Keep historical execution details in issue comments and linked evidence.
+No local task-status table is maintained. Verify issues and actual prerequisite evidence when resuming.
 
 ## When updating this file
 
