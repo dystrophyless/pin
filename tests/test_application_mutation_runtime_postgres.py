@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import sys
@@ -21,8 +22,10 @@ from pin.adapters.telegram.application_worker import (
     process_pending_reminder_schedules,
 )
 from pin.adapters.telegram.ingress import PostgresTelegramOwnerResolver, persist_update
+from pin.adapters.telegram.mutation_runtime_store import MutationRuntimePendingRecord
+from pin.adapters.telegram.presentation.tokens import TelegramCallbackTokenRecord
 from pin.contexts.billing.application.contracts import StartTrial
-from pin.contexts.billing.infrastructure.models import UsageReservationRecord
+from pin.contexts.billing.infrastructure.models import AccessPeriodRecord, UsageReservationRecord
 from pin.contexts.billing.infrastructure.store import SqlAlchemyAccessUsageStore
 from pin.contexts.conversation.application.service import ROUTE, BoundedPlanningAssistant
 from pin.contexts.conversation.infrastructure.capture_models import CaptureDraftRecord
@@ -862,7 +865,7 @@ def test_validated_ai_mutation_confirms_once_and_correction_stales_old_token(
     run_local_async(scenario)
 
 
-def test_actual_application_allows_expired_terminal_actions_but_rejects_reschedule(
+def test_actual_application_allows_terminal_actions_for_overdue_items_with_active_access(
     app_database_url: str,
 ) -> None:
     async def scenario() -> None:
@@ -955,6 +958,222 @@ def test_actual_application_allows_expired_terminal_actions_but_rejects_reschedu
                         select(func.count())
                         .select_from(UsageReservationRecord)
                         .where(UsageReservationRecord.owner_id == owner_id)
+                    )
+                    == 0
+                )
+        finally:
+            await engine.dispose()
+
+    run_local_async(scenario)
+
+
+def test_actual_application_allows_terminal_actions_after_trial_expiry_but_denies_reschedule(
+    app_database_url: str,
+) -> None:
+    async def scenario() -> None:
+        engine = create_async_engine(app_database_url)
+        sessions = create_session_factory(engine)
+        started_at = datetime(2026, 10, 14, 9, tzinfo=UTC)
+        suffix = uuid4().int % 1_000_000_000
+        bot_id, user_id = 17_000_000_000 + suffix, 18_000_000_000 + suffix
+        try:
+            owner_id = await _seed_owner(
+                sessions, bot_id=bot_id, user_id=user_id, language="en", at=started_at
+            )
+            async with sessions() as session:
+                period = await session.scalar(
+                    select(AccessPeriodRecord).where(
+                        AccessPeriodRecord.owner_id == owner_id,
+                        AccessPeriodRecord.policy_kind == "trial",
+                    )
+                )
+                assert period is not None and period.starts_at == started_at
+                period_ends_at = period.ends_at
+            expired_at = period_ends_at + timedelta(seconds=1)
+            live_preview_at = period_ends_at - timedelta(minutes=5)
+            target_day = expired_at.date() + timedelta(days=2)
+
+            async with sessions() as session, session.begin():
+                _, done_id = await _seed_task(
+                    session,
+                    owner_id=owner_id,
+                    title="Expired trial completion",
+                    at=expired_at,
+                    day=target_day,
+                )
+                _, cancel_id = await _seed_task(
+                    session,
+                    owner_id=owner_id,
+                    title="Expired trial cancellation",
+                    at=expired_at,
+                    day=target_day,
+                )
+                _, denied_at_preview_id = await _seed_task(
+                    session,
+                    owner_id=owner_id,
+                    title="Expired trial reschedule preview denial",
+                    at=expired_at,
+                    day=target_day,
+                )
+                _, denied_at_confirm_id = await _seed_task(
+                    session,
+                    owner_id=owner_id,
+                    title="Reschedule expires before confirmation",
+                    at=live_preview_at,
+                    day=target_day,
+                )
+
+            # The preview is valid inside the persisted trial period, but the
+            # confirmation callback arrives just after that exact stored expiry.
+            await _process_update(
+                sessions,
+                bot_id=bot_id,
+                user_id=user_id,
+                at=live_preview_at,
+                text=f"/reschedule {denied_at_confirm_id}",
+            )
+            _, live_preview = await _process_update(
+                sessions,
+                bot_id=bot_id,
+                user_id=user_id,
+                at=live_preview_at,
+                text=f"{target_day.isoformat()} 14:00",
+            )
+            assert "Reschedule" in str(live_preview["plain_text"])
+            live_confirm_token = _callback(live_preview)
+            _, expired_confirmation = await _process_update(
+                sessions,
+                bot_id=bot_id,
+                user_id=user_id,
+                at=expired_at,
+                callback=live_confirm_token,
+            )
+            assert "access expired" in str(expired_confirmation["plain_text"]).lower()
+            assert "nothing was changed" in str(expired_confirmation["plain_text"]).lower()
+            token_secret = live_confirm_token.removeprefix("pm:")
+            confirm_hash = hashlib.sha256(token_secret.encode("ascii")).hexdigest()
+            async with sessions() as session:
+                confirm_binding = await session.get(TelegramCallbackTokenRecord, confirm_hash)
+                assert confirm_binding is not None
+                assert confirm_binding.owner_id == owner_id
+                assert confirm_binding.action == "mutation.confirm"
+                assert confirm_binding.consumed_at is None
+                stale_pending = await session.scalar(
+                    select(MutationRuntimePendingRecord)
+                    .where(
+                        MutationRuntimePendingRecord.owner_id == owner_id,
+                        MutationRuntimePendingRecord.occurrence_id == denied_at_confirm_id,
+                        MutationRuntimePendingRecord.action == "reschedule",
+                    )
+                    .order_by(MutationRuntimePendingRecord.created_at.desc())
+                    .limit(1)
+                )
+                assert stale_pending is not None and stale_pending.state == "stale"
+
+            # A new reschedule request initiated after trial expiry cannot get
+            # a mutation preview, even for a future open occurrence.
+            async with sessions() as session:
+                confirm_token_count_before = await session.scalar(
+                    select(func.count()).select_from(TelegramCallbackTokenRecord).where(
+                        TelegramCallbackTokenRecord.owner_id == owner_id,
+                        TelegramCallbackTokenRecord.action == "mutation.confirm",
+                    )
+                )
+            await _process_update(
+                sessions,
+                bot_id=bot_id,
+                user_id=user_id,
+                at=expired_at,
+                text=f"/reschedule {denied_at_preview_id}",
+            )
+            _, expired_preview_denial = await _process_update(
+                sessions,
+                bot_id=bot_id,
+                user_id=user_id,
+                at=expired_at,
+                text=f"{target_day.isoformat()} 15:00",
+            )
+            assert "could not prepare a current preview" in str(
+                expired_preview_denial["plain_text"]
+            ).lower()
+            assert "not changed" in str(expired_preview_denial["plain_text"]).lower()
+            async with sessions() as session:
+                confirm_token_count_after = await session.scalar(
+                    select(func.count()).select_from(TelegramCallbackTokenRecord).where(
+                        TelegramCallbackTokenRecord.owner_id == owner_id,
+                        TelegramCallbackTokenRecord.action == "mutation.confirm",
+                    )
+                )
+                assert confirm_token_count_after == confirm_token_count_before
+
+            _, done_preview = await _process_update(
+                sessions,
+                bot_id=bot_id,
+                user_id=user_id,
+                at=expired_at,
+                text=f"/done {done_id}",
+            )
+            _, done_reply = await _process_update(
+                sessions,
+                bot_id=bot_id,
+                user_id=user_id,
+                at=expired_at,
+                callback=_callback(done_preview),
+            )
+            assert "marked done" in str(done_reply["plain_text"]).lower()
+
+            _, cancel_preview = await _process_update(
+                sessions,
+                bot_id=bot_id,
+                user_id=user_id,
+                at=expired_at,
+                text=f"/cancel {cancel_id}",
+            )
+            _, cancel_reply = await _process_update(
+                sessions,
+                bot_id=bot_id,
+                user_id=user_id,
+                at=expired_at,
+                callback=_callback(cancel_preview),
+            )
+            assert "cancelled" in str(cancel_reply["plain_text"]).lower()
+
+            async with sessions() as session:
+                persisted_period = await session.scalar(
+                    select(AccessPeriodRecord).where(
+                        AccessPeriodRecord.owner_id == owner_id,
+                        AccessPeriodRecord.policy_kind == "trial",
+                    )
+                )
+                assert persisted_period is not None
+                assert persisted_period.ends_at == period_ends_at
+                assert expired_at > persisted_period.ends_at
+                done = await session.get(OccurrenceRecord, done_id)
+                cancelled = await session.get(OccurrenceRecord, cancel_id)
+                denied_preview = await session.get(OccurrenceRecord, denied_at_preview_id)
+                denied_confirm = await session.get(OccurrenceRecord, denied_at_confirm_id)
+                assert done is not None and (done.state, done.version) == ("completed", 2)
+                assert cancelled is not None and (cancelled.state, cancelled.version) == (
+                    "cancelled",
+                    2,
+                )
+                for refused in (denied_preview, denied_confirm):
+                    assert refused is not None and (refused.state, refused.version) == ("open", 1)
+                    assert refused.local_date == target_day
+                    assert refused.local_time == time(12)
+                assert (
+                    await session.scalar(
+                        select(func.count())
+                        .select_from(UsageReservationRecord)
+                        .where(UsageReservationRecord.owner_id == owner_id)
+                    )
+                    == 0
+                )
+                assert (
+                    await session.scalar(
+                        select(func.count())
+                        .select_from(ProviderCallRecord)
+                        .where(ProviderCallRecord.owner_id == owner_id)
                     )
                     == 0
                 )
