@@ -6,6 +6,8 @@ from datetime import datetime
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
+    BigInteger,
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKeyConstraint,
@@ -96,6 +98,7 @@ class ReminderIntentRecord(Base):
     offset_amount: Mapped[int] = mapped_column(Integer, nullable=False)
     source: Mapped[str] = mapped_column(String(8), nullable=False)
     due_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    not_before_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     state: Mapped[str] = mapped_column(String(12), nullable=False, default="scheduled")
     dispatch_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     source_event_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
@@ -138,3 +141,83 @@ class NotificationReconciliationReceiptRecord(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+
+
+class DeliveryAttemptRecord(Base):
+    """Durable send boundary and honest outcome for one transport attempt."""
+
+    __tablename__ = "delivery_attempts"
+    __table_args__ = (
+        CheckConstraint("dispatch_version >= 1", name="ck_notifications_delivery_version"),
+        CheckConstraint("attempt_number >= 1", name="ck_notifications_delivery_attempt"),
+        CheckConstraint(
+            "target_id IS NULL OR target_id > 0", name="ck_notifications_delivery_target"
+        ),
+        CheckConstraint(
+            "(intent_id IS NOT NULL AND reply_event_id IS NULL AND "
+            "recovery_episode_key IS NULL) OR "
+            "(intent_id IS NULL AND reply_event_id IS NOT NULL AND "
+            "recovery_episode_key IS NULL) OR "
+            "(intent_id IS NULL AND reply_event_id IS NULL AND "
+            "recovery_episode_key IS NOT NULL)",
+            name="ck_notifications_delivery_subject",
+        ),
+        CheckConstraint(
+            "recovery_episode_key IS NULL OR length(recovery_episode_key) BETWEEN 1 AND 180",
+            name="ck_notifications_delivery_recovery_key",
+        ),
+        CheckConstraint(
+            "outcome IN ('started', 'confirmed', 'failed', 'unknown', 'blocked', "
+            "'skipped', 'deferred', 'coalesced')",
+            name="ck_notifications_delivery_outcome",
+        ),
+        CheckConstraint(
+            "(outcome = 'started' AND finished_at IS NULL) OR "
+            "(outcome <> 'started' AND finished_at IS NOT NULL)",
+            name="ck_notifications_delivery_finished",
+        ),
+        ForeignKeyConstraint(
+            ["intent_id", "owner_id"],
+            ["notifications.reminder_intents.id", "notifications.reminder_intents.owner_id"],
+            ondelete="CASCADE",
+            name="fk_notifications_delivery_intent_owner",
+        ),
+        ForeignKeyConstraint(
+            ["reply_event_id"],
+            ["platform.outbox.id"],
+            ondelete="CASCADE",
+            name="fk_notifications_delivery_reply_owner",
+        ),
+        UniqueConstraint(
+            "intent_id", "dispatch_version", "target_id", "attempt_number",
+            name="uq_notifications_delivery_attempt",
+        ),
+        UniqueConstraint(
+            "reply_event_id", "dispatch_version", "target_id", "attempt_number",
+            name="uq_notifications_delivery_reply_attempt",
+        ),
+        UniqueConstraint(
+            "owner_id", "recovery_episode_key", "dispatch_version", "attempt_number",
+            name="uq_notifications_delivery_recovery_attempt",
+        ),
+        Index("ix_notifications_delivery_owner_outcome", "owner_id", "outcome", "started_at"),
+        Index("ix_notifications_delivery_cycle", "check_in_cycle_id", "outcome"),
+        {"schema": "notifications"},
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    owner_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    intent_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True), nullable=True)
+    reply_event_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True), nullable=True)
+    recovery_episode_key: Mapped[str | None] = mapped_column(String(180), nullable=True)
+    target_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    dispatch_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    attempt_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    check_in_cycle_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True), nullable=True)
+    access_period_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    outcome: Mapped[str] = mapped_column(String(12), nullable=False)
+    failure_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    provider_message_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    quiet_conflict: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

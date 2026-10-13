@@ -46,6 +46,7 @@ assert SeriesOccurrenceRecord.metadata is target_metadata
 assert SeriesExceptionRecord.metadata is target_metadata
 assert notifications_models.ReminderIntentRecord.metadata is target_metadata
 assert notifications_models.NotificationReconciliationReceiptRecord.metadata is target_metadata
+assert notifications_models.DeliveryAttemptRecord.metadata is target_metadata
 
 
 def _database_url() -> str:

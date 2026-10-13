@@ -297,7 +297,14 @@ def test_worker_reconciles_committed_schedule_events_and_replays_current_snapsho
                     ReminderRuleRecord.occurrence_id == occurrence_id
                 )
             )
-            assert current is not None and rule is not None
+            intent = await session.scalar(
+                select(ReminderIntentRecord).where(
+                    ReminderIntentRecord.owner_id == owner_id,
+                    ReminderIntentRecord.occurrence_id == occurrence_id,
+                )
+            )
+            assert current is not None and rule is not None and intent is not None
+            intent.not_before_at = NOW + timedelta(hours=2)
             current.version = 2
             current.starts_at = datetime(2026, 10, 16, 10, tzinfo=UTC)
             current.ends_at = datetime(2026, 10, 16, 11, tzinfo=UTC)
@@ -327,6 +334,7 @@ def test_worker_reconciles_committed_schedule_events_and_replays_current_snapsho
             assert intent.occurrence_version == 2
             assert intent.source_event_id == replay.id
             assert intent.dispatch_version == 2
+            assert intent.not_before_at is None
 
         impossible_future = _event(
             owner_id=owner_id,
