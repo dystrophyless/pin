@@ -17,6 +17,14 @@ from pin.adapters.telegram.agenda import (
     remember_agenda_navigation,
 )
 from pin.adapters.telegram.capture import PlanningAssistant, process_capture_application_job
+from pin.adapters.telegram.home_zone_runtime import (
+    HOME_ZONE_ACTIONS,
+    begin_home_zone_review,
+    handle_home_zone_action,
+    needs_home_zone_review,
+    pending_home_zone_text_reply,
+    stale_home_zone_action,
+)
 from pin.adapters.telegram.ingress import PostgresTelegramOwnerResolver, private_actor
 from pin.adapters.telegram.onboarding import (
     DispatchDisposition,
@@ -42,6 +50,7 @@ from pin.contexts.notifications.infrastructure.outbox_consumer import (
     SqlAlchemyNotificationScheduleEventConsumer,
 )
 from pin.contexts.planning.api import SqlAlchemyReminderScheduleStore
+from pin.contexts.planning.application.home_zone_changes import HomeZoneChangeRejected
 from pin.platform.contracts import EventEnvelope
 from pin.platform.events import add_outbox_event
 from pin.platform.jobs import (
@@ -81,9 +90,7 @@ async def process_application_job(
     """Apply one fenced work item and persist its reply request atomically."""
     if now.tzinfo is None or now.utcoffset() is None:
         raise ValueError("application worker clock must be timezone-aware")
-    if await process_capture_application_job(
-        sessions, claim, now=now, assistant=assistant
-    ):
+    if await process_capture_application_job(sessions, claim, now=now, assistant=assistant):
         return
     async with sessions() as session, session.begin():
         receipt = await record_job_effect_once(
@@ -163,14 +170,33 @@ async def process_application_job(
                     reply=None,
                 )
             else:
-                result = await handle_private_text(
-                    store,
-                    owner_id=inbox.owner_id,
-                    telegram_user_id=telegram_user_id,
-                    text=message_text,
-                    now=now.astimezone(UTC),
-                    trial_activator=trial_activator,
-                )
+                active_draft = await store.get_onboarding(inbox.owner_id)
+                current_profile = await store.get_preferences(inbox.owner_id)
+                if (
+                    message_text.strip().casefold() in {"confirm", "yes", "да", "подтверждаю"}
+                    and needs_home_zone_review(active_draft, current_profile)
+                    and active_draft is not None
+                    and current_profile is not None
+                ):
+                    outcome = (
+                        pending_home_zone_text_reply(active_draft, current_profile)
+                        if "_home_zone_change_flow" in active_draft.values
+                        else await begin_home_zone_review(
+                            store, draft=active_draft, profile=current_profile
+                        )
+                    )
+                    result = PrivateMessageResult(
+                        DispatchDisposition.HANDLED, outcome.onboarding, outcome.reply
+                    )
+                else:
+                    result = await handle_private_text(
+                        store,
+                        owner_id=inbox.owner_id,
+                        telegram_user_id=telegram_user_id,
+                        text=message_text,
+                        now=now.astimezone(UTC),
+                        trial_activator=trial_activator,
+                    )
         reply = agenda_reply or result.reply
         reply_markup = await _reply_markup(session, store, inbox.owner_id, reply, now)
         if reply is not None:
@@ -317,6 +343,7 @@ async def _handle_callback(
                 "settings": profile_version,
                 "answer": onboarding_version,
                 "cancel": onboarding_version,
+                **{action: onboarding_version for action in HOME_ZONE_ACTIONS},
             },
             now=now,
         )
@@ -331,6 +358,25 @@ async def _handle_callback(
             if profile
             else None
         )
+        if binding.action in HOME_ZONE_ACTIONS:
+            try:
+                async with session.begin_nested():
+                    outcome = await handle_home_zone_action(
+                        session,
+                        store,
+                        binding=binding,
+                        callback_data=data,
+                        owner_id=owner_id,
+                        now=now,
+                    )
+            except (HomeZoneChangeRejected, ValueError):
+                outcome = await stale_home_zone_action(store, owner_id)
+            return (
+                PrivateMessageResult(
+                    DispatchDisposition.HANDLED, outcome.onboarding, outcome.reply
+                ),
+                None,
+            )
         if agenda_reply is not None and profile is not None:
             return (
                 PrivateMessageResult(
@@ -372,6 +418,24 @@ async def _handle_callback(
             }.get(value, value)
         else:
             raise InvalidCallbackToken("callback action does not match current state")
+        if (
+            binding.action == "answer"
+            and text.strip().casefold() in {"confirm", "yes", "да", "подтверждаю"}
+            and needs_home_zone_review(active_draft, profile)
+            and active_draft is not None
+            and profile is not None
+        ):
+            outcome = (
+                pending_home_zone_text_reply(active_draft, profile)
+                if "_home_zone_change_flow" in active_draft.values
+                else await begin_home_zone_review(store, draft=active_draft, profile=profile)
+            )
+            return (
+                PrivateMessageResult(
+                    DispatchDisposition.HANDLED, outcome.onboarding, outcome.reply
+                ),
+                None,
+            )
         return (
             await handle_private_text(
                 store,
@@ -435,6 +499,8 @@ async def _reply_markup(
         version = (
             profile.version
             if button.action.startswith("agenda_") and profile
+            else active_draft.version
+            if button.action in HOME_ZONE_ACTIONS and active_draft
             else profile.version
             if button.action == "settings" and profile
             else active_draft.version

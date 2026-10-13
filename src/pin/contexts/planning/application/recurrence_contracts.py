@@ -137,6 +137,7 @@ class SeriesOccurrenceSnapshot:
     state: str
     version: int
     local_date: date
+    anchor_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)

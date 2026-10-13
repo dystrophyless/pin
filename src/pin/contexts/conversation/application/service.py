@@ -28,6 +28,7 @@ from pin.contexts.conversation.application.dto import (
     ModelFailure,
     ModelOutcome,
     ModelSuccess,
+    PreferenceSnapshot,
     ProposalBatch,
     Reply,
 )
@@ -80,7 +81,9 @@ _SYSTEM = "\n".join(
         "an empty reminders array means no reminders. A nonempty list defaults to reminder_mode "
         "override: replace a profile default of the same calendar-day or elapsed-hour type and "
         "retain other defaults. reminder_mode=only replaces the complete default list. Show the "
-        "resulting exact reminders in the preview. For changes, omit fields "
+        "resulting exact reminders in the preview. Saved plans include their event timezone "
+        "and known appointment end. Preserve the stored event timezone when the user did not "
+        "request a zone change; never replace it with the profile zone. For changes, omit fields "
         "that are unchanged; use null only when removing a value.",
         "Use schedule discriminators kind=appointment, deadline, or task. Appointment fields are "
         "local_start, timezone, and optionally duration_minutes or later local_end, never both; "
@@ -122,6 +125,34 @@ _SYSTEM = "\n".join(
 )
 
 
+def bounded_target_snapshot(context: ConversationContext) -> ConversationContext:
+    """Fit owned targets into the provider budget without truncating the user's turn."""
+    candidate = context
+    limited = False
+    while len(_SYSTEM) + len(_serialize_context(candidate)) > MAX_PROMPT_CHARS:
+        if not candidate.targets:
+            break
+        targets = candidate.targets[:-1]
+        visible_ids = {target.id for target in targets}
+        preferences = candidate.preferences
+        if not limited and len(preferences) < 32:
+            preferences += (
+                PreferenceSnapshot(
+                    key="target_snapshot_limited",
+                    value="Some plans omitted. Ask for selection if the target is absent.",
+                ),
+            )
+        candidate = candidate.model_copy(
+            update={
+                "targets": targets,
+                "plans": tuple(plan for plan in candidate.plans if plan.id in visible_ids),
+                "preferences": preferences,
+            }
+        )
+        limited = True
+    return candidate
+
+
 class BoundedPlanningAssistant:
     """Interpret a caller-filtered snapshot; never execute model-proposed actions."""
 
@@ -145,6 +176,17 @@ class BoundedPlanningAssistant:
         self._now = now
         self._max_calls = max_calls
         self._max_output_tokens = max_output_tokens
+
+    def with_allowance(self, allowance: TurnAllowance) -> BoundedPlanningAssistant:
+        """Reuse the bounded provider configuration with a prepared voice allowance."""
+        return BoundedPlanningAssistant(
+            transport=self._transport,
+            usage=self._usage,
+            allowance=allowance,
+            now=self._now,
+            max_calls=self._max_calls,
+            max_output_tokens=self._max_output_tokens,
+        )
 
     async def interpret(
         self, context: ConversationContext, *, at: datetime, claim: JobClaim | None = None

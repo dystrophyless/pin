@@ -59,6 +59,25 @@ from pin.contexts.planning.infrastructure.reminder_schedule_store import (
     SqlAlchemyPlanningScheduleSnapshotStore,
     SqlAlchemyReminderScheduleStore,
 )
+from pin.contexts.planning.mutations_api import (
+    MUTATION_PREVIEW_TTL,
+    MutationAccessDenied,
+    MutationAction,
+    MutationConfirmationVerifier,
+    MutationGrant,
+    MutationPreview,
+    MutationPreviewRecord,
+    MutationProof,
+    MutationRejected,
+    MutationRequest,
+    MutationScope,
+    MutationStalePreview,
+    MutationStore,
+    MutationTarget,
+    SqlAlchemyMutationStore,
+    confirm_mutation,
+    preview_mutation,
+)
 from pin.contexts.planning.recurrence_api import (
     ConfirmedRecurrenceException,
     CreateConfirmedSeries,
@@ -103,6 +122,24 @@ from pin.contexts.planning.recurrence_api import (
 )
 
 __all__ = [
+    "MUTATION_PREVIEW_TTL",
+    "MutationAccessDenied",
+    "MutationAction",
+    "MutationConfirmationVerifier",
+    "MutationGrant",
+    "MutationPreview",
+    "MutationPreviewRecord",
+    "MutationProof",
+    "MutationRejected",
+    "MutationRequest",
+    "MutationScope",
+    "MutationStalePreview",
+    "MutationStore",
+    "MutationTarget",
+    "SqlAlchemyMutationStore",
+    "confirm_mutation",
+    "preview_mutation",
+
     "PlanCommandStore",
     "SqlAlchemyAgendaReadStore",
     "AgendaEntry",

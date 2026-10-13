@@ -6,8 +6,9 @@ from alembic import context
 from sqlalchemy import engine_from_config, pool
 
 from pin.adapters.telegram.ingress import TelegramIngressBotRecord, TelegramOwnerRecord
+from pin.adapters.telegram.mutation_runtime_store import MutationRuntimePendingRecord
 from pin.adapters.telegram.presentation.tokens import TelegramCallbackTokenRecord
-from pin.bootstrap.config import ProcessRole, load_settings
+from pin.bootstrap.config import load_database_url
 from pin.contexts.billing.infrastructure import models as billing_models  # noqa: F401
 from pin.contexts.conversation.infrastructure import capture_models
 from pin.contexts.conversation.infrastructure.models import (
@@ -18,11 +19,14 @@ from pin.contexts.identity.infrastructure import models as identity_models  # no
 from pin.contexts.notifications.infrastructure import models as notifications_models
 from pin.contexts.planning.infrastructure import models as planning_models  # noqa: F401
 from pin.contexts.planning.infrastructure.agenda import AgendaSnapshotRecord
+from pin.contexts.planning.infrastructure.home_zone_change_models import HomeZoneChangePreviewRecord
+from pin.contexts.planning.infrastructure.mutation_models import MutationPreviewRecord
 from pin.contexts.planning.infrastructure.series_models import (
     SeriesExceptionRecord,
     SeriesOccurrenceRecord,
     SeriesRecord,
 )
+from pin.contexts.speech.infrastructure.models import SpeechRequestRecord
 from pin.persistence.models import Base
 from pin.platform import models as platform_models  # noqa: F401
 
@@ -34,6 +38,7 @@ target_metadata = Base.metadata
 assert TelegramCallbackTokenRecord.metadata is target_metadata
 assert TelegramIngressBotRecord.metadata is target_metadata
 assert TelegramOwnerRecord.metadata is target_metadata
+assert MutationRuntimePendingRecord.metadata is target_metadata
 assert ConversationTurnResultRecord.metadata is target_metadata
 assert ProviderCallRecord.metadata is target_metadata
 assert capture_models.CaptureSequenceRecord.metadata is target_metadata
@@ -46,6 +51,9 @@ assert planning_models.PlanItemRecord.metadata is target_metadata
 assert planning_models.OccurrenceRecord.metadata is target_metadata
 assert planning_models.ReminderRuleRecord.metadata is target_metadata
 assert AgendaSnapshotRecord.metadata is target_metadata
+assert MutationPreviewRecord.metadata is target_metadata
+assert HomeZoneChangePreviewRecord.metadata is target_metadata
+assert SpeechRequestRecord.metadata is target_metadata
 assert SeriesRecord.metadata is target_metadata
 assert SeriesOccurrenceRecord.metadata is target_metadata
 assert SeriesExceptionRecord.metadata is target_metadata
@@ -58,7 +66,7 @@ def _database_url() -> str:
     configured = config.get_main_option("sqlalchemy.url")
     if configured:
         return configured
-    return load_settings(ProcessRole.SPEECH_WORKER).database_url.get_secret_value()
+    return load_database_url().get_secret_value()
 
 
 def run_migrations_offline() -> None:

@@ -134,7 +134,7 @@ def load_settings(
         ProcessRole.GATEWAY: ("bot_token",),
         ProcessRole.APP_WORKER: ("openrouter_api_key",),
         ProcessRole.DELIVERY_WORKER: ("bot_token",),
-        ProcessRole.SPEECH_WORKER: (),
+        ProcessRole.SPEECH_WORKER: ("bot_token", "openrouter_api_key"),
     }
     missing = [
         names[field]
@@ -150,6 +150,16 @@ def load_settings(
     if settings.webhook_secret and len(settings.webhook_secret.get_secret_value()) < 32:
         raise SettingsError("Invalid configuration: PIN_WEBHOOK_SECRET (too_short)")
     return settings
+
+
+def load_database_url(environ: Mapping[str, str] | None = None) -> SecretStr:
+    """Validate migration configuration without requiring runtime credentials."""
+    source = os.environ if environ is None else environ
+    try:
+        settings = Settings.model_validate({"database_url": source.get("PIN_DATABASE_URL", "")})
+    except ValidationError:
+        raise SettingsError("Invalid configuration: PIN_DATABASE_URL") from None
+    return settings.database_url
 
 
 def load_smoke_settings(

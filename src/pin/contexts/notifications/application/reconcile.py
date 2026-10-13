@@ -32,7 +32,12 @@ async def reconcile_schedule_change(
 
 
 def _change_targets_snapshot(change: ScheduleChange, current: CurrentPlanSchedule) -> bool:
-    if change.event_type in {"planning.plan_created", "planning.plan_rescheduled"}:
+    if change.event_type in {
+        "planning.plan_created",
+        "planning.plan_rescheduled",
+        "planning.occurrence_completed",
+        "planning.occurrence_cancelled",
+    }:
         return any(
             occurrence.occurrence_id == change.aggregate_id
             and occurrence.occurrence_version >= change.aggregate_version
@@ -52,6 +57,7 @@ def _change_targets_snapshot(change: ScheduleChange, current: CurrentPlanSchedul
         "planning.series_generated",
         "planning.series_exception_applied",
         "planning.series_stopped",
+        "planning.series_approval_updated",
     }:
         return any(
             occurrence.series_id == change.aggregate_id

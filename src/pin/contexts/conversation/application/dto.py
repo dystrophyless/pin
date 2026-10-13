@@ -33,7 +33,14 @@ class PlanSnapshot(StrictModel):
     version: Annotated[int, Field(ge=1)]
     title: Annotated[str, Field(min_length=1, max_length=240)]
     due_at: datetime | None = None
+    timezone: Annotated[str | None, Field(max_length=64)] = None
+    ends_at: datetime | None = None
     status: Literal["open", "completed", "cancelled"]
+
+    @field_validator("timezone")
+    @classmethod
+    def valid_timezone(cls, value: str | None) -> str | None:
+        return _validate_timezone(value) if value is not None else None
 
 
 class PreferenceSnapshot(StrictModel):

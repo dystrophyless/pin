@@ -687,6 +687,7 @@ class SqlAlchemySeriesStore(RecurrenceCommandStore):
                 state=occurrence.state,
                 version=occurrence.version,
                 local_date=occurrence.local_date,
+                anchor_at=occurrence.starts_at or occurrence.deadline_at,
             )
             for association, occurrence in joined.all()
         )

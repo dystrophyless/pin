@@ -29,9 +29,9 @@ The speech extra is optional for gateway, application, and delivery processes.
 Set role-specific settings in the environment with the `PIN_` prefix:
 
 - All roles: `PIN_DATABASE_URL` (`postgresql://` or `postgresql+psycopg://`).
-- Gateway and delivery worker: `PIN_BOT_TOKEN`.
+- Gateway, delivery worker and speech worker: `PIN_BOT_TOKEN`.
 - Gateway: `PIN_WEBHOOK_SECRET` (at least 32 characters).
-- Application worker: `PIN_OPENROUTER_API_KEY`.
+- Application and speech workers: `PIN_OPENROUTER_API_KEY`.
 
 The commands below validate configuration and composition without connecting to external
 services:
@@ -43,8 +43,9 @@ uv run pin-delivery-worker --check
 uv run pin-speech-worker --check
 ```
 
-A normal invocation reports that role adapters are not yet implemented; each feature task owns
-its adapter.
+Normal invocations run the gateway, application, delivery or speech adapter. The speech worker
+loads one CPU INT8 multilingual Whisper-small model lazily after audio validation and quota
+reservation. Migration commands require only `PIN_DATABASE_URL`, without bot/provider credentials.
 
 Run the local checks with:
 

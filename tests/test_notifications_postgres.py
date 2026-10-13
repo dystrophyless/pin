@@ -15,7 +15,10 @@ from sqlalchemy import select, text
 from sqlalchemy.engine import make_url
 
 from pin.adapters.telegram.application_worker import process_pending_reminder_schedules
+from pin.contexts.billing.api import SqlAlchemyAccessUsageStore
+from pin.contexts.billing.infrastructure.models import AccessAccountRecord
 from pin.contexts.identity.infrastructure.models import PreferencesRecord
+from pin.contexts.identity.infrastructure.store import SqlAlchemyIdentityStore
 from pin.contexts.notifications.infrastructure.models import (
     NotificationReconciliationReceiptRecord,
     ReminderIntentRecord,
@@ -28,6 +31,15 @@ from pin.contexts.planning.infrastructure.models import (
 from pin.contexts.planning.infrastructure.series_models import (
     SeriesOccurrenceRecord,
     SeriesRecord,
+)
+from pin.contexts.planning.mutations_api import (
+    MutationAction,
+    MutationGrant,
+    MutationProof,
+    MutationRequest,
+    SqlAlchemyMutationStore,
+    confirm_mutation,
+    preview_mutation,
 )
 from pin.persistence import run_local_async
 from pin.persistence.db import create_engine, create_session_factory
@@ -713,5 +725,250 @@ def test_wrong_owner_event_is_stale_and_concurrent_workers_create_one_intent(
             assert owner_b_intent.dispatch_version == 1
             assert wrong_receipt is not None and wrong_receipt.status == "stale"
             assert len(owner_a_intents) == 1
+
+    run_local_async(scenario)
+
+
+@pytest.mark.parametrize(
+    ("action", "terminal_state", "event_type"),
+    [
+        (MutationAction.COMPLETE, "completed", "planning.occurrence_completed"),
+        (MutationAction.CANCEL, "cancelled", "planning.occurrence_cancelled"),
+    ],
+)
+def test_committed_terminal_occurrence_events_invalidate_only_the_target(
+    notification_sessions, action: MutationAction, terminal_state: str, event_type: str
+) -> None:
+    async def scenario() -> None:
+        owner_id, plan_id, series_id = uuid4(), uuid4(), uuid4()
+        occurrence_ids = (uuid4(), uuid4(), uuid4())
+        initial_event = _event(
+            owner_id=owner_id,
+            occurrence_id=series_id,
+            event_type="planning.series_created",
+            version=1,
+            at=NOW,
+        )
+        due_by_occurrence = {}
+
+        class Clock:
+            def now(self):
+                return NOW
+
+        class Verifier:
+            async def verify_and_consume(
+                self, proof, *, owner_id, projection_sha256, at
+            ):
+                if proof.token != "confirmed":
+                    return None
+                return MutationGrant(
+                    owner_id,
+                    proof.preview_id,
+                    proof.preview_version,
+                    projection_sha256,
+                    at + timedelta(minutes=1),
+                )
+
+        async with notification_sessions() as session, session.begin():
+            session.add(_preferences(owner_id))
+            session.add(AccessAccountRecord(owner_id=owner_id))
+            session.add(
+                PlanItemRecord(
+                    id=plan_id,
+                    owner_id=owner_id,
+                    kind="appointment",
+                    title="Recurring appointment",
+                    version=1,
+                )
+            )
+            await session.flush()
+            session.add(
+                SeriesRecord(
+                    id=series_id,
+                    owner_id=owner_id,
+                    plan_item_id=plan_id,
+                    version=1,
+                    state="active",
+                    anchor_date=date(2026, 10, 16),
+                    anchor_sequence=0,
+                    next_sequence=3,
+                    total_count=3,
+                    rule={"frequency": "daily", "interval": 1},
+                    typed_draft={"title": "Recurring appointment"},
+                )
+            )
+            await session.flush()
+            links = []
+            for sequence, occurrence_id in enumerate(occurrence_ids):
+                local_date = date(2026, 10, 16 + sequence)
+                starts_at = datetime.combine(local_date, time(9), UTC)
+                due_at = starts_at - timedelta(days=1)
+                due_by_occurrence[occurrence_id] = due_at
+                occurrence = _occurrence(
+                    owner_id=owner_id,
+                    plan_id=plan_id,
+                    occurrence_id=occurrence_id,
+                )
+                occurrence.local_date = local_date
+                occurrence.starts_at = starts_at
+                occurrence.ends_at = starts_at + timedelta(hours=1)
+                session.add(occurrence)
+                links.append(
+                    SeriesOccurrenceRecord(
+                        owner_id=owner_id,
+                        series_id=series_id,
+                        occurrence_id=occurrence_id,
+                        sequence=sequence,
+                        recurrence_key=local_date.isoformat(),
+                    )
+                )
+            await session.flush()
+            session.add_all(links)
+            for occurrence_id, due_at in due_by_occurrence.items():
+                session.add(
+                    _reminder(owner_id=owner_id, occurrence_id=occurrence_id, due_at=due_at)
+                )
+            session.add(_outbox(initial_event))
+
+        # Establish the three pending reminders through the native outbox consumer.
+        assert await process_pending_reminder_schedules(notification_sessions, now=NOW) == 1
+        async with notification_sessions() as session:
+            intents = list(
+                (
+                    await session.scalars(
+                        select(ReminderIntentRecord).where(
+                            ReminderIntentRecord.owner_id == owner_id,
+                            ReminderIntentRecord.plan_item_id == plan_id,
+                        )
+                    )
+                ).all()
+            )
+            assert len(intents) == 3
+            assert all(intent.state == "scheduled" for intent in intents)
+            assert {intent.occurrence_id for intent in intents} == set(occurrence_ids)
+
+        target_id = occurrence_ids[1]
+        async with notification_sessions() as session, session.begin():
+            planning_store = SqlAlchemyMutationStore(session)
+            identity_store = SqlAlchemyIdentityStore(session)
+            billing_store = SqlAlchemyAccessUsageStore(session)
+            preview = await preview_mutation(
+                MutationRequest(
+                    owner_id=owner_id,
+                    occurrence_id=target_id,
+                    expected_occurrence_version=1,
+                    action=action,
+                ),
+                authenticated_owner_id=owner_id,
+                store=planning_store,
+                identity=identity_store,
+                billing=billing_store,
+                clock=Clock(),
+            )
+
+        proof = MutationProof(preview.preview_id, preview.preview_version, "confirmed")
+        async with notification_sessions() as session, session.begin():
+            result = await confirm_mutation(
+                proof,
+                authenticated_owner_id=owner_id,
+                store=SqlAlchemyMutationStore(session),
+                identity=SqlAlchemyIdentityStore(session),
+                billing=SqlAlchemyAccessUsageStore(session),
+                confirmation_verifier=Verifier(),
+                clock=Clock(),
+            )
+            assert result["state"] == terminal_state
+
+        async with notification_sessions() as session:
+            committed = await session.scalar(
+                select(OutboxEvent).where(
+                    OutboxEvent.owner_id == owner_id,
+                    OutboxEvent.aggregate_id == target_id,
+                    OutboxEvent.event_type == event_type,
+                )
+            )
+            assert committed is not None
+            assert committed.aggregate_version == 2
+            assert committed.payload["event_type"] == event_type
+            assert committed.payload["aggregate_id"] == str(target_id)
+            assert committed.payload["aggregate_version"] == 2
+            assert committed.payload["payload"]["state"] == terminal_state
+
+        # The committed Planning event invalidates its own pending reminder only.
+        assert await process_pending_reminder_schedules(notification_sessions, now=NOW) == 1
+        async with notification_sessions() as session:
+            intents = list(
+                (
+                    await session.scalars(
+                        select(ReminderIntentRecord).where(
+                            ReminderIntentRecord.owner_id == owner_id,
+                            ReminderIntentRecord.plan_item_id == plan_id,
+                        )
+                    )
+                ).all()
+            )
+            by_occurrence = {intent.occurrence_id: intent for intent in intents}
+            assert by_occurrence[target_id].state == "invalidated"
+            assert by_occurrence[target_id].dispatch_version == 2
+            assert by_occurrence[target_id].invalidated_at is not None
+            for sibling_id in set(occurrence_ids) - {target_id}:
+                sibling = by_occurrence[sibling_id]
+                assert sibling.state == "scheduled"
+                assert sibling.dispatch_version == 1
+                assert sibling.invalidated_at is None
+                assert sibling.due_at == due_by_occurrence[sibling_id]
+
+        # A replay has a committed receipt and cannot invalidate a second intent.
+        assert await process_pending_reminder_schedules(notification_sessions, now=NOW) == 0
+
+        wrong_owner = _event(
+            owner_id=uuid4(),
+            occurrence_id=occurrence_ids[0],
+            event_type=event_type,
+            version=2,
+            at=NOW + timedelta(minutes=1),
+        )
+        stale_version = _event(
+            owner_id=owner_id,
+            occurrence_id=occurrence_ids[2],
+            event_type=event_type,
+            version=99,
+            at=NOW + timedelta(minutes=2),
+        )
+        async with notification_sessions() as session, session.begin():
+            session.add_all([_outbox(wrong_owner), _outbox(stale_version)])
+        assert await process_pending_reminder_schedules(notification_sessions, now=NOW) == 2
+
+        async with notification_sessions() as session:
+            receipts = list(
+                (
+                    await session.scalars(
+                        select(NotificationReconciliationReceiptRecord).where(
+                            NotificationReconciliationReceiptRecord.event_id.in_(
+                                (wrong_owner.id, stale_version.id)
+                            )
+                        )
+                    )
+                ).all()
+            )
+            assert len(receipts) == 2
+            assert all(receipt.status == "stale" for receipt in receipts)
+            intents = list(
+                (
+                    await session.scalars(
+                        select(ReminderIntentRecord).where(
+                            ReminderIntentRecord.owner_id == owner_id,
+                            ReminderIntentRecord.plan_item_id == plan_id,
+                        )
+                    )
+                ).all()
+            )
+            by_occurrence = {intent.occurrence_id: intent for intent in intents}
+            assert by_occurrence[target_id].state == "invalidated"
+            assert all(
+                by_occurrence[sibling_id].state == "scheduled"
+                and by_occurrence[sibling_id].dispatch_version == 1
+                for sibling_id in set(occurrence_ids) - {target_id}
+            )
 
     run_local_async(scenario)

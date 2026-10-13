@@ -39,6 +39,7 @@ from pin.contexts.conversation.application.service import (
     MAX_OUTPUT_TOKENS,
     ROUTE,
     BoundedPlanningAssistant,
+    bounded_target_snapshot,
 )
 from pin.contexts.conversation.domain.proposals import (
     FailureCategory,
@@ -1179,3 +1180,27 @@ async def test_bounded_smoke_runner_requires_ru_task_and_en_appointment() -> Non
         (preview.scenarios[1].context.owner_id, "issue13-smoke-2"),
     ]
     assert len(recorder.reported) == 2
+
+
+@pytest.mark.asyncio
+async def test_owned_snapshot_fits_budget_without_dropping_current_user_text() -> None:
+    plans = tuple(
+        PlanSnapshot(id=UUID(int=i), version=1, title="Task " + "x" * 230, status="open")
+        for i in range(1, 51)
+    )
+    targets = tuple(
+        TargetSnapshot(id=plan.id, version=1, kind="occurrence", title=plan.title) for plan in plans
+    )
+    original = _context().model_copy(update={"plans": plans, "targets": targets})
+    bounded = bounded_target_snapshot(original)
+    assert bounded.text == original.text
+    assert 0 < len(bounded.targets) < len(original.targets)
+    assert {plan.id for plan in bounded.plans} <= {target.id for target in bounded.targets}
+    transport = FakeTransport(
+        _provider_response('{"kind":"reply","language":"ru","text":"Выберите задачу из списка."}')
+    )
+    assistant, _, _ = _assistant(transport)
+    outcome = await assistant.interpret(bounded, at=NOW)
+    assert isinstance(outcome, ModelSuccess)
+    assert len(transport.payloads) == 1
+    assert sum(len(item["content"]) for item in transport.payloads[0]["messages"]) <= 16000
