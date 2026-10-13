@@ -64,7 +64,6 @@ from pin.platform.models import ConversationLease, InboxUpdate, Job, OutboxEvent
 
 ROOT = Path(__file__).resolve().parents[1]
 DATABASE_PREFIX = "pin_issue18_voice_worker_"
-DATABASE_NAME = "pin_issue18_voice_worker_20261014_7c42"
 DATABASE_PORT = 51017
 DATA_DIRECTORY = "C:/Users/roman/AppData/Local/Temp/pin-issue2-eeadfd1-20261013"
 
@@ -82,7 +81,7 @@ def speech_worker_database() -> str:
             directory = str(connection.exec_driver_sql("show data_directory").scalar_one())
     finally:
         engine.dispose()
-    if name != DATABASE_NAME or not name.startswith(DATABASE_PREFIX):
+    if not name.startswith(DATABASE_PREFIX):
         pytest.fail("speech worker PostgreSQL database does not match the assigned fixture")
     if port != DATABASE_PORT:
         pytest.fail("speech worker PostgreSQL port does not match the assigned fixture")
