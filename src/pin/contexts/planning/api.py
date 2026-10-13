@@ -53,6 +53,7 @@ from pin.contexts.planning.domain.plans import (
     ScheduleNeedsClarification,
     approval_projection_digest,
 )
+from pin.contexts.planning.infrastructure.agenda import SqlAlchemyAgendaReadStore
 from pin.contexts.planning.infrastructure.reminder_schedule_store import (
     SqlAlchemyPlanningScheduleSnapshotStore,
     SqlAlchemyReminderScheduleStore,
@@ -101,6 +102,7 @@ from pin.contexts.planning.recurrence_api import (
 )
 
 __all__ = [
+    "SqlAlchemyAgendaReadStore",
     "AgendaEntry",
     "AgendaPage",
     "AgendaReadStore",
