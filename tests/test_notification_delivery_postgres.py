@@ -1555,4 +1555,3 @@ def test_reply_event_is_unwrapped_and_unknown_outcome_is_never_replayed(
 
 def test_plain_reminder_renderer_keeps_title_text_plain() -> None:
     assert render_reminder("A *literal* title", "en") == "Reminder: A *literal* title"
-

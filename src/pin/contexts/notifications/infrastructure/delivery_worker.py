@@ -1743,5 +1743,3 @@ async def _coalesce_if_older(
     # The current reminder is the useful latest one; older due siblings are skipped
     # by their own pre-send check, which observes this reminder while it stays scheduled.
     return False
-
-
