@@ -15,7 +15,8 @@ the atomic capture continuation. Later messages remain ordered behind that voice
 
 Temporary paths are generated and private. Completed or failed processing removes its file in
 the worker's `finally` block. Worker startup and hourly checks remove only generated audio files
-older than 24 hours. Recognition failures retain measured audio facts and refund the open
+older than 23 hours, leaving an hour of scheduling margin for the 24-hour crash-retention
+bound while the worker is running. Recognition failures retain measured audio facts and refund the open
 allowance; successful capture interpretation settles the combined AI and voice reservation.
 
 The local feature checks are:
