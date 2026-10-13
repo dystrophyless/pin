@@ -14,6 +14,7 @@ from pin.contexts.conversation.infrastructure.models import (
     ProviderCallRecord,
 )
 from pin.contexts.identity.infrastructure import models as identity_models  # noqa: F401
+from pin.contexts.notifications.infrastructure import models as notifications_models
 from pin.contexts.planning.infrastructure import models as planning_models  # noqa: F401
 from pin.contexts.planning.infrastructure.agenda import AgendaSnapshotRecord
 from pin.contexts.planning.infrastructure.series_models import (
@@ -43,6 +44,8 @@ assert AgendaSnapshotRecord.metadata is target_metadata
 assert SeriesRecord.metadata is target_metadata
 assert SeriesOccurrenceRecord.metadata is target_metadata
 assert SeriesExceptionRecord.metadata is target_metadata
+assert notifications_models.ReminderIntentRecord.metadata is target_metadata
+assert notifications_models.NotificationReconciliationReceiptRecord.metadata is target_metadata
 
 
 def _database_url() -> str:

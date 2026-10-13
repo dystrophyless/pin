@@ -37,6 +37,10 @@ from pin.contexts.billing.api import (
 )
 from pin.contexts.identity.application.onboarding import OnboardingResult
 from pin.contexts.identity.infrastructure.store import SqlAlchemyIdentityStore
+from pin.contexts.notifications.infrastructure.outbox_consumer import (
+    SqlAlchemyNotificationScheduleEventConsumer,
+)
+from pin.contexts.planning.api import SqlAlchemyReminderScheduleStore
 from pin.platform.contracts import EventEnvelope
 from pin.platform.events import add_outbox_event
 from pin.platform.jobs import (
@@ -212,6 +216,10 @@ async def run_application_worker(
     sessions: async_sessionmaker[AsyncSession], *, worker_id: str
 ) -> None:
     while True:
+        try:
+            await process_pending_reminder_schedules(sessions, now=datetime.now(UTC))
+        except Exception as error:
+            logger.error("reminder_reconciliation_failed: error=%s", type(error).__name__)
         claim = await claim_application_job(sessions, worker_id=worker_id)
         if claim is None:
             await asyncio.sleep(POLL_SECONDS)
@@ -233,6 +241,19 @@ async def run_application_worker(
                     )
             except Exception:
                 logger.warning("application_job_failure_record_failed: job_id=%s", claim.job_id)
+
+
+async def process_pending_reminder_schedules(
+    sessions: async_sessionmaker[AsyncSession], *, now: datetime, limit: int = 100
+) -> int:
+    """Reconcile a bounded committed-event batch even when Telegram work is idle."""
+    async with sessions() as session, session.begin():
+        current_schedules = SqlAlchemyReminderScheduleStore(
+            session, SqlAlchemyIdentityStore(session)
+        )
+        return await SqlAlchemyNotificationScheduleEventConsumer(
+            session, current_schedules
+        ).consume_pending(at=now, limit=limit)
 
 
 class _BillingTrialActivator:

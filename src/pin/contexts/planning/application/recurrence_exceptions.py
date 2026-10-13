@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from hashlib import sha256
 from uuid import UUID
 
@@ -24,6 +24,7 @@ from pin.contexts.planning.application.recurrence_preview import (
     RecurrenceIdempotencyConflict,
     RecurrenceStalePreview,
 )
+from pin.contexts.planning.application.reminder_policy import apply_recurrence_quiet_policy
 from pin.contexts.planning.domain.recurrence import (
     RecurrenceExceptionDraft,
     RecurrenceExceptionScope,
@@ -67,6 +68,9 @@ def preview_recurrence_exception(
     at: datetime,
     through: date,
     default_zone: str | None = None,
+    quiet_zone: str,
+    quiet_start: time,
+    quiet_end: time,
     max_occurrences: int = 1000,
 ) -> RecurrenceExceptionPreview:
     if snapshot.state != "active":
@@ -150,7 +154,24 @@ def preview_recurrence_exception(
             raise ValueError("exception preview exceeds the bounded series horizon")
         remaining = None if snapshot.total_count is None else snapshot.total_count - change.sequence
 
-    digest = _exception_approval_digest(snapshot, change, updated_draft, projection, through)
+    projection = apply_recurrence_quiet_policy(
+        projection,
+        now=at,
+        quiet_zone=quiet_zone,
+        quiet_start=quiet_start,
+        quiet_end=quiet_end,
+    )
+
+    digest = _exception_approval_digest(
+        snapshot,
+        change,
+        updated_draft,
+        projection,
+        through,
+        quiet_zone=quiet_zone,
+        quiet_start=quiet_start,
+        quiet_end=quiet_end,
+    )
     return RecurrenceExceptionPreview(
         snapshot.id,
         snapshot.version,
@@ -205,6 +226,9 @@ async def apply_confirmed_recurrence_exception(
         at=now,
         through=through,
         default_zone=preferences.home_zone,
+        quiet_zone=preferences.home_zone,
+        quiet_start=preferences.quiet_start,
+        quiet_end=preferences.quiet_end,
     )
     grant = await confirmation_verifier.verify_and_consume(
         command.proof,
@@ -235,6 +259,9 @@ async def apply_confirmed_recurrence_exception(
         at=write_at,
         through=through,
         default_zone=current_preferences.home_zone,
+        quiet_zone=current_preferences.home_zone,
+        quiet_start=current_preferences.quiet_start,
+        quiet_end=current_preferences.quiet_end,
     )
     if refreshed.approval_projection_sha256 != preview.approval_projection_sha256:
         raise RecurrenceStalePreview("the approved future schedule changed before application")
@@ -246,6 +273,10 @@ async def apply_confirmed_recurrence_exception(
         change=command.change,
         projection=refreshed.projection,
         new_draft=refreshed.updated_draft,
+        approved_preferences_version=command.expected_preferences_version,
+        quiet_zone=current_preferences.home_zone,
+        quiet_start=current_preferences.quiet_start,
+        quiet_end=current_preferences.quiet_end,
         approval_projection_sha256=refreshed.approval_projection_sha256,
         at=write_at,
     )
@@ -269,6 +300,10 @@ def _exception_approval_digest(
     draft: RecurringPlanDraft,
     projection: RecurrenceProjection,
     through: date,
+    *,
+    quiet_zone: str,
+    quiet_start: time,
+    quiet_end: time,
 ) -> str:
     replacement = change.replacement
     payload = {
@@ -278,6 +313,11 @@ def _exception_approval_digest(
         "sequence": change.sequence,
         "scope": change.scope.value,
         "through": through.isoformat(),
+        "quiet_policy": {
+            "zone": quiet_zone,
+            "start": quiet_start.isoformat(),
+            "end": quiet_end.isoformat(),
+        },
         "remaining_count": None
         if snapshot.total_count is None
         else snapshot.total_count - change.sequence,

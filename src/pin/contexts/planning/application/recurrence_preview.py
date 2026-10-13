@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from hashlib import sha256
 from uuid import UUID
 
@@ -17,6 +17,7 @@ from pin.contexts.planning.application.recurrence_contracts import (
     RecurrenceConfirmationProof,
     RecurrenceConfirmationVerifier,
 )
+from pin.contexts.planning.application.reminder_policy import apply_recurrence_quiet_policy
 from pin.contexts.planning.domain.plans import OffsetKind, ReminderOffset
 from pin.contexts.planning.domain.recurrence import (
     RecurrenceProjection,
@@ -89,6 +90,9 @@ def preview_recurring_series(
     expected_preferences_version: int,
     default_zone: str,
     default_reminders: tuple[ReminderOffset, ...],
+    quiet_zone: str,
+    quiet_start: time,
+    quiet_end: time,
     at: datetime,
     horizon_days: int = 90,
     max_occurrences: int = 32,
@@ -116,6 +120,13 @@ def preview_recurring_series(
         anchor_sequence=anchor_sequence,
         total_count=total_count,
     )
+    projection = apply_recurrence_quiet_policy(
+        projection,
+        now=at,
+        quiet_zone=quiet_zone,
+        quiet_start=quiet_start,
+        quiet_end=quiet_end,
+    )
     return RecurrencePreview(
         owner_id,
         expected_preferences_version,
@@ -128,6 +139,9 @@ def preview_recurring_series(
             default_reminders=default_reminders,
             projection=projection,
             through=through,
+            quiet_zone=quiet_zone,
+            quiet_start=quiet_start,
+            quiet_end=quiet_end,
         ),
     )
 
@@ -174,6 +188,9 @@ async def create_confirmed_series(
         expected_preferences_version=command.expected_preferences_version,
         default_zone=preferences.home_zone,
         default_reminders=recurrence_defaults(preferences),
+        quiet_zone=preferences.home_zone,
+        quiet_start=preferences.quiet_start,
+        quiet_end=preferences.quiet_end,
         at=now,
         horizon_days=preview_horizon_days,
         max_occurrences=max_occurrences,
@@ -207,6 +224,9 @@ async def create_confirmed_series(
         expected_preferences_version=command.expected_preferences_version,
         default_zone=current_preferences.home_zone,
         default_reminders=recurrence_defaults(current_preferences),
+        quiet_zone=current_preferences.home_zone,
+        quiet_start=current_preferences.quiet_start,
+        quiet_end=current_preferences.quiet_end,
         at=write_at,
         horizon_days=preview_horizon_days,
         max_occurrences=max_occurrences,
@@ -219,10 +239,14 @@ async def create_confirmed_series(
         owner_id=authenticated_owner_id,
         action_key=command.action_key,
         payload_sha256=payload_sha,
+        approved_preferences_version=command.expected_preferences_version,
         draft=command.draft,
         projection=write_preview.projection,
         effective_reminders=recurrence_defaults(current_preferences),
         default_zone=current_preferences.home_zone,
+        quiet_zone=current_preferences.home_zone,
+        quiet_start=current_preferences.quiet_start,
+        quiet_end=current_preferences.quiet_end,
         at=write_at,
         horizon_date=write_preview.through,
     )
@@ -236,6 +260,9 @@ def approval_recurrence_digest(
     default_reminders: tuple[ReminderOffset, ...],
     projection: RecurrenceProjection,
     through: date,
+    quiet_zone: str,
+    quiet_start: time,
+    quiet_end: time,
 ) -> str:
     body = {
         "schema_version": 1,
@@ -246,6 +273,11 @@ def approval_recurrence_digest(
             for reminder in default_reminders
         ],
         "through": through.isoformat(),
+        "quiet_policy": {
+            "zone": quiet_zone,
+            "start": quiet_start.isoformat(),
+            "end": quiet_end.isoformat(),
+        },
         "truncated": projection.truncated,
         "typed_projection_sha256": recurrence_projection_digest(
             draft, projection.occurrences

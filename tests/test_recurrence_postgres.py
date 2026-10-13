@@ -47,6 +47,7 @@ from pin.contexts.planning.application.recurrence_exceptions import (
 )
 from pin.contexts.planning.application.recurrence_generation import (
     GenerateRecurrenceSeries,
+    RecurrenceGenerationPolicyStale,
     generate_recurrence_horizon,
 )
 from pin.contexts.planning.application.recurrence_preview import (
@@ -66,6 +67,7 @@ from pin.contexts.planning.domain.recurrence import (
     RecurrenceExceptionDraft,
     RecurrenceExceptionScope,
     RecurrenceFrequency,
+    RecurrenceProjection,
     RecurrenceRule,
     RecurringPlanDraft,
 )
@@ -186,6 +188,9 @@ class PersistedRecurrenceProducer:
                 expected_preferences_version=preferences.version,
                 default_zone=preferences.home_zone,
                 default_reminders=recurrence_defaults(preferences),
+                quiet_zone=preferences.home_zone,
+                quiet_start=preferences.quiet_start,
+                quiet_end=preferences.quiet_end,
                 at=now,
             )
             await self._insert(
@@ -220,6 +225,9 @@ class PersistedRecurrenceProducer:
                 at=now,
                 through=change.replacement.local_date + timedelta(days=366),
                 default_zone=preferences.home_zone,
+                quiet_zone=preferences.home_zone,
+                quiet_start=preferences.quiet_start,
+                quiet_end=preferences.quiet_end,
             )
             await self._insert(
                 session,
@@ -422,11 +430,12 @@ async def _create(
     verifier: PersistedRecurrenceProducer,
     store=None,
     clock=None,
+    expected_preferences_version: int = 1,
 ) -> dict[str, object]:
     async with SqlAlchemyUnitOfWork(sessions) as uow:
         session = uow.session
         return await create_confirmed_series(
-            CreateConfirmedSeries(action_key, 1, draft, proof),
+            CreateConfirmedSeries(action_key, expected_preferences_version, draft, proof),
             authenticated_owner_id=owner_id,
             store=store or SqlAlchemySeriesStore(session),
             identity=SqlAlchemyIdentityStore(session),
@@ -522,12 +531,15 @@ def test_postgres_generation_resumes_after_restart_and_serializes_concurrent_wor
                     ),
                     authenticated_owner_id=owner_id,
                     store=SqlAlchemySeriesStore(uow.session),
+                    identity=SqlAlchemyIdentityStore(uow.session),
                     clock=FixedClock(NOW),
                 )
 
         outcomes = await asyncio.gather(generate(), generate(), return_exceptions=True)
         assert sum(isinstance(item, dict) for item in outcomes) == 1
-        assert sum(isinstance(item, SeriesVersionConflict) for item in outcomes) == 1
+        rejected = [item for item in outcomes if isinstance(item, BaseException)]
+        assert len(rejected) == 1
+        assert isinstance(rejected[0], (SeriesVersionConflict, ValueError))
 
         # A newly constructed store resumes from its durable cursor after the
         # process has restarted; an identical covered horizon adds no rows.
@@ -544,6 +556,7 @@ def test_postgres_generation_resumes_after_restart_and_serializes_concurrent_wor
                 ),
                 authenticated_owner_id=owner_id,
                 store=SqlAlchemySeriesStore(uow.session),
+                identity=SqlAlchemyIdentityStore(uow.session),
                 clock=FixedClock(NOW),
             )
             assert replay["occurrences"] == []
@@ -591,6 +604,7 @@ def test_postgres_unbounded_series_extends_across_generation_restart(recurrence_
                 GenerateRecurrenceSeries(series_id, 1, NOW.date() + timedelta(days=100)),
                 authenticated_owner_id=owner_id,
                 store=SqlAlchemySeriesStore(uow.session),
+                identity=SqlAlchemyIdentityStore(uow.session),
                 clock=FixedClock(NOW),
             )
         assert first_extension["next_sequence"] == 100
@@ -608,6 +622,7 @@ def test_postgres_unbounded_series_extends_across_generation_restart(recurrence_
                 ),
                 authenticated_owner_id=owner_id,
                 store=SqlAlchemySeriesStore(uow.session),
+                identity=SqlAlchemyIdentityStore(uow.session),
                 clock=FixedClock(NOW),
             )
         assert second_extension["next_sequence"] == 150
@@ -626,6 +641,204 @@ def test_postgres_unbounded_series_extends_across_generation_restart(recurrence_
             assert len({row.recurrence_key for row in rows}) == 150
             series = await session.get(SeriesRecord, series_id)
             assert series is not None and series.total_count is None and series.end_date is None
+
+    run_local_async(scenario)
+
+
+def test_postgres_series_generation_rejects_unapproved_preference_change(
+    recurrence_sessions,
+) -> None:
+    async def scenario() -> None:
+        owner_id = uuid4()
+        await _seed_owner(recurrence_sessions, owner_id)
+        producer = PersistedRecurrenceProducer(recurrence_sessions)
+        draft = _daily_draft(NOW.date() + timedelta(days=1), count=None)
+        proof = await producer.issue_create(owner_id, draft)
+        result = await _create(
+            recurrence_sessions,
+            owner_id,
+            draft,
+            proof,
+            action_key="issue11-generation-policy-create",
+            verifier=producer,
+        )
+        series_id = UUID(result["series_id"])
+
+        # A later profile edit cannot silently change the policy of a previously
+        # approved series or stamp the new version onto generated occurrences.
+        async with recurrence_sessions() as session, session.begin():
+            await session.execute(
+                update(PreferencesRecord)
+                .where(PreferencesRecord.owner_id == owner_id)
+                .values(
+                    version=PreferencesRecord.version + 1,
+                    quiet_end=time(7, 0),
+                )
+            )
+
+        async with SqlAlchemyUnitOfWork(recurrence_sessions) as uow:
+            before = await SqlAlchemySeriesStore(uow.session).get_series_snapshot(
+                owner_id, series_id
+            )
+        assert before is not None and before.next_sequence == 32
+        with pytest.raises(RecurrenceGenerationPolicyStale):
+            async with SqlAlchemyUnitOfWork(recurrence_sessions) as uow:
+                await generate_recurrence_horizon(
+                    GenerateRecurrenceSeries(
+                        series_id, before.version, NOW.date() + timedelta(days=60)
+                    ),
+                    authenticated_owner_id=owner_id,
+                    store=SqlAlchemySeriesStore(uow.session),
+                    identity=SqlAlchemyIdentityStore(uow.session),
+                    clock=FixedClock(NOW),
+                )
+
+        async with recurrence_sessions() as session:
+            after = await SqlAlchemySeriesStore(session).get_series_snapshot(owner_id, series_id)
+            assert after is not None
+            assert (after.version, after.next_sequence) == (before.version, before.next_sequence)
+            rows = list(
+                (
+                    await session.scalars(
+                        select(SeriesOccurrenceRecord)
+                        .where(SeriesOccurrenceRecord.series_id == series_id)
+                        .order_by(SeriesOccurrenceRecord.sequence)
+                    )
+                ).all()
+            )
+            assert len(rows) == 32
+            generated = list(
+                (
+                    await session.scalars(
+                        select(OccurrenceRecord).where(
+                            OccurrenceRecord.id.in_(row.occurrence_id for row in rows)
+                        )
+                    )
+                ).all()
+            )
+            assert all(row.reminder_preferences_version == 1 for row in generated)
+
+    run_local_async(scenario)
+
+
+def test_postgres_recurrence_quiet_projection_reaches_reminder_intent(recurrence_sessions) -> None:
+    async def scenario() -> None:
+        owner_id = uuid4()
+        await _seed_owner(recurrence_sessions, owner_id)
+        async with recurrence_sessions() as session, session.begin():
+            profile = await session.get(PreferencesRecord, owner_id)
+            assert profile is not None
+            profile.reminder_elapsed_hours = 1
+            profile.version = 2
+
+        draft = RecurringPlanDraft(
+            PlanKind.TASK,
+            "Quiet-hour series",
+            NOW.date() + timedelta(days=1),
+            time(8, 30),
+            "UTC",
+            RecurrenceRule(RecurrenceFrequency.DAILY, count=3),
+        )
+        async with recurrence_sessions() as session:
+            preferences = await SqlAlchemyIdentityStore(session).get_preferences(owner_id)
+        assert preferences is not None
+        approved = preview_recurring_series(
+            owner_id,
+            draft,
+            expected_preferences_version=preferences.version,
+            default_zone=preferences.home_zone,
+            default_reminders=recurrence_defaults(preferences),
+            quiet_zone=preferences.home_zone,
+            quiet_start=preferences.quiet_start,
+            quiet_end=preferences.quiet_end,
+            at=NOW,
+        )
+        assert approved.projection.occurrences[0].reminders[0][1] == datetime(
+            2026, 10, 15, 8, tzinfo=UTC
+        )
+        assert approved.projection.occurrences[0].reminder_notices[0].kind == "quiet_deferred"
+
+        producer = PersistedRecurrenceProducer(recurrence_sessions)
+        proof = await producer.issue_create(owner_id, draft)
+        async with recurrence_sessions() as session:
+            grant = (
+                await session.execute(
+                    select(confirmation_grants.c.approved_projection_sha256).where(
+                        confirmation_grants.c.credential == proof.credential
+                    )
+                )
+            ).scalar_one()
+        assert grant == approved.approval_projection_sha256
+        result = await _create(
+            recurrence_sessions,
+            owner_id,
+            draft,
+            proof,
+            action_key="issue11-recurrence-quiet-create",
+            verifier=producer,
+            expected_preferences_version=2,
+        )
+        first = result["occurrences"][0]
+        occurrence_id = UUID(first["occurrence_id"])
+        assert first["reminder_notices"] == [
+            {
+                "kind": "quiet_deferred",
+                "offset_kind": "elapsed_seconds",
+                "offset_amount": 3600,
+                "source": "default",
+                "original_due_at": datetime(2026, 10, 15, 7, 30, tzinfo=UTC).isoformat(),
+                "due_at": datetime(2026, 10, 15, 8, tzinfo=UTC).isoformat(),
+            }
+        ]
+
+        from pin.adapters.telegram.application_worker import (
+            process_pending_reminder_schedules,
+        )
+        from pin.contexts.notifications.infrastructure.models import (
+            NotificationReconciliationReceiptRecord,
+            ReminderIntentRecord,
+        )
+
+        await process_pending_reminder_schedules(recurrence_sessions, now=NOW, limit=1000)
+        async with recurrence_sessions() as session:
+            reminder = await session.scalar(
+                select(ReminderRuleRecord).where(
+                    ReminderRuleRecord.occurrence_id == occurrence_id
+                )
+            )
+            intent = await session.scalar(
+                select(ReminderIntentRecord).where(
+                    ReminderIntentRecord.occurrence_id == occurrence_id,
+                    ReminderIntentRecord.state == "scheduled",
+                )
+            )
+            receipts = list(
+                (
+                    await session.scalars(
+                        select(NotificationReconciliationReceiptRecord).where(
+                            NotificationReconciliationReceiptRecord.owner_id == owner_id
+                        )
+                    )
+                ).all()
+            )
+        assert reminder is not None and intent is not None, [
+            (item.event_type, item.status, item.created_count) for item in receipts
+        ]
+        expected = (datetime(2026, 10, 15, 8, tzinfo=UTC), "elapsed_seconds", 3600, "default", 2)
+        assert (
+            reminder.due_at,
+            reminder.offset_kind,
+            reminder.offset_amount,
+            reminder.source,
+            intent.preferences_version,
+        ) == expected
+        assert (
+            intent.due_at,
+            intent.offset_kind,
+            intent.offset_amount,
+            intent.source,
+            intent.preferences_version,
+        ) == expected
 
     run_local_async(scenario)
 
@@ -1037,6 +1250,9 @@ def test_postgres_unbounded_this_and_future_reanchors_then_generation_continues(
                 owner_id=owner_id,
                 at=NOW,
                 through=new_date + timedelta(days=366),
+                quiet_zone="Asia/Almaty",
+                quiet_start=time(22),
+                quiet_end=time(8),
             )
         assert preview.updated_draft.reminders == (reminder,)
         assert preview.projection.occurrences
@@ -1120,6 +1336,7 @@ def test_postgres_unbounded_this_and_future_reanchors_then_generation_continues(
                 ),
                 authenticated_owner_id=owner_id,
                 store=SqlAlchemySeriesStore(uow.session),
+                identity=SqlAlchemyIdentityStore(uow.session),
                 clock=FixedClock(NOW),
             )
         assert extended["occurrences"]
@@ -1212,6 +1429,7 @@ def test_postgres_wrong_owner_expired_access_stops_series_and_preserves_occurren
                 GenerateRecurrenceSeries(spring_id, spring_series.version, date(2027, 3, 20)),
                 authenticated_owner_id=owner_id,
                 store=SqlAlchemySeriesStore(uow.session),
+                identity=SqlAlchemyIdentityStore(uow.session),
                 clock=FixedClock(NOW),
             )
         async with recurrence_sessions() as session:
@@ -1248,6 +1466,8 @@ def test_postgres_wrong_owner_expired_access_stops_series_and_preserves_occurren
                     expected_version=1,
                     through=NOW.date() + timedelta(days=1),
                     at=NOW,
+                    projection=RecurrenceProjection((), (), False, ""),
+                    approved_preferences_version=1,
                 )
 
         terminal_id = UUID(result["occurrences"][0]["occurrence_id"])
@@ -1292,6 +1512,8 @@ def test_postgres_wrong_owner_expired_access_stops_series_and_preserves_occurren
                     expected_version=2,
                     through=NOW.date() + timedelta(days=10),
                     at=NOW,
+                    projection=RecurrenceProjection((), (), False, ""),
+                    approved_preferences_version=1,
                 )
 
     run_local_async(scenario)

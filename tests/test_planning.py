@@ -132,6 +132,9 @@ def test_preview_fingerprint_binds_effective_reminders_but_excludes_generated_id
         expected_preferences_version=2,
         default_zone="UTC",
         default_reminders=default,
+        quiet_zone="UTC",
+        quiet_start=time(22),
+        quiet_end=time(8),
         at=NOW,
     )
     same_intent = preview_plan_batch(
@@ -140,6 +143,9 @@ def test_preview_fingerprint_binds_effective_reminders_but_excludes_generated_id
         expected_preferences_version=2,
         default_zone="UTC",
         default_reminders=default,
+        quiet_zone="UTC",
+        quiet_start=time(22),
+        quiet_end=time(8),
         at=NOW + timedelta(minutes=1),
     )
     assert preview.plans[0].item.id != same_intent.plans[0].item.id
@@ -151,6 +157,9 @@ def test_preview_fingerprint_binds_effective_reminders_but_excludes_generated_id
         expected_preferences_version=2,
         default_zone="UTC",
         default_reminders=default,
+        quiet_zone="UTC",
+        quiet_start=time(22),
+        quiet_end=time(8),
         at=datetime(2026, 10, 14, 8, 30, tzinfo=UTC),
     )
     assert reminder_now_past.plans[0].occurrence.schedule.starts_at > datetime(
@@ -159,3 +168,55 @@ def test_preview_fingerprint_binds_effective_reminders_but_excludes_generated_id
     assert not reminder_now_past.plans[0].reminders
     assert len(reminder_now_past.plans[0].omitted_reminders) == 1
     assert preview.approval_projection_sha256 != reminder_now_past.approval_projection_sha256
+
+
+def test_preview_fingerprints_quiet_deferral_conflict_and_unusable_default() -> None:
+    now = datetime(2026, 10, 14, 8, tzinfo=UTC)
+    due = OneOffPlanDraft(PlanKind.TASK, "Task", date(2026, 10, 15), time(9), "UTC")
+    offset = ReminderOffset(OffsetKind.ELAPSED_SECONDS, 10 * 3600, "default")
+    deferred = preview_plan_batch(
+        uuid4(),
+        (due,),
+        expected_preferences_version=1,
+        default_zone="UTC",
+        default_reminders=(offset,),
+        quiet_zone="UTC",
+        quiet_start=time(22),
+        quiet_end=time(8),
+        at=now,
+    )
+    assert deferred.plans[0].reminders[0].due_at == datetime(2026, 10, 15, 8, tzinfo=UTC)
+    assert deferred.plans[0].reminder_notices[0].kind == "quiet_deferred"
+
+    explicit = replace(
+        due,
+        reminders=(ReminderOffset(OffsetKind.ELAPSED_SECONDS, 10 * 3600, "explicit"),),
+    )
+    conflicted = preview_plan_batch(
+        uuid4(),
+        (explicit,),
+        expected_preferences_version=1,
+        default_zone="UTC",
+        default_reminders=(),
+        quiet_zone="UTC",
+        quiet_start=time(22),
+        quiet_end=time(8),
+        at=now,
+    )
+    assert conflicted.plans[0].reminders[0].due_at == datetime(2026, 10, 14, 23, tzinfo=UTC)
+    assert conflicted.plans[0].reminder_notices[0].kind == "quiet_conflict"
+
+    too_early = replace(due, local_time=time(8))
+    omitted = preview_plan_batch(
+        uuid4(),
+        (too_early,),
+        expected_preferences_version=1,
+        default_zone="UTC",
+        default_reminders=(offset,),
+        quiet_zone="UTC",
+        quiet_start=time(22),
+        quiet_end=time(8),
+        at=now,
+    )
+    assert not omitted.plans[0].reminders
+    assert omitted.plans[0].omitted_reminders[0].reason == "quiet_unusable"
