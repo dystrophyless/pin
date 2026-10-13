@@ -207,21 +207,29 @@ class BoundedPlanningAssistant:
         except Exception:
             return ModelFailure(category=FailureCategory.ACCESS_DENIED)
         if reservation is ReservationStatus.DENIED:
-            return ModelFailure(category=FailureCategory.ACCESS_DENIED)
+            return await self._refund_failure(
+                context, ModelFailure(category=FailureCategory.ACCESS_DENIED), claim
+            )
         if reservation is ReservationStatus.REPLAY:
             stored = await self._usage.get_result(
                 owner_id=context.owner_id, turn_id=context.request_id
             )
             if stored is None:
-                return ModelFailure(category=FailureCategory.USAGE_UNKNOWN)
+                return await self._refund_failure(
+                    context, ModelFailure(category=FailureCategory.USAGE_UNKNOWN), claim
+                )
             raw_result, stored_request_ids = stored
             if not 1 <= len(stored_request_ids) <= MAX_CALLS:
-                return ModelFailure(category=FailureCategory.INVALID_OUTPUT)
+                return await self._refund_failure(
+                    context, ModelFailure(category=FailureCategory.INVALID_OUTPUT), claim
+                )
             result: Reply | ActionProposal | ProposalBatch | None
             try:
                 result = _parse_result(json.dumps(raw_result), context)
             except (ValidationError, ValueError, TypeError):
-                return ModelFailure(category=FailureCategory.INVALID_OUTPUT)
+                return await self._refund_failure(
+                    context, ModelFailure(category=FailureCategory.INVALID_OUTPUT), claim
+                )
             try:
                 await self._allowance.settle(
                     owner_id=context.owner_id,
@@ -430,15 +438,22 @@ class BoundedPlanningAssistant:
             outcome = ModelFailure(category=FailureCategory.BUDGET_EXHAUSTED)
 
         if isinstance(outcome, ModelFailure):
-            try:
-                await self._allowance.refund(
-                    owner_id=context.owner_id,
-                    request_id=context.request_id,
-                    at=self._now(),
-                    claim=claim,
-                )
-            except Exception:
-                return outcome
+            return await self._refund_failure(context, outcome, claim)
+        return outcome
+
+    async def _refund_failure(
+        self, context: ConversationContext, outcome: ModelFailure, claim: JobClaim | None
+    ) -> ModelFailure:
+        # Failed recovery releases the user's hold without erasing provider cost facts.
+        try:
+            await self._allowance.refund(
+                owner_id=context.owner_id,
+                request_id=context.request_id,
+                at=self._now(),
+                claim=claim,
+            )
+        except Exception:
+            pass
         return outcome
 
     async def _mark_unknown(
