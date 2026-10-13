@@ -39,4 +39,4 @@ All eleven new parent-owned databases were dropped and verified absent (`c82253`
 
 This increment supplies durable typed recurrence ports and real local PostgreSQL proof. User capture/edit UI, production generation scheduling, reminder dispatch, coaching and full live conversation qualification belong to their dependent issues. The confirmation issuer in the recurrence tests is a persisted test producer, not a completed production capture feature. No new provider calls, payment calls, push, Docker, deployment, Linux/hosted qualification or full-MVP acceptance is claimed.
 
-GitHub acceptance publication/readback follows this local evidence packet.
+GitHub closure/completed/status:accepted readback confirmed: [acceptance comment](https://github.com/dystrophyless/pin/issues/10#issuecomment-6153942211). All task acceptance criteria and dependencies were preserved.
