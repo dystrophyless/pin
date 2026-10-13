@@ -33,6 +33,14 @@ class SmokeSettings:
     test_chat_id: int
 
 
+@dataclass(frozen=True, slots=True)
+class ModelSmokeSettings:
+    """Provider credentials and DB destination for the opt-in local model smoke."""
+
+    database_url: SecretStr
+    openrouter_api_key: SecretStr
+
+
 class Settings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -169,6 +177,74 @@ def load_smoke_settings(
     if chat_id == 0:
         raise SettingsError("PIN_TEST_CHAT_ID must be a non-zero private-chat numeric ID")
     return SmokeSettings(SecretStr(token), chat_id)
+
+
+def load_model_smoke_settings(
+    *,
+    project_root: Path | None = None,
+    environ: Mapping[str, str] | None = None,
+) -> ModelSmokeSettings:
+    """Load only DB and OpenRouter fields for explicit local model-smoke execution."""
+    source = os.environ if environ is None else environ
+    local = _parse_model_smoke_local_config(
+        ((project_root or Path.cwd()) / ".env.local").read_text(encoding="utf-8")
+        if ((project_root or Path.cwd()) / ".env.local").is_file()
+        else ""
+    )
+    database_url = source.get("PIN_DATABASE_URL") or local.get("PIN_DATABASE_URL")
+    api_key = (
+        source.get("PIN_OPENROUTER_API_KEY")
+        or source.get("OPENROUTER_API_KEY")
+        or local.get("PIN_OPENROUTER_API_KEY")
+        or local.get("OPENROUTER_API_KEY")
+    )
+    missing: list[str] = []
+    if not database_url:
+        missing.append("PIN_DATABASE_URL")
+    if not api_key:
+        missing.append("PIN_OPENROUTER_API_KEY or OPENROUTER_API_KEY")
+    if missing:
+        raise SettingsError(f"Missing required configuration: {', '.join(missing)}")
+    try:
+        settings = Settings.model_validate(
+            {
+                "database_url": database_url,
+                "openrouter_api_key": api_key,
+            }
+        )
+    except ValidationError as error:
+        failures = ", ".join(
+            f"{item['loc'][0]} ({item['type']})"
+            for item in error.errors(include_input=False, include_context=False)
+        )
+        raise SettingsError(f"Invalid model-smoke configuration: {failures}") from None
+    assert settings.openrouter_api_key is not None
+    return ModelSmokeSettings(settings.database_url, settings.openrouter_api_key)
+
+
+def _parse_model_smoke_local_config(content: str) -> dict[str, str]:
+    """Read only whitelisted model-smoke fields from ignored local configuration."""
+    allowed = {
+        "PIN_DATABASE_URL",
+        "PIN_OPENROUTER_API_KEY",
+        "OPENROUTER_API_KEY",
+    }
+    values: dict[str, str] = {}
+    for line_number, raw_line in enumerate(content.splitlines(), start=1):
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        key, separator, value = line.partition("=")
+        key = key.strip()
+        value = value.strip()
+        if not separator or key not in allowed:
+            continue
+        if value.startswith(('"', "'")) and value.endswith(value[0]) and len(value) >= 2:
+            value = value[1:-1]
+        if key in values:
+            raise SettingsError(f"duplicate local setting on line {line_number}")
+        values[key] = value
+    return values
 
 
 def _parse_smoke_local_config(content: str) -> dict[str, str]:

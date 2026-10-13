@@ -9,6 +9,10 @@ from pin.adapters.telegram.ingress import TelegramIngressBotRecord, TelegramOwne
 from pin.adapters.telegram.presentation.tokens import TelegramCallbackTokenRecord
 from pin.bootstrap.config import ProcessRole, load_settings
 from pin.contexts.billing.infrastructure import models as billing_models  # noqa: F401
+from pin.contexts.conversation.infrastructure.models import (
+    ConversationTurnResultRecord,
+    ProviderCallRecord,
+)
 from pin.persistence.models import Base
 from pin.platform import models as platform_models  # noqa: F401
 
@@ -20,6 +24,8 @@ target_metadata = Base.metadata
 assert TelegramCallbackTokenRecord.metadata is target_metadata
 assert TelegramIngressBotRecord.metadata is target_metadata
 assert TelegramOwnerRecord.metadata is target_metadata
+assert ConversationTurnResultRecord.metadata is target_metadata
+assert ProviderCallRecord.metadata is target_metadata
 
 
 def _database_url() -> str:

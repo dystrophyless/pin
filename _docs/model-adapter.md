@@ -1,0 +1,29 @@
+# Conversation model adapter
+
+BoundedPlanningAssistant accepts an already owner-filtered snapshot and returns a strict reply, typed proposal, or failure. It only calls the configured OpenRouter chat-completions endpoint for qwen/qwen3.7-flash; it does not execute tools, write plans, follow proposal URLs, or receive an owner ID in the prompt. The caller must keep protected writes behind its own planning command and current-version check.
+
+The DTO boundary lives in application/dto.py. Domain vocabulary stays in standard-library enums. The supported proposal shape preserves appointment start/end or duration, deadlines, timed and untimed tasks, restricted recurrence, and the distinction between calendar-day and elapsed reminders. Unknown fields, owner IDs, target IDs outside the snapshot, stale versions, mismatched languages, invalid local-time offsets, and unsupported recurrence/reminder combinations fail validation.
+
+The adapter reserves one user turn per request key before provider I/O. It commits a provider-call reservation before sending each request and persists provider IDs, valid token counts, and cost independently of proposal validity. Partial financial facts remain attached to an `unknown` receipt and missing values stay null; malformed choices with complete usage remain a recorded financial receipt plus an invalid-output failure. Unknown transport outcomes are not retried. There is one schema-repair opportunity and no more than four calls in a turn. Provider costs remain separate from user-turn settlement.
+
+A validated normalized result is saved to the conversation-owned turn receipt before turn settlement. Duplicate delivery loads and revalidates that receipt against the new caller snapshot, then retries idempotent settlement without contacting the provider. If a prior call has no normalized result receipt, replay returns an explicit unknown failure and never blindly resends an uncertain provider request. New call starts, normalized-result publication, and user-turn settlement/refund check the platform JobClaim in short transactions. Actual provider usage or an unknown outcome may still be recorded against the already-started call after a lease expires, so observed financial facts are not lost; this does not settle a user turn or publish the result.
+
+The smoke preview is deliberately offline:
+
+```powershell
+uv run python -m pin.contexts.conversation.infrastructure.smoke --preview
+```
+
+It reports two synthetic cases (Russian text and English transcript), at most four calls per case and eight total, a 19,532-token conservative input bound per call, a 512-token output limit, and a $0.01 hard exposure cap. At the catalog rates below, the worst-case estimate is $0.00522016. The preview reads no environment variables or key and makes no request. Live execution revalidates the current public model catalog before any completion call, requires an existing disposable owner with active access, and stops if actual provider cost is unknown or the cap would be exceeded. The request disables reasoning with `reasoning: {"enabled": false}`; the OpenRouter catalog must advertise `reasoning` and `response_format` for the selected route.
+
+The official [OpenRouter model page](https://openrouter.ai/qwen/qwen3.7-flash) and public model catalog were checked on 2026-10-13. The selected ID was present with JSON response-format and reasoning-control support, 1,000,000 context, and catalog prices of $0.03/M input and $0.13/M output; the public page also describes higher input-price tiers beyond 32k and 256k tokens. The [chat completion API](https://openrouter.ai/docs/api/api-reference/chat/create-a-chat-completion) documents the `reasoning.enabled` control. The live command checks current catalog capabilities and pricing before loading credentials or making a completion request. Runtime accounting stores provider-reported usage and cost.
+
+The conversation schema is registered as two Alembic revisions, including an additive migration that allows partial known usage on unknown receipts. The downgrade/upgrade roundtrip and `alembic check` passed on the disposable PostgreSQL database. Four PostgreSQL test cases passed for provider receipt idempotency, duplicate provider-ID cost deduplication, partial and unknown cost retention, crash-replay without a second provider call, and a stale-response case where actual provider cost is retained while the result is rejected and the user turn remains unsettled. The billing bridge reserves exactly one AI turn per unique smoke scenario, caps reservation expiry at the active period end, and replays the same reservation key without issuing another provider call.
+
+An authorized operator runs the bounded live check only against a disposable owner that already has an active access period and at least two remaining AI turns:
+
+```powershell
+uv run python -m pin.bootstrap.model_smoke --live --owner-id <DISPOSABLE_OWNER_UUID>
+```
+
+The first authorized run attempted the Russian case once and failed before returning a validated proposal. Its call remains `unknown` with no provider request ID, token counts, or cost, and the user-turn reservation was refunded. The original provider response was not retained, so its shape and cause cannot be diagnosed, and the charge cannot be reconciled by generation ID. OpenRouter's [generation metadata endpoint](https://openrouter.ai/docs/api/api-reference/generations/get-generation) requires a generation ID; none was returned into the receipt. No completion retry has been made. The parser now records any ID and valid financial facts before rejecting malformed or incomplete output. A later smoke retry must use new request keys and cap the prior unknown call plus all new calls under the original $0.01 ceiling; the standalone eight-call command must not be rerun unchanged after that first attempt.
