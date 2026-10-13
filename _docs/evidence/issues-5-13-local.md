@@ -67,3 +67,18 @@ The next distinct synthetic run reserved the entire original eight-call estimate
 | `gen-1791887423-BW4zaHXEBR8TYCaztfLJ` | 0.000039560000 | Valid English reply, failed requested appointment outcome |
 
 All five reported calls across later attempts sum to $0.0001684869; one original call remains unknown (ledger inspection chunk `dc197b`). Six calls have been used, leaving two under the aggregate eight-call bound. No plan was applied. The executor is adding grounded output schema and repair diagnostics before the final bounded proof. Issue #13 remains open; valid JSON replies alone do not prove English appointment creation.
+
+## Final bounded live pair: passed
+
+Schema-grounding revision `52351aa76f98c82aa3223fff20fedd563b7e8f82` embeds the generated output schema, a canonical creation example, and sanitized validation paths/types for repair. Parent focused checks passed 35 tests (2.49 seconds, chunk `8b5bdc`). To separate unaccepted onboarding edits, parent exported the committed source to `C:/Users/roman/AppData/Local/Temp/pin-model-schema-c7d2`; import provenance confirmed that snapshot. Its full regression passed **132 tests, no skips, 118.88 seconds** (chunk `5cc937`), Ruff/mypy 62 files/architecture passed (chunk `c5f21e`). The prior `conversation_model_0002` lifecycle proof remains applicable; this prompt correction changed no schema.
+
+The last two call slots were used for distinct new synthetic requests, with one call per case and no live repair permitted in this final pair. The real adapter still permits at most four calls/one repair under normal configuration; earlier live repair and offline fixtures cover that separate behavior. The temporary smoke wrapper capped additional calls at two, reserved $0.00509632 for the original unknown outcome plus $0.0001684869 known prior receipts, and bounded the new pair's token-price estimate at $0.00172624 under the same $0.01 aggregate ceiling. It used the unchanged real provider, real Billing allowance, real PostgreSQL recorder and bootstrap key loader; no product access bypass or file changes.
+
+| Case | Provider request ID | Prompt / completion tokens | Reported cost USD | Persisted schedule |
+|---|---|---|---|---|
+| Russian text | `gen-1791888331-y8xoNqL4Ct6Ra2XtQiyy` | 2202 / 123 | 0.000082050000 | Untimed task, 2026-10-14, Asia/Qyzylorda |
+| English transcript text | `gen-1791888333-rA9eLo388tM4Uq4djwI8` | 2209 / 129 | 0.000042504000 | Appointment, 2026-10-14 10:00, 30 minutes, Asia/Qyzylorda |
+
+The pair completed successfully (chunk `9a95b1`). Parent SQL assertions verified exact typed schedules, one normalized receipt and one settled AI turn per request, both reported usage records, and preservation of the first unknown record (chunk `2187eb`). No proposal was applied to Planning. Pair reported cost: $0.000124554. Eight provider calls have now been used across all attempts; seven reported calls total $0.0002930409 and the original call remains unknown. Do not report that sum as the exact total batch bill or reset the historical unknown to zero. No more provider calls are authorized by this completed smoke window.
+
+The limited current-route RU/EN capability gate now passes. A final owner-fencing check and its scoped evidence precede #13 closure. This pair does not prove general model accuracy, Whisper transcription, end-to-end task capture, or actual-host/release qualification.
