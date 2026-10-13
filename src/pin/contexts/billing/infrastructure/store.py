@@ -157,7 +157,11 @@ class SqlAlchemyAccessUsageStore(AccessUsageStore):
 
     async def check_access(self, query: CheckAccess) -> AccessDecision:
         periods = await self._active_periods(query.owner_id, query.at, lock=False)
-        account_record = await self._session.get(AccessAccountRecord, query.owner_id)
+        account_record = await self._session.scalar(
+            select(AccessAccountRecord)
+            .where(AccessAccountRecord.owner_id == query.owner_id)
+            .execution_options(populate_existing=True)
+        )
         account = AccessAccount(
             tuple(_period_from_record(row) for row in periods),
             deleted=account_record is None or account_record.deleted_at is not None,
@@ -307,6 +311,7 @@ class SqlAlchemyAccessUsageStore(AccessUsageStore):
                 case((AccessPeriodRecord.policy_kind == PeriodKind.PAID.value, 1), else_=0).desc(),
                 AccessPeriodRecord.starts_at.desc(),
             )
+            .execution_options(populate_existing=True)
         )
         if lock:
             query = query.with_for_update()
