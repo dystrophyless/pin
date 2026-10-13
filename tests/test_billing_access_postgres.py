@@ -12,21 +12,22 @@ from alembic import command
 from alembic.config import Config
 from sqlalchemy import func, select
 
-from pin.contexts.billing.application.contracts import CheckAccess, ReserveUsage
-from pin.contexts.billing.domain.access import (
+from pin.contexts.billing.api import (
     AccessDenial,
+    CheckAccess,
     InvalidTransition,
     Operation,
     PeriodKind,
     QuotaExceeded,
     ReservationState,
+    ReserveUsage,
+    SqlAlchemyAccessUsageStore,
 )
 from pin.contexts.billing.infrastructure.models import (
     AccessAccountRecord,
     AccessPeriodRecord,
     UsageReservationRecord,
 )
-from pin.contexts.billing.infrastructure.store import SqlAlchemyAccessUsageStore
 from pin.persistence import run_local_async
 from pin.persistence.db import create_engine, create_session_factory
 
@@ -138,6 +139,7 @@ def test_concurrent_final_turn_reservations_have_one_winner(billing_database: st
                             )
                         )
                         assert result.access.allowed and result.reservation is not None
+                        assert result.created
                     return True
                 except QuotaExceeded:
                     return False
@@ -154,6 +156,45 @@ def test_concurrent_final_turn_reservations_have_one_winner(billing_database: st
                     )
                 )
                 assert total == 1
+        finally:
+            await engine.dispose()
+
+    run_local_async(scenario)
+
+
+def test_concurrent_same_key_reports_one_creation_and_one_replay(billing_database: str) -> None:
+    async def scenario() -> None:
+        engine = create_engine(billing_database)
+        sessions = create_session_factory(engine)
+        owner_id, period_id = uuid4(), str(uuid4())
+        now = datetime.now(UTC)
+        try:
+            async with sessions() as session, session.begin():
+                _, ends_at = _seed_period(session, owner_id=owner_id, period_id=period_id, now=now)
+
+            async def attempt() -> bool:
+                async with sessions() as session, session.begin():
+                    result = await SqlAlchemyAccessUsageStore(session).reserve_usage(
+                        _reservation_command(
+                            owner_id=owner_id,
+                            request_id="same-key",
+                            at=now,
+                            expires_at=ends_at,
+                            ai_turns=1,
+                            voice_seconds=0,
+                        )
+                    )
+                    assert result.reservation is not None
+                    return result.created
+
+            assert sorted(await asyncio.gather(attempt(), attempt())) == [False, True]
+            async with sessions() as session:
+                count = await session.scalar(
+                    select(func.count()).select_from(UsageReservationRecord).where(
+                        UsageReservationRecord.owner_id == owner_id
+                    )
+                )
+                assert count == 1
         finally:
             await engine.dispose()
 

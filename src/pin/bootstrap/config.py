@@ -8,7 +8,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, field_validator
@@ -39,6 +39,9 @@ class Settings(BaseModel):
     database_url: Annotated[SecretStr, Field(min_length=1)]
     bot_token: SecretStr | None = None
     webhook_secret: SecretStr | None = None
+    telegram_ingress_mode: Literal["webhook", "polling"] = "webhook"
+    gateway_host: Annotated[str, Field(min_length=1)] = "127.0.0.1"
+    gateway_port: Annotated[int, Field(ge=1, le=65535)] = 8080
     openrouter_api_key: SecretStr | None = None
 
     @field_validator("bot_token")
@@ -88,6 +91,8 @@ class Settings(BaseModel):
 def load_settings(
     role: ProcessRole,
     environ: Mapping[str, str] | None = None,
+    *,
+    project_root: Path | None = None,
 ) -> Settings:
     """Load only PIN_* settings and enforce the secrets needed by this role."""
     source = os.environ if environ is None else environ
@@ -95,9 +100,19 @@ def load_settings(
         "database_url": "PIN_DATABASE_URL",
         "bot_token": "PIN_BOT_TOKEN",
         "webhook_secret": "PIN_WEBHOOK_SECRET",
+        "telegram_ingress_mode": "PIN_TELEGRAM_INGRESS_MODE",
+        "gateway_host": "PIN_GATEWAY_HOST",
+        "gateway_port": "PIN_GATEWAY_PORT",
         "openrouter_api_key": "PIN_OPENROUTER_API_KEY",
     }
     values = {field: source[name] for field, name in names.items() if source.get(name)}
+    if (
+        role is ProcessRole.GATEWAY
+        and values.get("telegram_ingress_mode", "webhook") == "polling"
+        and "bot_token" not in values
+    ):
+        smoke_settings = load_smoke_settings(project_root=project_root, environ=source)
+        values["bot_token"] = smoke_settings.bot_token.get_secret_value()
     try:
         settings = Settings.model_validate(values)
     except ValidationError as error:
@@ -108,7 +123,7 @@ def load_settings(
         raise SettingsError(f"Invalid configuration: {failures}") from None
 
     required_by_role = {
-        ProcessRole.GATEWAY: ("bot_token", "webhook_secret"),
+        ProcessRole.GATEWAY: ("bot_token",),
         ProcessRole.APP_WORKER: ("openrouter_api_key",),
         ProcessRole.DELIVERY_WORKER: ("bot_token",),
         ProcessRole.SPEECH_WORKER: (),
@@ -121,6 +136,9 @@ def load_settings(
     ]
     if missing:
         raise SettingsError(f"Missing required configuration: {', '.join(missing)}")
+    if role is ProcessRole.GATEWAY and settings.telegram_ingress_mode == "webhook":
+        if settings.webhook_secret is None:
+            raise SettingsError("Missing required configuration: PIN_WEBHOOK_SECRET")
     if settings.webhook_secret and len(settings.webhook_secret.get_secret_value()) < 32:
         raise SettingsError("Invalid configuration: PIN_WEBHOOK_SECRET (too_short)")
     return settings
@@ -171,4 +189,3 @@ def _parse_smoke_local_config(content: str) -> dict[str, str]:
             raise SettingsError(f"duplicate local setting on line {line_number}")
         values[key] = value
     return values
-

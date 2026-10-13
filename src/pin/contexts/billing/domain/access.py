@@ -134,6 +134,7 @@ class AccessDecision:
     operation: Operation
     denial: AccessDenial | None
     period_id: str | None
+    period_ends_at: datetime | None = None
 
 
 _ACTIVE_ACCESS = frozenset(
@@ -156,7 +157,13 @@ def check_access(account: AccessAccount, operation: Operation, at: datetime) -> 
     active_period = account.active_period(at)
     if operation in _ACTIVE_ACCESS and active_period is None:
         return AccessDecision(False, operation, AccessDenial.ACCESS_EXPIRED, None)
-    return AccessDecision(True, operation, None, active_period.period_id if active_period else None)
+    return AccessDecision(
+        True,
+        operation,
+        None,
+        active_period.period_id if active_period else None,
+        active_period.ends_at if active_period else None,
+    )
 
 
 @dataclass(frozen=True, slots=True)

@@ -146,6 +146,8 @@ async def receive_update(
     update_type: str,
     payload: dict[str, Any],
     lane: JobLane = JobLane.APPLICATION,
+    conversation_ordered: bool = True,
+    priority: int = 0,
     max_attempts: int = 8,
 ) -> InboxResult:
     """Persist a transport receipt and its work item atomically in the caller's UoW."""
@@ -189,7 +191,8 @@ async def receive_update(
         payload={"inbox_id": str(inbox_id)},
         deduplication_key=f"telegram:{bot_id}:{update_id}",
         owner_id=owner_id,
-        ordered_conversation=True,
+        ordered_conversation=conversation_ordered,
+        priority=priority,
         max_attempts=max_attempts,
     )
     return InboxResult(True, inbox_id, job.id)
