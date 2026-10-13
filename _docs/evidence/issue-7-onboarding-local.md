@@ -40,4 +40,4 @@ This is actual API parsing/rendering and generated-button evidence, plus separat
 
 Direct Orchestrator verification accepts #7's onboarding/preferences increment for the current Windows local-development phase. Replies and versioned handoffs are durably queued; delivery implementation remains #12 and existing-plan timezone effects remain #15. Account-deletion coordination and backup/return integration remain #23; these tests prove the published Billing return-policy seam, not a completed deletion flow. No guessed zone, paid provisioning, provider/model call, Docker, hosting, Whisper accuracy, release or overall MVP acceptance is implied. The prior eight-call model smoke budget remains exhausted.
 
-GitHub evidence publication and closure readback are recorded after synchronization.
+Publisher read back #7 closed/completed with `status:accepted`: [acceptance comment](https://github.com/dystrophyless/pin/issues/7#issuecomment-6145769892). #8 was then marked ready after live prerequisite checks and dispatched under the active implementation goal.

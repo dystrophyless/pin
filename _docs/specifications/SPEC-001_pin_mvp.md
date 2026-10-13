@@ -1,12 +1,12 @@
 # SPEC-001: Pin overall MVP
 
 Status: **approved**
-Version: 0.4
+Version: 0.5
 Created: 2026-10-13 (Asia/Qyzylorda)
 Owner: Pin product owner (the user)
 Requirements source: [PROJECT_BRAINSTORM.md](../PROJECT_BRAINSTORM.md)
 Technical reference: [proposed DDD architecture](../ARCHITECTURE.md)
-Approval: the user referred to this as the approved MVP specification and requested resolving missing decisions through user-input questions on 2026-10-13. Section 11 records the answers and routine implementation details. Amendment v0.3 records the additional TR-01, bounded TR-02, and TR-03 owner decisions supplied on 2026-10-13. Amendment v0.4 records the current local-development phase boundary authorized on 2026-10-13. Local foundation acceptance is recorded in the linked issues; overall MVP/release acceptance remains pending.
+Approval: the user referred to this as the approved MVP specification and requested resolving missing decisions through user-input questions on 2026-10-13. Section 11 records the answers and routine implementation details. Amendment v0.3 records the additional TR-01, bounded TR-02, and TR-03 owner decisions supplied on 2026-10-13. Amendment v0.4 records the current local-development phase boundary authorized on 2026-10-13. Amendment v0.5 records the owner's N-interval reanchoring decision supplied on 2026-10-13. Local foundation acceptance is recorded in the linked issues; overall MVP/release acceptance remains pending.
 Issue package: [published MVP issue index](SPEC-001_pin_mvp_tasks.md); 28 GitHub Issues linked in section 12. Publication: 2026-10-13 (Asia/Qyzylorda); publication itself did not imply task implementation or acceptance. Live issues own subsequent execution and acceptance evidence.
 
 ## 1. Purpose, authority, and evidence boundary
@@ -395,7 +395,7 @@ Approval evidence: the user's request to decompose the “approved Pin MVP speci
 ### Additional owner decisions — TR-01, TR-02, and TR-03, 2026-10-13
 
 - **TR-01 recovery after an appointment:** If an outage ends after an appointment's expected end and no initial completion check was delivered, send a late completion check. The normal maximum of one follow-up applies; its timer starts one hour after confirmed late-check delivery, and quiet hours defer it. If a recovery summary is also sent, it may report the unresolved item but must not create a second check/nudge campaign. Preserve the existing one-summary deduplication and never revive an exhausted cycle.
-- **TR-02 this-and-future weekly count:** For a weekly workout series with count 10 and four completed occurrences, moving occurrence five from Monday to Wednesday with this-and-future moves the six remaining occurrences to Wednesdays. This-and-future edits preserve the remaining occurrence count; the count does not restart. The weekly fixture demonstrates the rule. It does not define generalized N-interval anchor/reanchoring semantics; do not infer those semantics from this example.
+- **TR-02 this-and-future weekly count:** For a weekly workout series with count 10 and four completed occurrences, moving occurrence five from Monday to Wednesday with this-and-future moves the six remaining occurrences to Wednesdays. This-and-future edits preserve the remaining occurrence count; the count does not restart. The owner additionally confirmed the N-interval anchor choice using a two-week fixture: dates June 1, June 15 and June 29 become June 8, June 22 and July 6 when June 1 moves to June 8 with this-and-future. Future interval counting starts from the newly selected occurrence date; the remaining count does not restart, and prior history remains unchanged. Existing supported weekday/monthly-pattern and DST rules still apply; any changed pattern fields and the resulting future dates must be displayed in the confirmed preview.
 - **TR-03 return after deletion:** If the same Telegram identity returns after account deletion, retain only the minimum identity-linked record needed to remember prior trial use and any currently active paid coverage. Restore access for that active paid coverage, but do not restore deleted plans. These are the only approved purposes for the retained return record. Keep the prior-trial and active-coverage facts available as needed to enforce this no-reset/restore rule. No numeric retention period was selected; do not invent one or treat this policy marker as a legal financial-retention rule. This detail does not block independent foundation work. Statutory/financial record retention remains a separate, actual-jurisdiction evidence requirement.
 
 ### Routine details selected by the executor within the requested scope
