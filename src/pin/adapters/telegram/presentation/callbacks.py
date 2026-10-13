@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import secrets
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Protocol
@@ -79,9 +80,12 @@ class CallbackTokens:
         token: str,
         *,
         actor_id: UUID,
-        current_target_version: int,
+        current_target_version: int | None = None,
+        current_target_versions: Mapping[str, int] | None = None,
         now: datetime,
     ) -> CallbackBinding:
+        if (current_target_version is None) == (current_target_versions is None):
+            raise ValueError("provide exactly one current target version policy")
         if (
             not token
             or len(token.encode("utf-8")) > CALLBACK_DATA_MAX_BYTES
@@ -91,6 +95,13 @@ class CallbackTokens:
         binding = await self._store.consume(
             hashlib.sha256(token.encode("utf-8")).hexdigest(), actor_id, now.astimezone(UTC)
         )
-        if binding is None or binding.target_version != current_target_version:
+        if binding is None:
+            raise InvalidCallbackToken("invalid callback")
+        expected_version = (
+            current_target_versions.get(binding.action)
+            if current_target_versions is not None
+            else current_target_version
+        )
+        if expected_version is None or binding.target_version != expected_version:
             raise InvalidCallbackToken("invalid callback")
         return binding
