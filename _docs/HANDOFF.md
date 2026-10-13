@@ -22,7 +22,7 @@ Recheck remote state at session start. A `git ls-remote` check on 2026-10-13 con
 
 - Existing source brief: [PROJECT_BRAINSTORM.md](PROJECT_BRAINSTORM.md). It is a product brief, not an approved implementation plan.
 - [SDD documentation](sdd/README.md) defines the workflow, templates, GitHub issue forms, PR template, project review skills, and examples.
-- Runtime foundation code, role entrypoints, tests and a dependency lock are being implemented for issue #1. Its checks and independent review are pending final acceptance. [SPEC-001](specifications/SPEC-001_pin_mvp.md) is the approved MVP baseline; section 11 records the user's resolved product decisions and routine technical details.
+- Runtime foundation code, role entrypoints, tests and a dependency lock for issue #1 are accepted for the current Windows local-development phase; see the durable evidence comment on #1. [SPEC-001](specifications/SPEC-001_pin_mvp.md) is the approved MVP baseline; section 11 records the user's resolved product decisions and routine technical details.
 - [The MVP issue index](specifications/SPEC-001_pin_mvp_tasks.md) links to 28 published issues, with 95 real dependency edges and reverse Blocks. Local published drafts are link stubs. Task implementation, runtime qualification and release evidence remain pending.
 - Price, provider-capability, hosting, and benchmark statements in the brainstorm are historical research; revalidate the relevant claims before making production commitments.
 ## Current authorized phase
@@ -55,12 +55,12 @@ Labels are optional and must be created before these filtered searches are usefu
 ## Last session checkpoint
 
 - Active objective: implement all eligible MVP issues in dependency order, attach revision/environment/results/limitations evidence, and close only after AC, independent review and delivery conditions pass. The user delegated per-issue acceptance and closure; no repeated acceptance question is required.
-- Starting documentation commit: `45c32f0`; subsequent runtime/spec edits remain in progress and uncommitted. No push, deployment or paid services authorized.
-- Active task: [runtime #1](https://github.com/dystrophyless/pin/issues/1), GPT-6 Luna executor and independent GPT-6.1 Sol reviewer. Current Windows checks reported passing, but final raw evidence/review and Linux execution remain pending; do not infer acceptance.
+- Current local HEAD: `eeadfd1` (runtime implementation); scope/spec documentation revision: `af8e026`; base: `45c32f0`. No push, deployment or paid services authorized.
+- [Runtime #1](https://github.com/dystrophyless/pin/issues/1) is closed as completed for Windows local development after the evidence comment was read back: locked disposable install (65 packages), four role readiness checks, ruff, mypy (14 files), pytest (17/17), architecture check, invalid-port redaction, and offline lock check. Evidence: Windows 11 AMD64, CPython 3.12.12, uv 0.10.4; packet at `C:\Users\roman\AppData\Local\Temp\pin-runtime-proof-bdf2719e568b4c17bc7470b7b588ab8b`; parent chunk `1158c9` (6.11s). Linux, Docker/container, hosted CI, provider/database connections, deployment, host qualification, and Whisper-model loading/accuracy/latency remain unverified/deferred; this is not full MVP acceptance.
 - Ownership: executor owns runtime code/config/lock/CI/tests and runtime README; publisher owns owner-decision spec/issue reconciliation; Orchestrator owns this checkpoint and acceptance routing.
 - Owner answers received: send a late missed completion check with one normal follow-up maximum; moving workout five in a ten-week series after four completions moves the remaining six without restarting count; remember prior trial use minimally and restore active paid access without deleted plans. Publisher is recording bounded amendments and issue readbacks.
-- Current review concern: architecture import resolution and domain boundaries; executor fixes, reviewer independently rechecks. Linux/container/hosted proof and deployment are deferred by the current owner scope decision; remaining product-policy details stay in the future backlog.
-- Next action: finish runtime verification and independent review; publish evidence/close only when full delivery proof exists, then unlock actual downstream prerequisites.
+- [Persistence #2](https://github.com/dystrophyless/pin/issues/2) and [formatting #4](https://github.com/dystrophyless/pin/issues/4) are now `in_progress` with matching labels after #1 acceptance; local execution is authorized under the active goal. Their original acceptance/verification contracts remain, with task-specific PASS pending. Remaining product-policy details stay in the future backlog.
+- Next action: continue authorized local execution in #2/#4 and add revision/environment/results/limits evidence to each issue; do not infer task acceptance or full MVP/release completion.
 
 Live task state belongs to issues; this checkpoint is not a parallel backlog.
 
