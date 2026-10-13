@@ -129,10 +129,14 @@ def build_preview(
     # Provider prices change above 32k input tokens; reject a preview that crosses that tier.
     if input_bound >= _PROMPT_TIER_LIMIT:
         raise SmokeCatalogRejected("smoke prompt cannot be bounded below the current price tier")
-    maximum = Decimal(MAX_SMOKE_CALLS) * (
-        Decimal(input_bound) * input_usd_per_million_tokens
-        + Decimal(MAX_OUTPUT_TOKENS) * output_usd_per_million_tokens
-    ) / Decimal(1_000_000)
+    maximum = (
+        Decimal(MAX_SMOKE_CALLS)
+        * (
+            Decimal(input_bound) * input_usd_per_million_tokens
+            + Decimal(MAX_OUTPUT_TOKENS) * output_usd_per_million_tokens
+        )
+        / Decimal(1_000_000)
+    )
     if maximum > cap_usd:
         raise SmokeCatalogRejected(
             f"worst-case smoke exposure {maximum} USD exceeds the {cap_usd} USD cap"
@@ -251,10 +255,7 @@ class SmokeBudgetTransport:
         maximum_next_exposure = (
             self._preview.maximum_usd * Decimal(remaining_calls) / self._preview.max_calls
         )
-        if (
-            self._unknown_cost
-            or self.actual_usd + maximum_next_exposure > self._preview.cap_usd
-        ):
+        if self._unknown_cost or self.actual_usd + maximum_next_exposure > self._preview.cap_usd:
             raise SmokeBudgetExceeded("remaining smoke exposure is unknown or exceeds its cap")
         self.calls += 1
         response = await self._transport.complete(payload)
@@ -369,8 +370,11 @@ def preview_payload(preview: SmokeBudgetPreview) -> dict[str, object]:
         "mode": "offline-preview-only",
         "route": preview.route,
         "scenarios": [
-            {"name": item.name, "language": item.context.language.value,
-             "input_kind": item.context.input_kind.value}
+            {
+                "name": item.name,
+                "language": item.context.language.value,
+                "input_kind": item.context.input_kind.value,
+            }
             for item in preview.scenarios
         ],
         "max_calls_per_scenario": 4,

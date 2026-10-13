@@ -77,6 +77,8 @@ class AppointmentSchedule(StrictModel):
     timezone: Annotated[str, Field(min_length=1, max_length=64)]
     duration_minutes: Annotated[int, Field(ge=1, le=1_440)] | None = None
     local_end: datetime | None = None
+    fold: Literal["earlier", "later"] | None = None
+    end_fold: Literal["earlier", "later"] | None = None
 
     @field_validator("timezone")
     @classmethod
@@ -92,6 +94,8 @@ class AppointmentSchedule(StrictModel):
                 raise ValueError("appointment local_end must be a later local time")
         if self.local_end is not None and self.duration_minutes is not None:
             raise ValueError("choose appointment local_end or duration, not both")
+        if self.local_end is None and self.end_fold is not None:
+            raise ValueError("end_fold requires local_end")
         return self
 
 
@@ -100,6 +104,7 @@ class DeadlineSchedule(StrictModel):
     local_date: date
     local_time: time | None = None
     timezone: Annotated[str, Field(min_length=1, max_length=64)]
+    fold: Literal["earlier", "later"] | None = None
 
     @field_validator("timezone")
     @classmethod
@@ -113,6 +118,7 @@ class TaskSchedule(StrictModel):
     local_time: time | None = None
     timezone: Annotated[str, Field(min_length=1, max_length=64)] | None = None
     timing: Literal["timed", "untimed", "unspecified"] = "unspecified"
+    fold: Literal["earlier", "later"] | None = None
 
     @field_validator("timezone")
     @classmethod
@@ -211,6 +217,7 @@ class ProposalFields(StrictModel):
     schedule: PlanSchedule | None = None
     recurrence: RecurrenceSpec | None = None
     reminders: Annotated[tuple[ReminderIntent, ...], Field(max_length=16)] | None = None
+    reminder_mode: Literal["override", "only"] | None = None
 
 
 class Reply(StrictModel):
@@ -234,10 +241,19 @@ class ActionProposal(StrictModel):
                 raise ValueError("create proposals cannot target an existing object")
             if self.fields.title is None:
                 raise ValueError("create proposals require a title")
+            changed_fields = self.fields.model_fields_set
+            if "reminder_mode" in changed_fields and (
+                "reminders" not in changed_fields
+                or self.fields.reminders is None
+                or self.fields.reminder_mode is None
+            ):
+                raise ValueError("a create reminder mode requires a non-null reminder list")
         else:
             if self.target_id is None or self.expected_version is None:
                 raise ValueError("change proposals require a target and expected version")
             changed_fields = self.fields.model_fields_set
+            if "reminder_mode" in changed_fields:
+                raise ValueError("reminder_mode is only supported for plan creation")
             if self.operation in (ProposalOperation.COMPLETE, ProposalOperation.CANCEL):
                 if changed_fields:
                     raise ValueError("complete and cancel proposals cannot include changed fields")
@@ -257,7 +273,26 @@ def _validate_timezone(value: str) -> str:
     return value
 
 
-ConversationResult = Annotated[Reply | ActionProposal, Field(discriminator="kind")]
+class ProposalBatch(StrictModel):
+    """One fully typed, create-only batch that is previewed and confirmed atomically."""
+
+    kind: Literal["proposal_batch"]
+    schema_version: Literal[1]
+    language: SourceLanguage
+    actions: Annotated[tuple[ActionProposal, ...], Field(min_length=2, max_length=32)]
+
+    @model_validator(mode="after")
+    def creates_only_in_one_language(self) -> ProposalBatch:
+        if any(
+            action.operation is not ProposalOperation.CREATE_PLAN
+            or action.language is not self.language
+            for action in self.actions
+        ):
+            raise ValueError("a proposal batch contains create actions in one source language")
+        return self
+
+
+ConversationResult = Annotated[Reply | ActionProposal | ProposalBatch, Field(discriminator="kind")]
 
 
 class ModelFailure(StrictModel):
@@ -269,7 +304,7 @@ class ModelFailure(StrictModel):
 
 class ModelSuccess(StrictModel):
     kind: Literal["success"] = "success"
-    result: Reply | ActionProposal
+    result: Reply | ActionProposal | ProposalBatch
     provider_request_ids: Annotated[tuple[str, ...], Field(min_length=1, max_length=4)]
 
 
