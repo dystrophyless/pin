@@ -17,6 +17,7 @@ from pin.contexts.planning.domain.plans import (
     PlanVersionConflict,
     ProposedPlan,
     ReminderOffset,
+    ReminderOmission,
     ResolvedSchedule,
     resolve_reminders,
 )
@@ -52,7 +53,7 @@ class SqlAlchemyPlanningStore(PlanCommandStore):
         plans: tuple[ProposedPlan, ...],
         at: datetime,
     ) -> dict[str, object]:
-        committed: list[dict[str, str]] = []
+        committed: list[dict[str, object]] = []
         for plan in plans:
             item = plan.item
             occurrence = plan.occurrence
@@ -110,10 +111,21 @@ class SqlAlchemyPlanningStore(PlanCommandStore):
                             }
                             for rule in plan.reminders
                         ],
+                        "omitted_reminders": [
+                            _omitted_reminder_payload(omitted) for omitted in plan.omitted_reminders
+                        ],
                     },
                 ),
             )
-            committed.append({"plan_item_id": str(item.id), "occurrence_id": str(occurrence.id)})
+            committed.append(
+                {
+                    "plan_item_id": str(item.id),
+                    "occurrence_id": str(occurrence.id),
+                    "omitted_reminders": [
+                        _omitted_reminder_payload(omitted) for omitted in plan.omitted_reminders
+                    ],
+                }
+            )
         result: dict[str, object] = {
             "payload_sha256": payload_sha256,
             "plans": committed,
@@ -262,3 +274,13 @@ def _apply_schedule(record: OccurrenceRecord, occurrence: Occurrence) -> None:
 
 def _iso(value: datetime | None) -> str | None:
     return value.astimezone(UTC).isoformat() if value is not None else None
+
+
+def _omitted_reminder_payload(omitted: ReminderOmission) -> dict[str, str | int]:
+    return {
+        "offset_kind": omitted.offset.kind.value,
+        "offset_amount": omitted.offset.amount,
+        "source": omitted.offset.source,
+        "due_at": omitted.due_at.astimezone(UTC).isoformat(),
+        "reason": omitted.reason,
+    }

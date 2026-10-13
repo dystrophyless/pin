@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import UTC, date, datetime, time, timedelta
+from uuid import uuid4
 
 import pytest
 
+from pin.contexts.planning.application.preview import preview_plan_batch
 from pin.contexts.planning.domain.plans import (
     OffsetKind,
     OneOffPlanDraft,
@@ -119,3 +121,41 @@ def test_approved_payload_digest_changes_with_any_schedule_field() -> None:
     assert payload_digest((draft,), expected_preferences_version=1) != payload_digest(
         (changed,), expected_preferences_version=1
     )
+
+
+def test_preview_fingerprint_binds_effective_reminders_but_excludes_generated_ids() -> None:
+    draft = OneOffPlanDraft(PlanKind.TASK, "Walk", date(2026, 10, 14), time(9), "UTC")
+    default = (ReminderOffset(OffsetKind.ELAPSED_SECONDS, 3600, "default"),)
+    preview = preview_plan_batch(
+        uuid4(),
+        (draft,),
+        expected_preferences_version=2,
+        default_zone="UTC",
+        default_reminders=default,
+        at=NOW,
+    )
+    same_intent = preview_plan_batch(
+        uuid4(),
+        (draft,),
+        expected_preferences_version=2,
+        default_zone="UTC",
+        default_reminders=default,
+        at=NOW + timedelta(minutes=1),
+    )
+    assert preview.plans[0].item.id != same_intent.plans[0].item.id
+    assert preview.approval_projection_sha256 == same_intent.approval_projection_sha256
+
+    reminder_now_past = preview_plan_batch(
+        uuid4(),
+        (draft,),
+        expected_preferences_version=2,
+        default_zone="UTC",
+        default_reminders=default,
+        at=datetime(2026, 10, 14, 8, 30, tzinfo=UTC),
+    )
+    assert reminder_now_past.plans[0].occurrence.schedule.starts_at > datetime(
+        2026, 10, 14, 8, 30, tzinfo=UTC
+    )
+    assert not reminder_now_past.plans[0].reminders
+    assert len(reminder_now_past.plans[0].omitted_reminders) == 1
+    assert preview.approval_projection_sha256 != reminder_now_past.approval_projection_sha256

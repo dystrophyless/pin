@@ -14,14 +14,21 @@ from pin.contexts.planning.application.contracts import (
     ConfirmationProof,
     ConfirmationVerifier,
 )
+from pin.contexts.planning.application.preview import PlanBatchPreview, preview_plan_batch
 from pin.contexts.planning.domain.plans import (
     OccurrenceState,
     OffsetKind,
     OneOffPlanDraft,
     PlanKind,
     PlanVersionConflict,
+    ProposedPlan,
     ReminderOffset,
+    ReminderOmission,
+    ReminderResolution,
+    ReminderSchedule,
+    ResolvedSchedule,
     ScheduleNeedsClarification,
+    approval_projection_digest,
 )
 
 __all__ = [
@@ -37,9 +44,17 @@ __all__ = [
     "OneOffPlanDraft",
     "OccurrenceState",
     "PlanKind",
+    "PlanBatchPreview",
+    "ProposedPlan",
     "PlanVersionConflict",
     "ReminderOffset",
+    "ReminderOmission",
+    "ReminderResolution",
+    "ReminderSchedule",
+    "ResolvedSchedule",
     "ScheduleNeedsClarification",
     "StalePreview",
     "create_confirmed_plan_batch",
+    "approval_projection_digest",
+    "preview_plan_batch",
 ]

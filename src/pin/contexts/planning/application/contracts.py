@@ -25,7 +25,7 @@ class ConfirmationGrant:
     preview_id: UUID
     preview_version: int
     producer_id: str
-    approved_fields_sha256: str
+    approved_projection_sha256: str
     issued_at: datetime
     expires_at: datetime
 
@@ -35,7 +35,8 @@ class ConfirmationVerifier(Protocol):
 
     Implementations must authenticate an unguessable producer-issued credential,
     require an approved producer, bind it to the authenticated owner and exact
-    approved field digest/version, reject cancelled/expired/already-consumed grants,
+    approved schedule/reminder projection fingerprint, reject
+    cancelled/expired/already-consumed grants,
     and write the consume marker in the same database transaction as the command.
     The application has no permissive implementation or boolean confirmation flag.
     """
@@ -45,7 +46,7 @@ class ConfirmationVerifier(Protocol):
         proof: ConfirmationProof,
         *,
         owner_id: UUID,
-        approved_fields_sha256: str,
+        approved_projection_sha256: str,
         at: datetime,
     ) -> ConfirmationGrant | None: ...
 
