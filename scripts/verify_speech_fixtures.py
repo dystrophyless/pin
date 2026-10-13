@@ -9,6 +9,7 @@ import tempfile
 import wave
 from pathlib import Path
 
+from pin.bootstrap.speech import load_speech_model
 from pin.contexts.speech.domain.audio import UnusableAudio
 from pin.contexts.speech.infrastructure.decoder import PyAVAudioDecoder
 from pin.contexts.speech.infrastructure.whisper import FasterWhisperSmall
@@ -19,7 +20,7 @@ async def main() -> None:
     fixture_dir = root / "tests" / "fixtures" / "speech"
     manifest = json.loads((fixture_dir / "manifest.json").read_text(encoding="utf-8"))
     decoder = PyAVAudioDecoder()
-    recognizer = FasterWhisperSmall()
+    recognizer = FasterWhisperSmall(await asyncio.to_thread(load_speech_model))
     expected = {"ru.wav": ("ru", "напоминание"), "en.wav": ("en", "reminder")}
     for filename, (language, keyword) in expected.items():
         path = fixture_dir / filename
