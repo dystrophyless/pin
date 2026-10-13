@@ -169,6 +169,29 @@ class SqlAlchemyAccessUsageStore(AccessUsageStore):
         )
         return decide_access(account, query.operation, query.at)
 
+    async def lock_access(self, query: CheckAccess) -> AccessDecision:
+        """Fence account and entitlement mutations through the caller's authorization commit."""
+        if query.at.tzinfo is None or query.at.utcoffset() is None:
+            raise ValueError("at must be timezone-aware")
+        account_record = await self._session.scalar(
+            select(AccessAccountRecord)
+            .where(AccessAccountRecord.owner_id == query.owner_id)
+            .execution_options(populate_existing=True)
+            .with_for_update()
+        )
+        period_records = await self._session.scalars(
+            select(AccessPeriodRecord)
+            .where(AccessPeriodRecord.owner_id == query.owner_id)
+            .order_by(AccessPeriodRecord.period_id)
+            .execution_options(populate_existing=True)
+            .with_for_update()
+        )
+        account = AccessAccount(
+            tuple(_period_from_record(row) for row in period_records),
+            deleted=account_record is None or account_record.deleted_at is not None,
+        )
+        return decide_access(account, query.operation, query.at)
+
     async def account_lifecycle(self, owner_id: UUID) -> AccountLifecycle:
         account_record = await self._session.scalar(
             select(AccessAccountRecord)

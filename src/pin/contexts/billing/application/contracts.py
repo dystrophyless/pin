@@ -68,6 +68,9 @@ class AccessUsageStore(Protocol):
     async def check_access(self, query: CheckAccess) -> AccessDecision:
         """Return current entitlement rights for one owner and operation."""
 
+    async def lock_access(self, query: CheckAccess) -> AccessDecision:
+        """Lock current account/period facts until caller UoW ends; evaluate supplied clock."""
+
     async def account_lifecycle(self, owner_id: UUID) -> AccountLifecycle:
         """Return whether the owner account is missing, present, or tombstoned."""
 
