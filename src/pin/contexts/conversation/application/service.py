@@ -124,6 +124,8 @@ class BoundedPlanningAssistant:
     ) -> ModelOutcome:
         if at.tzinfo is None or at.utcoffset() is None:
             return ModelFailure(category=FailureCategory.INVALID_INPUT)
+        if claim is not None and claim.owner_id != context.owner_id:
+            return ModelFailure(category=FailureCategory.STALE_JOB)
         if len(_serialize_context(context)) > MAX_PROMPT_CHARS:
             return ModelFailure(category=FailureCategory.BUDGET_EXHAUSTED)
         try:
