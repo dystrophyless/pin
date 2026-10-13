@@ -28,6 +28,7 @@ from pin.contexts.conversation.application.dto import (
     TargetSnapshot,
 )
 from pin.contexts.conversation.application.service import (
+    _RESULT_SCHEMA_JSON,
     MAX_CALLS,
     ROUTE,
     BoundedPlanningAssistant,
@@ -306,6 +307,48 @@ async def test_english_create_works_without_any_existing_plan_or_target() -> Non
     assert isinstance(outcome.result.fields.schedule, AppointmentSchedule)
     system_prompt = str(transport.payloads[0]["messages"][0]["content"])
     assert "does not require any existing plan or target" in system_prompt
+    assert _RESULT_SCHEMA_JSON in system_prompt
+    proposal_schema = json.loads(_RESULT_SCHEMA_JSON)["$defs"]["ActionProposal"]
+    assert "target_id" not in proposal_schema["required"]
+    assert "expected_version" not in proposal_schema["required"]
+    assert '"operation":"propose_create_plan","fields":{"title":"Project review"' in (
+        system_prompt
+    )
+
+
+@pytest.mark.asyncio
+async def test_repair_receives_only_sanitized_schema_diagnostics() -> None:
+    invalid = json.dumps(
+        {
+            "kind": "proposal",
+            "language": "en",
+            "operation": "propose_create_plan",
+            "fields": {"title": 12, "debug_secret": "do not echo this value"},
+        }
+    )
+    corrected = (
+        '{"kind":"reply","language":"en",'
+        '"text":"I can help create that appointment."}'
+    )
+    transport = FakeTransport(
+        _provider_response(invalid, "gen-schema-invalid"),
+        _provider_response(corrected, "gen-schema-repaired"),
+    )
+    assistant, _, _ = _assistant(transport)
+
+    outcome = await assistant.interpret(
+        _context(language=SourceLanguage.EN, input_kind=InputKind.TRANSCRIPT), at=NOW
+    )
+
+    assert isinstance(outcome, ModelSuccess)
+    assert len(transport.payloads) == 2
+    repair_message = str(transport.payloads[1]["messages"][-1]["content"])
+    assert "fields.title" in repair_message
+    assert "string_type" in repair_message
+    assert "extra_forbidden" in repair_message
+    assert "debug_secret" not in repair_message
+    assert "do not echo this value" not in repair_message
+    assert invalid not in str(transport.payloads[1]["messages"])
 
 
 @pytest.mark.asyncio
