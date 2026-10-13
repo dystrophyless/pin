@@ -6,8 +6,8 @@ Created: 2026-10-13 (Asia/Qyzylorda)
 Owner: Pin product owner (the user)
 Requirements source: [PROJECT_BRAINSTORM.md](../PROJECT_BRAINSTORM.md)
 Technical reference: [proposed DDD architecture](../ARCHITECTURE.md)
-Approval: the user referred to this as the approved MVP specification and requested resolving missing decisions through user-input questions on 2026-10-13. Section 11 records the answers and routine implementation details. Amendment v0.3 records the additional TR-01, bounded TR-02, and TR-03 owner decisions supplied on 2026-10-13. Amendment v0.4 records the current local-development phase boundary authorized on 2026-10-13. No implementation or release acceptance recorded.
-Issue package: [published MVP issue index](SPEC-001_pin_mvp_tasks.md); 28 GitHub Issues linked in section 12. Publication: 2026-10-13 (Asia/Qyzylorda); no task implementation or acceptance.
+Approval: the user referred to this as the approved MVP specification and requested resolving missing decisions through user-input questions on 2026-10-13. Section 11 records the answers and routine implementation details. Amendment v0.3 records the additional TR-01, bounded TR-02, and TR-03 owner decisions supplied on 2026-10-13. Amendment v0.4 records the current local-development phase boundary authorized on 2026-10-13. Local foundation acceptance is recorded in the linked issues; overall MVP/release acceptance remains pending.
+Issue package: [published MVP issue index](SPEC-001_pin_mvp_tasks.md); 28 GitHub Issues linked in section 12. Publication: 2026-10-13 (Asia/Qyzylorda); publication itself did not imply task implementation or acceptance. Live issues own subsequent execution and acceptance evidence.
 
 ## 1. Purpose, authority, and evidence boundary
 
