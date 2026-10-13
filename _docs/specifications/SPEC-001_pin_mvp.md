@@ -1,12 +1,12 @@
 # SPEC-001: Pin overall MVP
 
 Status: **approved**
-Version: 0.2
+Version: 0.4
 Created: 2026-10-13 (Asia/Qyzylorda)
 Owner: Pin product owner (the user)
 Requirements source: [PROJECT_BRAINSTORM.md](../PROJECT_BRAINSTORM.md)
 Technical reference: [proposed DDD architecture](../ARCHITECTURE.md)
-Approval: the user referred to this as the approved MVP specification and requested resolving missing decisions through user-input questions on 2026-10-13. Section 11 records the answers and routine implementation details. No implementation or release acceptance recorded.
+Approval: the user referred to this as the approved MVP specification and requested resolving missing decisions through user-input questions on 2026-10-13. Section 11 records the answers and routine implementation details. Amendment v0.3 records the additional TR-01, bounded TR-02, and TR-03 owner decisions supplied on 2026-10-13. Amendment v0.4 records the current local-development phase boundary authorized on 2026-10-13. No implementation or release acceptance recorded.
 Issue package: [published MVP issue index](SPEC-001_pin_mvp_tasks.md); 28 GitHub Issues linked in section 12. Publication: 2026-10-13 (Asia/Qyzylorda); no task implementation or acceptance.
 
 ## 1. Purpose, authority, and evidence boundary
@@ -14,6 +14,10 @@ Issue package: [published MVP issue index](SPEC-001_pin_mvp_tasks.md); 28 GitHub
 Define the overall first release: a Telegram assistant that captures plans through text or voice, organizes them, delivers reminders, and checks completion with gentle accountability. Detailed business justification remains in the brainstorm; **no duplicate BR is created**. The brainstorm directly replaces the usual BR link in this specification's traceability.
 
 This is an umbrella specification, not a sprint plan or a second task backlog. Phases describe integration order; GitHub Issues now own task contracts and execution state following authorized publication.
+
+### Current authorized phase — local development
+
+Owner decision, 2026-10-13: the current phase is local development on Windows, without Docker or deployment. Issue #1's current-phase acceptance is a locked fresh install, local role startup, configuration/redaction checks, and import-boundary checks on Windows. Linux, containers, hosted CI, staging/deployment, actual-host qualification, and overall release acceptance are deferred to later separately authorized phases. This phase boundary narrows current execution and evidence only; the full approved MVP requirements and all 28 task contracts remain the future backlog. Finishing this local phase does not constitute MVP completion, production readiness, or owner acceptance.
 
 Classification used throughout:
 
@@ -388,6 +392,12 @@ Approval evidence: the user's request to decompose the “approved Pin MVP speci
 - Suggested steps/priorities stay as advice; create ordinary tasks only when the user requests them and confirms a preview. No dedicated subtask/priority hierarchy.
 - Private chats only. Landing name Pin, Russian and English, simple responsive product/offer/examples page and Open in Telegram CTA; no checkout/analytics initially.
 
+### Additional owner decisions — TR-01, TR-02, and TR-03, 2026-10-13
+
+- **TR-01 recovery after an appointment:** If an outage ends after an appointment's expected end and no initial completion check was delivered, send a late completion check. The normal maximum of one follow-up applies; its timer starts one hour after confirmed late-check delivery, and quiet hours defer it. If a recovery summary is also sent, it may report the unresolved item but must not create a second check/nudge campaign. Preserve the existing one-summary deduplication and never revive an exhausted cycle.
+- **TR-02 this-and-future weekly count:** For a weekly workout series with count 10 and four completed occurrences, moving occurrence five from Monday to Wednesday with this-and-future moves the six remaining occurrences to Wednesdays. This-and-future edits preserve the remaining occurrence count; the count does not restart. The weekly fixture demonstrates the rule. It does not define generalized N-interval anchor/reanchoring semantics; do not infer those semantics from this example.
+- **TR-03 return after deletion:** If the same Telegram identity returns after account deletion, retain only the minimum identity-linked record needed to remember prior trial use and any currently active paid coverage. Restore access for that active paid coverage, but do not restore deleted plans. These are the only approved purposes for the retained return record. Keep the prior-trial and active-coverage facts available as needed to enforce this no-reset/restore rule. No numeric retention period was selected; do not invent one or treat this policy marker as a legal financial-retention rule. This detail does not block independent foundation work. Statutory/financial record retention remains a separate, actual-jurisdiction evidence requirement.
+
 ### Routine details selected by the executor within the requested scope
 
 These complete implementable contracts without changing the choices above; they are distinct from the historical brainstorm's confirmed requirements.
@@ -415,7 +425,7 @@ All earlier O references now refer to this adopted record. No product criterion 
 
 ## 12. Published implementation issue index
 
-The task package was independently reviewed and published as 28 GitHub Issues on 2026-10-13. This is a concise navigation index, not a copied backlog. Issues own scope, exclusions, AC, verification, delivery conditions, dependencies and current Workflow status. The approved behavioral baseline remains v0.2; its pre-index source SHA-256 is `4C32543493E0EF33070ED43ABA643527AC663503467F1427F6EFEA10D19C61AC`. This section changes navigation only, not product policy.
+The task package was independently reviewed and published as 28 GitHub Issues on 2026-10-13. This is a concise navigation index, not a copied backlog. Issues own scope, exclusions, AC, verification, delivery conditions, dependencies and current Workflow status. The behavioral baseline is v0.2 as amended by approved SPEC-001 v0.3 and v0.4; the pre-index source SHA-256 is `4C32543493E0EF33070ED43ABA643527AC663503467F1427F6EFEA10D19C61AC`. This section changes navigation only, not product policy.
 
 | Local alias / task title | Intended outcome | GitHub Issue |
 |---|---|---|
@@ -448,4 +458,4 @@ The task package was independently reviewed and published as 28 GitHub Issues on
 | `qualification` — Qualify actual model, host and operating economics | measured evidence determines whether selected hardware/model route meets the agreed workload, accuracy and affordability requirements. | [#27](https://github.com/dystrophyless/pin/issues/27) |
 | `release-gate` — Decide overall MVP acceptance from complete evidence | a release-readiness report accounts for the entire accepted MVP and every limitation, without confusing deployment authorization with acceptance. | [#28](https://github.com/dystrophyless/pin/issues/28) |
 
-See the [package review](SPEC-001_pin_mvp_package_review.md) for the narrower pending owner decisions (late-check/recovery-summary interaction, future-series anchor/count, and deletion-return access/linkage) and qualification evidence prerequisites. Issue readiness does not imply implementation, test PASS or product acceptance. Source documents and this issue index are local and unpushed; commit/push were not part of issue publication.
+The package review predates approved SPEC-001 v0.3 owner decisions. Affected issue bodies record the remaining bounded implementation questions and evidence prerequisites. Issue readiness does not imply implementation, test PASS or product acceptance. Source documents and this issue index are local and unpushed; commit/push were not part of issue publication.
