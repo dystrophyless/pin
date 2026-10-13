@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import multiprocessing as mp
 import os
 from dataclasses import dataclass
 from datetime import UTC, datetime, time, timedelta
 from pathlib import Path
-from typing import BinaryIO
+from typing import Any, BinaryIO, Protocol
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
@@ -192,6 +193,107 @@ class _ReplySequenceTransport:
         }
 
 
+class _ProcessSignal(Protocol):
+    def set(self) -> None: ...
+
+
+class _ProcessBarrierTransport:
+    def __init__(self, reached: _ProcessSignal) -> None:
+        self.reached = reached
+
+    async def complete(self, _payload: dict[str, object]) -> dict[str, object]:
+        self.reached.set()
+        await asyncio.Event().wait()
+        raise AssertionError("terminated provider barrier unexpectedly resumed")
+
+
+class _ProcessBarrierBot(_VoiceBot):
+    def __init__(self, audio: bytes, reached: _ProcessSignal) -> None:
+        super().__init__(audio)
+        self.reached = reached
+
+    async def download_file(
+        self,
+        file_path: str | Path,
+        destination: BinaryIO | Path | str | None = None,
+        timeout: int = 30,
+        chunk_size: int = 65_536,
+        seek: bool = True,
+    ) -> BinaryIO | None:
+        await super().download_file(
+            file_path,
+            destination=destination,
+            timeout=timeout,
+            chunk_size=chunk_size,
+            seek=seek,
+        )
+        assert destination is not None and hasattr(destination, "flush")
+        destination.flush()
+        self.reached.set()
+        await asyncio.Event().wait()
+        return None
+
+
+class _FixedRecognizer:
+    def __init__(self, text: str) -> None:
+        self.text = text
+        self.calls = 0
+
+    async def transcribe(self, audio: DecodedAudio) -> SpeechRecognition:
+        self.calls += 1
+        return SpeechRecognition(self.text, "en", audio.facts)
+
+
+def _terminated_speech_worker(
+    database_url: str,
+    claim: JobClaim,
+    audio: bytes,
+    files_directory: str,
+    boundary: str,
+    reached: _ProcessSignal,
+) -> None:
+    async def scenario() -> None:
+        engine = create_engine(database_url)
+        sessions = create_session_factory(engine)
+        from pin.adapters.telegram import speech_worker
+
+        original_continue = speech_worker._continue_capture
+        if boundary in {"transcribed", "committed"}:
+
+            async def pause_at_continuation(*args: Any, **kwargs: Any) -> None:
+                if boundary == "transcribed":
+                    reached.set()
+                    await asyncio.Event().wait()
+                await original_continue(*args, **kwargs)
+                if boundary == "committed":
+                    reached.set()
+                    await asyncio.Event().wait()
+
+            speech_worker._continue_capture = pause_at_continuation
+        transport: CompletionTransport = (
+            _ProcessBarrierTransport(reached)
+            if boundary == "provider_started"
+            else _ReplySequenceTransport(
+                {"kind": "reply", "language": "en", "text": "I saved that reminder."}
+            )
+        )
+        await process_speech_job(
+            sessions,
+            claim,
+            bot=(
+                _ProcessBarrierBot(audio, reached)
+                if boundary == "download"
+                else _VoiceBot(audio)
+            ),
+            assistant=_assistant(sessions, transport, datetime.now(UTC)),
+            now=datetime.now(UTC),
+            files=PrivateAudioFiles(Path(files_directory)),
+            recognizer=_FixedRecognizer("Take a break tomorrow."),
+        )
+
+    run_local_async(scenario)
+
+
 async def _seed_voice_job(
     sessions: async_sessionmaker[AsyncSession],
     *,
@@ -275,7 +377,7 @@ async def _seed_voice_job(
         )
         assert voice_job_id is not None
         await session.execute(
-            update(Job).where(Job.id == voice_job_id).values(priority=100)
+            update(Job).where(Job.id == voice_job_id).values(priority=2_147_483_647)
         )
         inbox = await session.scalar(
             select(InboxUpdate).where(
@@ -1269,6 +1371,288 @@ def test_exhausted_ai_allowance_stops_before_telegram_download(
                 assert speech.failure_code == "voice_allowance_exhausted"
                 assert reservation is None
         finally:
+            await engine.dispose()
+
+    run_local_async(scenario)
+
+
+@pytest.mark.parametrize("boundary", ["download", "transcribed", "provider_started"])
+def test_spawned_worker_death_reclaims_original_voice_job_without_duplicate_work(
+    speech_worker_database: str,
+    tmp_path: Path,
+    boundary: str,
+) -> None:
+    async def scenario() -> None:
+        engine = create_engine(speech_worker_database)
+        sessions = create_session_factory(engine)
+        now = datetime.now(UTC)
+        audio = (ROOT / "tests" / "fixtures" / "speech" / "en.wav").read_bytes()
+        directory = tmp_path / f"process-death-{boundary}"
+        context = mp.get_context("spawn")
+        reached = context.Event()
+        process: Any = None
+        try:
+            owner_id, claim, _, inbox_id, _ = await _seed_voice_job(
+                sessions, now=now, voice_seconds=900, add_later_text=False
+            )
+            async with sessions() as session, session.begin():
+                await session.execute(
+                    update(Job)
+                    .where(Job.id == claim.job_id)
+                    .values(priority=2_147_483_647)
+                )
+
+            process = context.Process(
+                target=_terminated_speech_worker,
+                args=(
+                    speech_worker_database,
+                    claim,
+                    audio,
+                    str(directory),
+                    boundary,
+                    reached,
+                ),
+            )
+            process.start()
+            arrived = await asyncio.wait_for(asyncio.to_thread(reached.wait, 60), timeout=65)
+            assert arrived, f"spawned worker did not reach {boundary}; exit={process.exitcode}"
+            process.terminate()
+            await asyncio.to_thread(process.join, 20)
+            assert process.exitcode is not None and process.exitcode != 0
+
+            leftovers = list(directory.glob("audio-*.bin"))
+            assert len(leftovers) == 1
+            assert leftovers[0].stat().st_size == len(audio)
+            async with sessions() as session:
+                crashed_speech = await session.get(SpeechRequestRecord, claim.job_id)
+                crashed_reservation = await session.scalar(
+                    select(UsageReservationRecord).where(
+                        UsageReservationRecord.owner_id == owner_id,
+                        UsageReservationRecord.request_id == f"telegram-inbox:{inbox_id}",
+                    )
+                )
+                crashed_calls = list(
+                    (
+                        await session.scalars(
+                            select(ProviderCallRecord).where(
+                                ProviderCallRecord.owner_id == owner_id
+                            )
+                        )
+                    ).all()
+                )
+                assert crashed_speech is not None
+                assert crashed_reservation is not None
+                if boundary == "download":
+                    assert crashed_speech.state == "processing"
+                    assert crashed_speech.actual_size_bytes is None
+                    assert crashed_reservation.state == "reserved"
+                    assert crashed_calls == []
+                else:
+                    assert crashed_speech.state == "transcribed"
+                    assert crashed_speech.transcript == "Take a break tomorrow."
+                    assert crashed_speech.actual_size_bytes == len(audio)
+                if boundary == "provider_started":
+                    assert len(crashed_calls) == 1
+                    assert crashed_calls[0].state == "started"
+
+            if boundary == "provider_started":
+                # The provider call's start receipt fences replay from making a second call.
+                retry_transport = _ReplySequenceTransport(
+                    {"kind": "reply", "language": "en", "text": "Must not be called."}
+                )
+            else:
+                retry_transport = _ReplySequenceTransport(
+                    {"kind": "reply", "language": "en", "text": "I saved that reminder."}
+                )
+            recovered = await _expire_and_reclaim(sessions, claim)
+            assert recovered.job_id == claim.job_id
+            recognizer = _FixedRecognizer("Take a break tomorrow.")
+            retry_bot = _VoiceBot(audio)
+            await process_speech_job(
+                sessions,
+                recovered,
+                bot=retry_bot,
+                assistant=_assistant(sessions, retry_transport, now),
+                now=now,
+                files=PrivateAudioFiles(directory),
+                recognizer=recognizer,
+            )
+            if boundary == "download":
+                assert retry_bot.get_file_calls == retry_bot.download_calls == 1
+                assert recognizer.calls == 1
+            else:
+                assert retry_bot.get_file_calls == retry_bot.download_calls == 0
+                assert recognizer.calls == 0
+            assert retry_transport.calls == (0 if boundary == "provider_started" else 1)
+
+            async with sessions() as session:
+                speech = await session.get(SpeechRequestRecord, claim.job_id)
+                job = await session.get(Job, claim.job_id)
+                reservation = await session.scalar(
+                    select(UsageReservationRecord).where(
+                        UsageReservationRecord.owner_id == owner_id,
+                        UsageReservationRecord.request_id == f"telegram-inbox:{inbox_id}",
+                    )
+                )
+                capture_input = await session.scalar(
+                    select(CaptureInputRecord).where(
+                        CaptureInputRecord.owner_id == owner_id,
+                        CaptureInputRecord.input_key == f"telegram-inbox:{inbox_id}",
+                    )
+                )
+                calls = list(
+                    (
+                        await session.scalars(
+                            select(ProviderCallRecord).where(
+                                ProviderCallRecord.owner_id == owner_id
+                            )
+                        )
+                    ).all()
+                )
+                reply_events = (
+                    await session.scalars(
+                        select(OutboxEvent).where(
+                            OutboxEvent.causation_id == claim.job_id,
+                            OutboxEvent.event_type == "telegram.reply.requested",
+                        )
+                    )
+                ).all()
+                assert speech is not None and speech.state == "continued"
+                assert speech.transcript is None and speech.language is None
+                assert job is not None and job.status == "succeeded"
+                assert reservation is not None
+                assert capture_input is not None
+                assert len(calls) == (1 if boundary == "provider_started" else 1)
+                assert len(reply_events) == 3
+                if boundary == "provider_started":
+                    assert calls[0].state == "started"
+                    assert capture_input.state == "failed"
+                    assert reservation.state == "refunded"
+                    assert reservation.settled_ai_turns == reservation.settled_voice_seconds == 0
+                else:
+                    assert calls[0].state == "reported"
+                    assert capture_input.state == "complete"
+                    assert reservation.state == "settled"
+                    assert reservation.settled_ai_turns == 1
+                    assert reservation.settled_voice_seconds == 4
+
+            if boundary == "provider_started":
+                with pytest.raises(LeaseLost):
+                    await SqlAlchemyTurnAllowance(sessions, voice_seconds=4).refund(
+                        owner_id=owner_id,
+                        request_id=f"telegram-inbox:{inbox_id}",
+                        at=now,
+                        claim=claim,
+                    )
+                async with sessions() as session:
+                    reservation = await session.scalar(
+                        select(UsageReservationRecord).where(
+                            UsageReservationRecord.owner_id == owner_id,
+                            UsageReservationRecord.request_id == f"telegram-inbox:{inbox_id}",
+                        )
+                    )
+                    assert reservation is not None and reservation.state == "refunded"
+
+            # The crashed process leaves one private file; explicit-clock janitor cleanup
+            # removes only generated files once they pass the 24-hour crash bound.
+            current = datetime.now(UTC)
+            assert PrivateAudioFiles(directory).cleanup_crash_leftovers(now=current) == 0
+            stale_epoch = current.timestamp() - timedelta(hours=24, seconds=1).total_seconds()
+            os.utime(leftovers[0], (stale_epoch, stale_epoch))
+            assert PrivateAudioFiles(directory).cleanup_crash_leftovers(now=current) == 1
+            assert list(directory.glob("audio-*.bin")) == []
+        finally:
+            if process is not None and process.is_alive():
+                process.terminate()
+                await asyncio.to_thread(process.join, 20)
+            await engine.dispose()
+
+    run_local_async(scenario)
+
+
+def test_spawned_worker_death_after_final_continuation_commit_keeps_one_result(
+    speech_worker_database: str, tmp_path: Path
+) -> None:
+    async def scenario() -> None:
+        engine = create_engine(speech_worker_database)
+        sessions = create_session_factory(engine)
+        now = datetime.now(UTC)
+        audio = (ROOT / "tests" / "fixtures" / "speech" / "en.wav").read_bytes()
+        directory = tmp_path / "process-death-after-commit"
+        context = mp.get_context("spawn")
+        reached = context.Event()
+        process: Any = None
+        try:
+            owner_id, claim, _, inbox_id, _ = await _seed_voice_job(
+                sessions, now=now, voice_seconds=900, add_later_text=False
+            )
+            async with sessions() as session, session.begin():
+                await session.execute(
+                    update(Job)
+                    .where(Job.id == claim.job_id)
+                    .values(priority=2_147_483_647)
+                )
+            process = context.Process(
+                target=_terminated_speech_worker,
+                args=(
+                    speech_worker_database,
+                    claim,
+                    audio,
+                    str(directory),
+                    "committed",
+                    reached,
+                ),
+            )
+            process.start()
+            arrived = await asyncio.wait_for(asyncio.to_thread(reached.wait, 60), timeout=65)
+            assert arrived, f"spawned worker did not commit; exit={process.exitcode}"
+            process.terminate()
+            await asyncio.to_thread(process.join, 20)
+            assert process.exitcode is not None and process.exitcode != 0
+            async with sessions() as session:
+                speech = await session.get(SpeechRequestRecord, claim.job_id)
+                job = await session.get(Job, claim.job_id)
+                reservation = await session.scalar(
+                    select(UsageReservationRecord).where(
+                        UsageReservationRecord.owner_id == owner_id,
+                        UsageReservationRecord.request_id == f"telegram-inbox:{inbox_id}",
+                    )
+                )
+                capture_input = await session.scalar(
+                    select(CaptureInputRecord).where(
+                        CaptureInputRecord.owner_id == owner_id,
+                        CaptureInputRecord.input_key == f"telegram-inbox:{inbox_id}",
+                    )
+                )
+                calls = list(
+                    (
+                        await session.scalars(
+                            select(ProviderCallRecord).where(
+                                ProviderCallRecord.owner_id == owner_id
+                            )
+                        )
+                    ).all()
+                )
+                reply_events = (
+                    await session.scalars(
+                        select(OutboxEvent).where(
+                            OutboxEvent.causation_id == claim.job_id,
+                            OutboxEvent.event_type == "telegram.reply.requested",
+                        )
+                    )
+                ).all()
+                assert speech is not None and speech.state == "continued"
+                assert job is not None and job.status == "succeeded"
+                assert reservation is not None and reservation.state == "settled"
+                assert reservation.settled_ai_turns == 1
+                assert reservation.settled_voice_seconds == 4
+                assert capture_input is not None and capture_input.state == "complete"
+                assert len(calls) == 1 and calls[0].state == "reported"
+                assert len(reply_events) == 3
+        finally:
+            if process is not None and process.is_alive():
+                process.terminate()
+                await asyncio.to_thread(process.join, 20)
             await engine.dispose()
 
     run_local_async(scenario)
