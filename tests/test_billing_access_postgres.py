@@ -941,9 +941,12 @@ def test_deleted_account_with_active_paid_coverage_denies_every_operation(
     run_local_async(scenario)
 
 
-@pytest.mark.parametrize("mutation", ("delete", "expire"))
+@pytest.mark.parametrize(
+    ("mutation", "locking_port"),
+    (("delete", "access"), ("expire", "access"), ("delete", "lifecycle")),
+)
 def test_locked_access_fences_entitlement_changes_and_uses_current_instant(
-    billing_database: str, mutation: str
+    billing_database: str, mutation: str, locking_port: str
 ) -> None:
     async def scenario() -> None:
         engine = create_engine(billing_database)
@@ -977,16 +980,20 @@ def test_locked_access_fences_entitlement_changes_and_uses_current_instant(
 
             async with sessions() as session, session.begin():
                 store = SqlAlchemyAccessUsageStore(session)
-                current = await store.lock_access(
+                if locking_port == "lifecycle":
+                    assert await store.lock_account_lifecycle(owner_id) is AccountLifecycle.PRESENT
+                    assert await store.lock_account_lifecycle(uuid4()) is AccountLifecycle.MISSING
+                check = store.lock_access if locking_port == "access" else store.check_access
+                current = await check(
                     CheckAccess(owner_id, Operation.REMINDER_DELIVERY, at)
                 )
                 assert current.allowed and current.period_id == period_id
-                missing = await store.lock_access(
+                missing = await check(
                     CheckAccess(uuid4(), Operation.REMINDER_DELIVERY, at)
                 )
                 assert not missing.allowed
                 # SQL locks preserve facts, but entitlement time still advances.
-                expired = await store.lock_access(
+                expired = await check(
                     CheckAccess(owner_id, Operation.REMINDER_DELIVERY, ends_at)
                 )
                 assert not expired.allowed and expired.denial is AccessDenial.ACCESS_EXPIRED
@@ -996,7 +1003,10 @@ def test_locked_access_fences_entitlement_changes_and_uses_current_instant(
                 assert not done, "access facts must remain locked until caller commits"
             await asyncio.wait_for(writer, timeout=5)
             async with sessions() as session, session.begin():
-                decision = await SqlAlchemyAccessUsageStore(session).lock_access(
+                store = SqlAlchemyAccessUsageStore(session)
+                if locking_port == "lifecycle":
+                    assert await store.lock_account_lifecycle(owner_id) is AccountLifecycle.DELETED
+                decision = await store.lock_access(
                     CheckAccess(owner_id, Operation.REMINDER_DELIVERY, at)
                 )
                 assert not decision.allowed

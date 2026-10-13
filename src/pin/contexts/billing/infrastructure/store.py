@@ -193,11 +193,18 @@ class SqlAlchemyAccessUsageStore(AccessUsageStore):
         return decide_access(account, query.operation, query.at)
 
     async def account_lifecycle(self, owner_id: UUID) -> AccountLifecycle:
-        account_record = await self._session.scalar(
+        return await self._account_lifecycle(owner_id, lock=False)
+
+    async def lock_account_lifecycle(self, owner_id: UUID) -> AccountLifecycle:
+        return await self._account_lifecycle(owner_id, lock=True)
+
+    async def _account_lifecycle(self, owner_id: UUID, *, lock: bool) -> AccountLifecycle:
+        query = (
             select(AccessAccountRecord)
             .where(AccessAccountRecord.owner_id == owner_id)
             .execution_options(populate_existing=True)
         )
+        account_record = await self._session.scalar(query.with_for_update() if lock else query)
         if account_record is None:
             return AccountLifecycle.MISSING
         if account_record.deleted_at is not None:
