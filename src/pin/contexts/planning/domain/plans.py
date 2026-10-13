@@ -148,6 +148,19 @@ class ReminderSchedule:
 
 
 @dataclass(frozen=True, slots=True)
+class ReminderOmission:
+    offset: ReminderOffset
+    due_at: datetime
+    reason: str = "past"
+
+
+@dataclass(frozen=True, slots=True)
+class ReminderResolution:
+    scheduled: tuple[ReminderSchedule, ...]
+    omitted: tuple[ReminderOmission, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class PlanItem:
     id: UUID
     owner_id: UUID
@@ -178,6 +191,7 @@ class ProposedPlan:
     item: PlanItem
     occurrence: Occurrence
     reminders: tuple[ReminderSchedule, ...]
+    omitted_reminders: tuple[ReminderOmission, ...] = ()
 
 
 def propose_plan(
@@ -196,11 +210,13 @@ def propose_plan(
         if draft.reminders is not None
         else default_reminders
     )
-    reminders = resolve_reminders(schedule, offsets, now=now)
+    reminder_resolution = resolve_reminder_projection(schedule, offsets, now=now)
     item_id, occurrence_id = uuid4(), uuid4()
     item = PlanItem(item_id, owner_id, draft.kind, draft.title.strip(), 1)
     occurrence = Occurrence(occurrence_id, owner_id, item_id, schedule)
-    return ProposedPlan(item, occurrence, reminders)
+    return ProposedPlan(
+        item, occurrence, reminder_resolution.scheduled, reminder_resolution.omitted
+    )
 
 
 def resolve_schedule(
@@ -273,14 +289,24 @@ def resolve_reminders(
     *,
     now: datetime,
 ) -> tuple[ReminderSchedule, ...]:
+    return resolve_reminder_projection(schedule, offsets, now=now).scheduled
+
+
+def resolve_reminder_projection(
+    schedule: ResolvedSchedule,
+    offsets: tuple[ReminderOffset, ...],
+    *,
+    now: datetime,
+) -> ReminderResolution:
     _require_aware(now)
     anchor = schedule.anchor_at
     if anchor is None:
         if offsets:
             raise ValueError("untimed plans cannot have reminders")
-        return ()
+        return ReminderResolution((), ())
     zone = ZoneInfo(schedule.event_zone)
     resolved: list[ReminderSchedule] = []
+    omitted: list[ReminderOmission] = []
     for offset in offsets:
         if offset.kind is OffsetKind.ELAPSED_SECONDS:
             due_at = anchor - timedelta(seconds=offset.amount)
@@ -290,10 +316,11 @@ def resolve_reminders(
             due_at = _resolve_local(reminder_local, zone, None, "calendar reminder")
         if due_at <= now.astimezone(UTC):
             if offset.source == "default":
+                omitted.append(ReminderOmission(offset, due_at.astimezone(UTC)))
                 continue
             raise ScheduleNeedsClarification("an explicitly requested reminder is in the past")
         resolved.append(ReminderSchedule(offset, due_at))
-    return tuple(resolved)
+    return ReminderResolution(tuple(resolved), tuple(omitted))
 
 
 def payload_digest(
@@ -337,6 +364,82 @@ def payload_digest(
     }
     encoded = json.dumps(data, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return sha256(encoded).hexdigest()
+
+
+def approval_projection_digest(
+    drafts: tuple[OneOffPlanDraft, ...],
+    *,
+    expected_preferences_version: int,
+    plans: tuple[ProposedPlan, ...],
+) -> str:
+    """Fingerprint approved typed fields and their exact resolved schedule/reminders.
+
+    Generated item/occurrence identifiers and processing time are deliberately
+    excluded so the same approved calendar intent hashes identically on replay.
+    """
+    if len(drafts) != len(plans):
+        raise ValueError("draft and proposal counts must match")
+    projection = []
+    for plan in plans:
+        schedule = plan.occurrence.schedule
+        projection.append(
+            {
+                "schedule": {
+                    "kind": schedule.kind.value,
+                    "event_zone": schedule.event_zone,
+                    "local_date": schedule.local_date.isoformat(),
+                    "local_time": schedule.local_time.isoformat() if schedule.local_time else None,
+                    "fold": schedule.fold,
+                    "end_local_date": schedule.end_local_date.isoformat()
+                    if schedule.end_local_date
+                    else None,
+                    "end_local_time": schedule.end_local_time.isoformat()
+                    if schedule.end_local_time
+                    else None,
+                    "end_fold": schedule.end_fold,
+                    "starts_at": _utc_iso(schedule.starts_at),
+                    "ends_at": _utc_iso(schedule.ends_at),
+                    "deadline_at": _utc_iso(schedule.deadline_at),
+                    "duration_seconds": schedule.duration_seconds,
+                },
+                "reminders": [
+                    {
+                        "kind": reminder.offset.kind.value,
+                        "amount": reminder.offset.amount,
+                        "source": reminder.offset.source,
+                        "due_at": _utc_iso(reminder.due_at),
+                        "status": "scheduled",
+                    }
+                    for reminder in plan.reminders
+                ],
+                "omitted_reminders": [
+                    {
+                        "kind": omitted.offset.kind.value,
+                        "amount": omitted.offset.amount,
+                        "source": omitted.offset.source,
+                        "due_at": _utc_iso(omitted.due_at),
+                        "reason": omitted.reason,
+                    }
+                    for omitted in plan.omitted_reminders
+                ],
+            }
+        )
+    encoded = json.dumps(
+        {
+            "schema_version": 1,
+            "typed_payload_sha256": payload_digest(
+                drafts, expected_preferences_version=expected_preferences_version
+            ),
+            "plans": projection,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return sha256(encoded).hexdigest()
+
+
+def _utc_iso(value: datetime | None) -> str | None:
+    return value.astimezone(UTC).isoformat() if value is not None else None
 
 
 def _resolve_local(

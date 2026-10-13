@@ -15,12 +15,12 @@ from pin.contexts.planning.application.contracts import (
     ConfirmationVerifier,
     PlanCommandStore,
 )
+from pin.contexts.planning.application.preview import preview_plan_batch
 from pin.contexts.planning.domain.plans import (
     OffsetKind,
     OneOffPlanDraft,
     ReminderOffset,
     payload_digest,
-    propose_plan,
 )
 
 
@@ -105,24 +105,24 @@ async def create_confirmed_plan_batch(
         )
         if offset is not None
     )
-    proposed = tuple(
-        propose_plan(
-            authenticated_owner_id,
-            draft,
-            default_zone=preferences.home_zone,
-            default_reminders=default_offsets,
-            now=now,
-        )
-        for draft in command.plans
+    preview = preview_plan_batch(
+        authenticated_owner_id,
+        command.plans,
+        expected_preferences_version=command.expected_preferences_version,
+        default_zone=preferences.home_zone,
+        default_reminders=default_offsets,
+        at=now,
     )
 
     grant = await confirmation_verifier.verify_and_consume(
         command.proof,
         owner_id=authenticated_owner_id,
-        approved_fields_sha256=digest,
+        approved_projection_sha256=preview.approval_projection_sha256,
         at=now,
     )
-    _require_confirmation(grant, command.proof, authenticated_owner_id, digest, now)
+    _require_confirmation(
+        grant, command.proof, authenticated_owner_id, preview.approval_projection_sha256, now
+    )
 
     # Proof verification may await its trusted producer, and the preference read
     # above may predate that wait. Lock and refresh the public Identity snapshot
@@ -133,7 +133,13 @@ async def create_confirmed_plan_batch(
     if write_at.tzinfo is None or write_at.utcoffset() is None:
         raise ValueError("clock must return a timezone-aware datetime")
     write_at = write_at.astimezone(UTC)
-    _require_confirmation(grant, command.proof, authenticated_owner_id, digest, write_at)
+    _require_confirmation(
+        grant,
+        command.proof,
+        authenticated_owner_id,
+        preview.approval_projection_sha256,
+        write_at,
+    )
     if current_preferences is None or current_preferences.owner_id != authenticated_owner_id:
         raise AccessDenied("a current owner profile is required to create plans")
     if current_preferences.version != command.expected_preferences_version:
@@ -144,8 +150,9 @@ async def create_confirmed_plan_batch(
     if not current_access.allowed:
         raise AccessDenied("current billing access does not permit plan creation")
 
-    # Re-resolve against the write-boundary clock and locked current preferences;
-    # e.g. an untimed local day may have passed while verification was awaiting.
+    # Re-resolve against the write-boundary clock and locked current preferences.
+    # A changed event or effective/omitted reminder means the approved preview is
+    # stale and must be shown again before any Planning fragments are persisted.
     write_offsets = tuple(
         offset
         for offset in (
@@ -166,21 +173,21 @@ async def create_confirmed_plan_batch(
         )
         if offset is not None
     )
-    proposed = tuple(
-        propose_plan(
-            authenticated_owner_id,
-            draft,
-            default_zone=current_preferences.home_zone,
-            default_reminders=write_offsets,
-            now=write_at,
-        )
-        for draft in command.plans
+    write_preview = preview_plan_batch(
+        authenticated_owner_id,
+        command.plans,
+        expected_preferences_version=command.expected_preferences_version,
+        default_zone=current_preferences.home_zone,
+        default_reminders=write_offsets,
+        at=write_at,
     )
+    if write_preview.approval_projection_sha256 != preview.approval_projection_sha256:
+        raise StalePreview("the resolved schedule changed after the user approved the preview")
     return await store.persist_confirmed_batch(
         owner_id=authenticated_owner_id,
         action_key=command.action_key,
         payload_sha256=digest,
-        plans=proposed,
+        plans=write_preview.plans,
         at=write_at,
     )
 
@@ -189,7 +196,7 @@ def _require_confirmation(
     grant: ConfirmationGrant | None,
     proof: ConfirmationProof,
     owner_id: UUID,
-    digest: str,
+    approved_projection_sha256: str,
     at: datetime,
 ) -> None:
     if grant is None:
@@ -201,7 +208,7 @@ def _require_confirmation(
         or grant.preview_id != proof.preview_id
         or grant.preview_version != proof.preview_version
         or not grant.producer_id.strip()
-        or grant.approved_fields_sha256 != digest
+        or grant.approved_projection_sha256 != approved_projection_sha256
         or grant.issued_at.tzinfo is None
         or grant.issued_at.utcoffset() is None
         or grant.expires_at.tzinfo is None

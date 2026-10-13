@@ -47,7 +47,8 @@ from pin.contexts.planning.api import (
 )
 from pin.contexts.planning.application.commands import AccessDenied
 from pin.contexts.planning.application.contracts import ConfirmationVerifier
-from pin.contexts.planning.domain.plans import payload_digest, resolve_schedule
+from pin.contexts.planning.application.preview import preview_plan_batch
+from pin.contexts.planning.domain.plans import OffsetKind, ReminderOffset, resolve_schedule
 from pin.contexts.planning.infrastructure.models import (
     OccurrenceRecord,
     PlanItemRecord,
@@ -73,7 +74,7 @@ confirmation_grants = Table(
     Column("preview_id", String(36), nullable=False),
     Column("preview_version", Integer, nullable=False),
     Column("producer_id", String(120), nullable=False),
-    Column("approved_fields_sha256", String(64), nullable=False),
+    Column("approved_projection_sha256", String(64), nullable=False),
     Column("issued_at", DateTime(timezone=True), nullable=False),
     Column("expires_at", DateTime(timezone=True), nullable=False),
     Column("cancelled", Boolean, nullable=False, default=False),
@@ -133,8 +134,19 @@ class PersistedTestProducer:
         proof_id = uuid4()
         credential = f"trusted-test-token:{uuid4().hex}"
         proof = ConfirmationProof(proof_id, 3, credential)
-        digest = payload_digest(drafts, expected_preferences_version=preferences_version)
         async with self._sessions() as session, session.begin():
+            preferences = await SqlAlchemyIdentityStore(session).get_preferences(owner_id)
+            if preferences is None:
+                raise AssertionError("trusted test producer needs the preview owner's profile")
+            defaults = _default_offsets(preferences)
+            preview = preview_plan_batch(
+                owner_id,
+                drafts,
+                expected_preferences_version=preferences_version,
+                default_zone=preferences.home_zone,
+                default_reminders=defaults,
+                at=now,
+            )
             await session.execute(
                 confirmation_grants.insert().values(
                     credential=credential,
@@ -142,7 +154,7 @@ class PersistedTestProducer:
                     preview_id=str(proof_id),
                     preview_version=3,
                     producer_id="trusted-test-preview-producer",
-                    approved_fields_sha256=digest,
+                    approved_projection_sha256=preview.approval_projection_sha256,
                     issued_at=now,
                     expires_at=now + lifetime,
                     cancelled=False,
@@ -196,7 +208,7 @@ class _PersistedTestVerifier(ConfirmationVerifier):
         proof: ConfirmationProof,
         *,
         owner_id: UUID,
-        approved_fields_sha256: str,
+        approved_projection_sha256: str,
         at: datetime,
     ) -> ConfirmationGrant | None:
         row = (
@@ -217,7 +229,7 @@ class _PersistedTestVerifier(ConfirmationVerifier):
             or row.preview_id != str(proof.preview_id)
             or row.preview_version != proof.preview_version
             or row.producer_id != "trusted-test-preview-producer"
-            or row.approved_fields_sha256 != approved_fields_sha256
+            or row.approved_projection_sha256 != approved_projection_sha256
             or row.issued_at > at
             or row.expires_at <= at
         ):
@@ -237,10 +249,29 @@ class _PersistedTestVerifier(ConfirmationVerifier):
             proof.preview_id,
             proof.preview_version,
             row.producer_id,
-            row.approved_fields_sha256,
+            row.approved_projection_sha256,
             row.issued_at,
             row.expires_at,
         )
+
+
+def _default_offsets(preferences) -> tuple[ReminderOffset, ...]:
+    return tuple(
+        offset
+        for offset in (
+            ReminderOffset(OffsetKind.CALENDAR_DAYS, preferences.reminder_calendar_days, "default")
+            if preferences.reminder_calendar_days
+            else None,
+            ReminderOffset(
+                OffsetKind.ELAPSED_SECONDS,
+                preferences.reminder_elapsed_hours * 3600,
+                "default",
+            )
+            if preferences.reminder_elapsed_hours
+            else None,
+        )
+        if offset is not None
+    )
 
 
 def _profile(owner_id: UUID, *, version: int = 1) -> PreferencesRecord:
@@ -512,16 +543,22 @@ def test_mixed_invalid_batch_rolls_back_every_planning_fragment(planning_session
         verifier = PersistedTestProducer(planning_sessions)
         drafts = (
             OneOffPlanDraft(PlanKind.UNTIMED, "Valid", date(2026, 10, 15)),
-            OneOffPlanDraft(PlanKind.TASK, "Past", date(2026, 10, 13), time(7), "Asia/Almaty"),
+            OneOffPlanDraft(PlanKind.TASK, "Past", date(2026, 10, 13), time(12), "UTC"),
         )
         command_ = ConfirmedPlanBatch(
             "issue8-invalid-batch",
             1,
             drafts,
-            await verifier.issue(owner_id=owner_id, drafts=drafts),
+            await verifier.issue(owner_id=owner_id, drafts=drafts, lifetime=timedelta(days=2)),
         )
         with pytest.raises(ValueError, match="past"):
-            await _execute(planning_sessions, owner_id, command_, verifier)
+            await _execute(
+                planning_sessions,
+                owner_id,
+                command_,
+                verifier,
+                clock=SequenceClock(NOW, NOW + timedelta(hours=5)),
+            )
         async with planning_sessions() as session:
             for model in (
                 PlanItemRecord,
@@ -573,7 +610,9 @@ def test_untrusted_or_stale_confirmation_never_persists_plan(
                 lifetime=timedelta(hours=1),
             )
         elif proof_state == "wrong_owner":
-            proof = await verifier.issue(owner_id=uuid4(), drafts=drafts)
+            other_owner = uuid4()
+            await _seed_owner(planning_sessions, other_owner)
+            proof = await verifier.issue(owner_id=other_owner, drafts=drafts)
         command_ = ConfirmedPlanBatch(f"issue8-proof-{proof_state}", 1, drafts, proof)
         with pytest.raises(ConfirmationRejected):
             await _execute(planning_sessions, owner_id, command_, verifier)
@@ -691,6 +730,178 @@ def test_preferences_changed_while_verification_waits_rolls_back_proof_and_comma
         assert await verifier.state(command_.proof) == (False, False)
         async with planning_sessions() as session:
             await _assert_no_command_fragments(session, owner_id, command_.action_key)
+
+    run_local_async(scenario)
+
+
+def test_default_reminders_going_past_while_verifier_waits_rejects_approved_projection(
+    planning_sessions,
+) -> None:
+    async def scenario() -> None:
+        owner_id = uuid4()
+        await _seed_owner(planning_sessions, owner_id)
+        preview_at = datetime(2026, 10, 13, 5, tzinfo=UTC)
+        apply_at = datetime(2026, 10, 16, 11, 30, tzinfo=UTC)
+        verified = asyncio.Event()
+        release = asyncio.Event()
+        verifier = PersistedTestProducer(planning_sessions, verified=verified, release=release)
+        drafts = (
+            OneOffPlanDraft(
+                PlanKind.APPOINTMENT,
+                "Conference",
+                date(2026, 10, 16),
+                time(17),
+                "Asia/Almaty",
+                duration_seconds=3600,
+            ),
+        )
+        command_ = ConfirmedPlanBatch(
+            "issue8-reminders-stale-while-verifying",
+            1,
+            drafts,
+            await verifier.issue(
+                owner_id=owner_id,
+                drafts=drafts,
+                now=preview_at,
+                lifetime=timedelta(days=5),
+            ),
+        )
+        applying = asyncio.create_task(
+            _execute(
+                planning_sessions,
+                owner_id,
+                command_,
+                verifier,
+                clock=SequenceClock(preview_at, apply_at),
+            )
+        )
+        await asyncio.wait_for(verified.wait(), timeout=5)
+        release.set()
+        with pytest.raises(StalePreview, match="resolved schedule changed"):
+            await applying
+        assert await verifier.state(command_.proof) == (False, False)
+        async with planning_sessions() as session:
+            await _assert_no_command_fragments(session, owner_id, command_.action_key)
+
+    run_local_async(scenario)
+
+
+def test_past_default_reminders_require_fresh_approval_and_replay_original_result(
+    planning_sessions,
+) -> None:
+    async def scenario() -> None:
+        owner_id = uuid4()
+        await _seed_owner(planning_sessions, owner_id)
+        preview_at = datetime(2026, 10, 13, 5, tzinfo=UTC)
+        apply_at = datetime(2026, 10, 16, 11, 30, tzinfo=UTC)
+        drafts = (
+            OneOffPlanDraft(
+                PlanKind.APPOINTMENT,
+                "Conference",
+                date(2026, 10, 16),
+                time(17),
+                "Asia/Almaty",
+                duration_seconds=3600,
+            ),
+        )
+        verifier = PersistedTestProducer(planning_sessions)
+        stale_command = ConfirmedPlanBatch(
+            "issue8-reminders-stale-before-apply",
+            1,
+            drafts,
+            await verifier.issue(
+                owner_id=owner_id,
+                drafts=drafts,
+                now=preview_at,
+                lifetime=timedelta(days=5),
+            ),
+        )
+        with pytest.raises(ConfirmationRejected):
+            await _execute(
+                planning_sessions,
+                owner_id,
+                stale_command,
+                verifier,
+                clock=FixedClock(apply_at),
+            )
+        assert await verifier.state(stale_command.proof) == (False, False)
+        async with planning_sessions() as session:
+            await _assert_no_command_fragments(session, owner_id, stale_command.action_key)
+
+        fresh_command = ConfirmedPlanBatch(
+            "issue8-reminders-fresh-preview",
+            1,
+            drafts,
+            await verifier.issue(
+                owner_id=owner_id,
+                drafts=drafts,
+                now=apply_at,
+                lifetime=timedelta(days=5),
+            ),
+        )
+        result = await _execute(
+            planning_sessions,
+            owner_id,
+            fresh_command,
+            verifier,
+            clock=FixedClock(apply_at),
+        )
+        omitted = result["plans"][0]["omitted_reminders"]
+        assert len(omitted) == 2
+        assert {(item["offset_kind"], item["offset_amount"]) for item in omitted} == {
+            ("calendar_days", 1),
+            ("elapsed_seconds", 3600),
+        }
+        assert all(item["source"] == "default" and item["reason"] == "past" for item in omitted)
+        assert await verifier.state(fresh_command.proof) == (False, True)
+
+        async with planning_sessions() as session:
+            occurrence_id = UUID(result["plans"][0]["occurrence_id"])
+            event = await session.scalar(
+                select(OutboxEvent).where(OutboxEvent.aggregate_id == occurrence_id)
+            )
+            assert event is not None
+            assert event.payload["payload"]["omitted_reminders"] == omitted
+            assert datetime.fromisoformat(event.payload["payload"]["starts_at"]) > apply_at
+            assert (
+                await session.scalar(
+                    select(func.count())
+                    .select_from(ReminderRuleRecord)
+                    .where(ReminderRuleRecord.occurrence_id == occurrence_id)
+                )
+                == 0
+            )
+
+        # Replay is receipt-first: it returns the original approved omission
+        # notice even when the event time is now in the past and the proof is spent.
+        replay = await _execute(
+            planning_sessions,
+            owner_id,
+            fresh_command,
+            verifier,
+            clock=FixedClock(datetime(2026, 10, 16, 13, tzinfo=UTC)),
+        )
+        assert replay == result
+        async with planning_sessions() as session:
+            assert (
+                await session.scalar(
+                    select(func.count())
+                    .select_from(ActionReceipt)
+                    .where(
+                        ActionReceipt.owner_id == owner_id,
+                        ActionReceipt.action_key == fresh_command.action_key,
+                    )
+                )
+                == 1
+            )
+            assert (
+                await session.scalar(
+                    select(func.count())
+                    .select_from(OutboxEvent)
+                    .where(OutboxEvent.owner_id == owner_id)
+                )
+                == 1
+            )
 
     run_local_async(scenario)
 
