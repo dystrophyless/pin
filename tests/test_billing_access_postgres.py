@@ -14,6 +14,7 @@ from sqlalchemy import func, select
 
 from pin.contexts.billing.api import (
     AccessDenial,
+    AccountLifecycle,
     CheckAccess,
     InvalidTransition,
     Operation,
@@ -79,6 +80,55 @@ def _seed_period(
         )
     )
     return starts_at, ends_at
+
+
+def test_account_lifecycle_distinguishes_missing_present_and_tombstoned(
+    billing_database: str,
+) -> None:
+    async def scenario() -> None:
+        engine = create_engine(billing_database)
+        sessions = create_session_factory(engine)
+        missing_owner, expired_owner, deleted_owner = uuid4(), uuid4(), uuid4()
+        now = datetime.now(UTC)
+        try:
+            async with sessions() as session, session.begin():
+                session.add(AccessAccountRecord(owner_id=expired_owner))
+                session.add(
+                    AccessPeriodRecord(
+                        owner_id=expired_owner,
+                        period_id="expired-lifecycle-check",
+                        policy_kind=PeriodKind.TRIAL.value,
+                        policy_version="trial-v1",
+                        starts_at=now - timedelta(days=8),
+                        ends_at=now - timedelta(days=1),
+                        ai_turn_limit=250,
+                        voice_second_limit=900,
+                    )
+                )
+                session.add(AccessAccountRecord(owner_id=deleted_owner, deleted_at=now))
+
+            async with sessions() as session:
+                store = SqlAlchemyAccessUsageStore(session)
+                assert await store.account_lifecycle(missing_owner) is AccountLifecycle.MISSING
+                assert await store.account_lifecycle(expired_owner) is AccountLifecycle.PRESENT
+                assert await store.account_lifecycle(deleted_owner) is AccountLifecycle.DELETED
+
+                missing_access = await store.check_access(
+                    CheckAccess(missing_owner, Operation.VIEW_PLAN, now)
+                )
+                expired_access = await store.check_access(
+                    CheckAccess(expired_owner, Operation.AI_TURN, now)
+                )
+                deleted_access = await store.check_access(
+                    CheckAccess(deleted_owner, Operation.VIEW_PLAN, now)
+                )
+                assert missing_access.denial is AccessDenial.ACCOUNT_DELETED
+                assert expired_access.denial is AccessDenial.ACCESS_EXPIRED
+                assert deleted_access.denial is AccessDenial.ACCOUNT_DELETED
+        finally:
+            await engine.dispose()
+
+    run_local_async(scenario)
 
 
 def test_trial_activation_is_owner_scoped_and_replay_safe(billing_database: str) -> None:
