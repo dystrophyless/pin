@@ -9,8 +9,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from pin.contexts.billing.api import (
+    AccountLifecycle,
     CheckAccess,
     Operation,
+    ReservationState,
     ReserveUsage,
     SqlAlchemyAccessUsageStore,
 )
@@ -20,7 +22,7 @@ from pin.contexts.conversation.infrastructure.models import (
     ProviderCallRecord,
 )
 from pin.persistence.uow import SqlAlchemyUnitOfWork
-from pin.platform.jobs import JobClaim, lock_job_for_effects
+from pin.platform.jobs import JobClaim, JobLane, lock_job_for_effects
 
 
 class ProviderReceiptConflict(RuntimeError):
@@ -35,11 +37,15 @@ class SqlAlchemyTurnAllowance:
         session_factory: async_sessionmaker[AsyncSession],
         *,
         reservation_ttl: timedelta = timedelta(minutes=5),
+        voice_seconds: int = 0,
     ) -> None:
         if reservation_ttl <= timedelta(0):
             raise ValueError("reservation_ttl must be positive")
+        if type(voice_seconds) is not int or voice_seconds < 0:
+            raise ValueError("voice_seconds must be a nonnegative integer")
         self._session_factory = session_factory
         self._reservation_ttl = reservation_ttl
+        self._voice_seconds = voice_seconds
 
     async def reserve(
         self,
@@ -52,10 +58,16 @@ class SqlAlchemyTurnAllowance:
         if at.tzinfo is None or at.utcoffset() is None:
             raise ValueError("reservation time must be timezone-aware")
         _require_claim_owner(owner_id, claim)
+        if self._voice_seconds and (claim is None or claim.lane is not JobLane.SPEECH):
+            raise ValueError("prepared voice allowance requires a speech job claim")
         async with SqlAlchemyUnitOfWork(self._session_factory) as uow:
             if claim is not None:
                 await lock_job_for_effects(uow.session, claim)
             store = SqlAlchemyAccessUsageStore(uow.session)
+            if self._voice_seconds:
+                return await self._prepared_voice_status(
+                    store, uow.session, owner_id, request_id, at
+                )
             access = await store.check_access(CheckAccess(owner_id, Operation.AI_TURN, at))
             expires_at = at + self._reservation_ttl
             if access.allowed and access.period_ends_at is not None:
@@ -78,6 +90,44 @@ class SqlAlchemyTurnAllowance:
             return ReservationStatus.RESERVED if result.created else ReservationStatus.REPLAY
         return ReservationStatus.DENIED
 
+    async def _prepared_voice_status(
+        self,
+        store: SqlAlchemyAccessUsageStore,
+        session: AsyncSession,
+        owner_id: UUID,
+        request_id: str,
+        at: datetime,
+    ) -> ReservationStatus:
+        # Speech committed the combined hold before downloading or recognizing audio.
+        access = await store.lock_access(CheckAccess(owner_id, Operation.VOICE_TRANSCRIPTION, at))
+        reservation = await store.get_usage_reservation(owner_id, request_id)
+        if (
+            reservation is None
+            or reservation.ai_turns != 1
+            or reservation.voice_seconds != self._voice_seconds
+        ):
+            return ReservationStatus.DENIED
+        if reservation.state is ReservationState.SETTLED:
+            if await store.lock_account_lifecycle(owner_id) is not AccountLifecycle.PRESENT:
+                return ReservationStatus.DENIED
+            return ReservationStatus.REPLAY
+        if (
+            not access.allowed
+            or reservation.state is not ReservationState.RESERVED
+            or reservation.expires_at <= at
+        ):
+            return ReservationStatus.DENIED
+        started_call = await session.scalar(
+            select(ProviderCallRecord.call_id)
+            .where(
+                ProviderCallRecord.owner_id == owner_id,
+                ProviderCallRecord.turn_id == request_id,
+            )
+            .limit(1)
+        )
+        # A durable started call is never resubmitted merely because its result is missing.
+        return ReservationStatus.REPLAY if started_call is not None else ReservationStatus.RESERVED
+
     async def settle(
         self,
         *,
@@ -94,7 +144,7 @@ class SqlAlchemyTurnAllowance:
                 owner_id=owner_id,
                 request_id=request_id,
                 ai_turns=1,
-                voice_seconds=0,
+                voice_seconds=self._voice_seconds,
                 at=at,
             )
 

@@ -1,0 +1,16 @@
+{
+  "source": "Windows System.Speech local TTS; no external dataset or network service",
+  "generator": "generate_sapi_fixtures.ps1",
+  "voices": {
+    "ru.wav": {
+      "voice": "Microsoft Irina Desktop (ru-RU)",
+      "text": "Добавь напоминание о встрече завтра в десять.",
+      "sha256": "E8477D450199E044F330BCDB803E0F98520A9417839C1D0F85466F781D7F061D"
+    },
+    "en.wav": {
+      "voice": "Microsoft Zira Desktop (en-US)",
+      "text": "Add a reminder for the meeting tomorrow at ten.",
+      "sha256": "6993CB947C10B7B17A2B87DF2780503908E59F3E632CDAC0C1D39D2562001E81"
+    }
+  }
+}

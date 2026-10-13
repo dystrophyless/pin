@@ -119,11 +119,14 @@ SCHEDULE_EVENT_TYPES = frozenset(
     {
         "planning.plan_created",
         "planning.plan_rescheduled",
+        "planning.occurrence_completed",
+        "planning.occurrence_cancelled",
         "planning.series_created",
         "planning.series_occurrence_created",
         "planning.series_generated",
         "planning.series_occurrence_rescheduled",
         "planning.series_exception_applied",
         "planning.series_stopped",
+        "planning.series_approval_updated",
     }
 )

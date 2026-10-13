@@ -11,7 +11,7 @@ import pytest
 
 from pin.bootstrap.clock import DUE_POLL_INTERVAL_SECONDS
 from pin.bootstrap.composition import build_runtime
-from pin.bootstrap.config import ProcessRole, SettingsError, load_settings
+from pin.bootstrap.config import ProcessRole, SettingsError, load_database_url, load_settings
 
 ROOT = Path(__file__).resolve().parents[1]
 DATABASE = "postgresql+psycopg://pin:db-secret@localhost/pin"
@@ -22,7 +22,10 @@ ROLE_ENV = {
     },
     "app-worker": {"PIN_OPENROUTER_API_KEY": "provider-secret-12345678901234567890"},
     "delivery-worker": {"PIN_BOT_TOKEN": "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijk"},
-    "speech-worker": {},
+    "speech-worker": {
+        "PIN_BOT_TOKEN": "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijk",
+        "PIN_OPENROUTER_API_KEY": "provider-secret-12345678901234567890",
+    },
 }
 
 
@@ -96,7 +99,9 @@ def test_invalid_process_configuration_exits_nonzero_without_printing_secrets() 
 
 
 def test_database_credentials_are_redacted_from_settings_repr() -> None:
-    settings = load_settings(ProcessRole.SPEECH_WORKER, {"PIN_DATABASE_URL": DATABASE})
+    settings = load_settings(
+        ProcessRole.SPEECH_WORKER, {"PIN_DATABASE_URL": DATABASE, **ROLE_ENV["speech-worker"]}
+    )
     assert "db-secret" not in repr(settings)
     assert "db-secret" not in settings.model_dump_json()
 
@@ -108,6 +113,22 @@ def test_role_required_secrets_are_enforced_without_echoing_them() -> None:
             {"PIN_DATABASE_URL": DATABASE, "PIN_BOT_TOKEN": ROLE_ENV["gateway"]["PIN_BOT_TOKEN"]},
         )
     assert "123456" not in str(error.value)
+
+
+def test_speech_runtime_requires_both_external_credentials() -> None:
+    with pytest.raises(SettingsError) as error:
+        load_settings(ProcessRole.SPEECH_WORKER, {"PIN_DATABASE_URL": DATABASE})
+    assert "PIN_BOT_TOKEN" in str(error.value)
+    assert "PIN_OPENROUTER_API_KEY" in str(error.value)
+
+
+def test_migration_database_configuration_needs_no_runtime_credentials() -> None:
+    database = load_database_url({"PIN_DATABASE_URL": DATABASE})
+    assert database.get_secret_value() == DATABASE
+    assert "db-secret" not in repr(database)
+    with pytest.raises(SettingsError, match="PIN_DATABASE_URL") as error:
+        load_database_url({"PIN_DATABASE_URL": "postgresql://user:TOP-SECRET@/missing"})
+    assert "TOP-SECRET" not in str(error.value)
 
 
 def test_invalid_secret_formats_fail_without_echoing_values() -> None:
@@ -145,7 +166,7 @@ def test_clock_and_adopted_poll_interval() -> None:
     runtime = build_runtime(
         ProcessRole.SPEECH_WORKER,
         clock=clock,
-        environ={"PIN_DATABASE_URL": DATABASE},
+        environ={"PIN_DATABASE_URL": DATABASE, **ROLE_ENV["speech-worker"]},
     )
     assert runtime.clock is clock
     assert runtime.clock.now() == datetime(2026, 10, 13, tzinfo=UTC)
@@ -199,6 +220,8 @@ def test_speech_startup_fails_if_optional_backend_is_unavailable(monkeypatch, ca
 
     monkeypatch.setattr(builtins, "__import__", without_speech)
     monkeypatch.setenv("PIN_DATABASE_URL", DATABASE)
+    for name, value in ROLE_ENV["speech-worker"].items():
+        monkeypatch.setenv(name, value)
     assert main_for(ProcessRole.SPEECH_WORKER, ["--check"]) == 2
     assert "Speech dependencies are missing" in capsys.readouterr().err
 

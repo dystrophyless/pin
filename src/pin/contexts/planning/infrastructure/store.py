@@ -157,6 +157,7 @@ class SqlAlchemyPlanningStore(PlanCommandStore):
         expected_version: int,
         approved_preferences_version: int,
         schedule: ResolvedSchedule,
+        reminder_offsets: tuple[ReminderOffset, ...] | None = None,
         quiet_zone: str,
         quiet_start: time,
         quiet_end: time,
@@ -192,10 +193,11 @@ class SqlAlchemyPlanningStore(PlanCommandStore):
                 )
             ).all()
         )
-        offsets = tuple(
+        stored_offsets = tuple(
             ReminderOffset(OffsetKind(row.offset_kind), row.offset_amount, row.source)
             for row in reminders
         )
+        offsets = stored_offsets if reminder_offsets is None else reminder_offsets
         computed = resolve_reminder_projection(schedule, offsets, now=at)
         resolution, notices = apply_quiet_policy(
             schedule,
@@ -206,16 +208,31 @@ class SqlAlchemyPlanningStore(PlanCommandStore):
             quiet_end=quiet_end,
         )
         due_by_offset = {
-            (rule.offset.kind.value, rule.offset.amount): rule.due_at
+            (rule.offset.kind.value, rule.offset.amount, rule.offset.source): rule.due_at
             for rule in resolution.scheduled
         }
+        existing_by_offset = {
+            (row.offset_kind, row.offset_amount, row.source): row for row in reminders
+        }
         for row in reminders:
-            key = (row.offset_kind, row.offset_amount)
+            key = (row.offset_kind, row.offset_amount, row.source)
             due_at = due_by_offset.get(key)
             if due_at is None:
                 await self._session.delete(row)
             else:
                 row.due_at = due_at
+        for key, due_at in due_by_offset.items():
+            if key not in existing_by_offset:
+                row = ReminderRuleRecord(
+                    owner_id=owner_id,
+                    occurrence_id=occurrence_id,
+                    offset_kind=key[0],
+                    offset_amount=key[1],
+                    source=key[2],
+                    due_at=due_at,
+                )
+                self._session.add(row)
+                reminders.append(row)
         _apply_schedule(record, updated)
         record.reminder_preferences_version = approved_preferences_version
         await add_outbox_event(
@@ -244,7 +261,7 @@ class SqlAlchemyPlanningStore(PlanCommandStore):
                             "due_at": row.due_at.astimezone(UTC).isoformat(),
                         }
                         for row in reminders
-                        if (row.offset_kind, row.offset_amount) in due_by_offset
+                        if (row.offset_kind, row.offset_amount, row.source) in due_by_offset
                     ],
                     "reminder_notices": [
                         _reminder_notice_payload(notice) for notice in notices

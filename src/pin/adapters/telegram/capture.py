@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
+from dataclasses import replace as dataclass_replace
 from datetime import UTC, datetime, timedelta
 from typing import Protocol
 from uuid import UUID, uuid4
@@ -14,6 +15,13 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from pin.adapters.telegram.agenda import agenda_command
 from pin.adapters.telegram.ingress import PostgresTelegramOwnerResolver, private_actor
+from pin.adapters.telegram.mutation_runtime import (
+    MutationMessage,
+    is_mutation_callback,
+    prepare_proposed_mutation,
+    process_mutation_callback,
+    process_mutation_command,
+)
 from pin.adapters.telegram.presentation.callbacks import (
     CallbackBinding,
     CallbackTokens,
@@ -32,9 +40,18 @@ from pin.adapters.telegram.presentation.capture import (
 from pin.adapters.telegram.presentation.tokens import SqlAlchemyCallbackTokenStore
 from pin.contexts.billing.api import SqlAlchemyAccessUsageStore
 from pin.contexts.conversation.application.dto import (
+    ActionProposal,
     ConversationContext,
     ModelOutcome,
+    ModelSuccess,
+    PlanSnapshot,
     PreferenceSnapshot,
+    Reply,
+    TargetSnapshot,
+)
+from pin.contexts.conversation.application.service import (
+    BoundedPlanningAssistant,
+    bounded_target_snapshot,
 )
 from pin.contexts.conversation.capture_api import (
     CaptureTurnReply,
@@ -46,18 +63,26 @@ from pin.contexts.conversation.capture_api import (
     prepare_interpretation,
 )
 from pin.contexts.conversation.domain.capture import CaptureConflict, CaptureDraft
-from pin.contexts.conversation.domain.proposals import InputKind, SourceLanguage
+from pin.contexts.conversation.domain.proposals import InputKind, ProposalOperation, SourceLanguage
 from pin.contexts.conversation.infrastructure.capture_store import (
     SqlAlchemyCaptureConfirmationVerifier,
     SqlAlchemyCaptureRecurrenceConfirmationVerifier,
 )
+from pin.contexts.conversation.infrastructure.usage import SqlAlchemyTurnAllowance
 from pin.contexts.identity.api import PreferencesSnapshot
 from pin.contexts.identity.infrastructure.store import SqlAlchemyIdentityStore
 from pin.contexts.planning.infrastructure.series_store import SqlAlchemySeriesStore
 from pin.contexts.planning.infrastructure.store import SqlAlchemyPlanningStore
+from pin.contexts.planning.mutation_read_api import get_owner_mutation_targets
 from pin.platform.contracts import EventEnvelope
 from pin.platform.events import add_outbox_event
-from pin.platform.jobs import JobClaim, complete_job, record_job_effect_once
+from pin.platform.jobs import (
+    JobClaim,
+    JobLane,
+    complete_job,
+    lock_job_for_effects,
+    record_job_effect_once,
+)
 from pin.platform.models import InboxUpdate
 
 CAPTURE_JOB_EFFECT = "capture_runtime_started"
@@ -69,6 +94,50 @@ class PlanningAssistant(Protocol):
     async def interpret(
         self, context: ConversationContext, *, at: datetime, claim: JobClaim | None = None
     ) -> ModelOutcome: ...
+
+
+@dataclass(frozen=True, slots=True)
+class TranscribedCapture:
+    """Bounded transcript bound to the original persisted private voice update."""
+
+    inbox_id: UUID
+    text: str
+    voice_seconds: int
+
+    def __post_init__(self) -> None:
+        if not self.text.strip() or len(self.text) > 8_000:
+            raise ValueError("transcript must contain 1 to 8000 characters")
+        if type(self.voice_seconds) is not int or not 1 <= self.voice_seconds <= 180:
+            raise ValueError("decoded voice seconds must be between 1 and 180")
+
+
+class MarkSpeechContinued(Protocol):
+    async def __call__(self, session: AsyncSession, claim: JobClaim, at: datetime) -> None: ...
+
+
+async def continue_transcribed_capture(
+    sessions: async_sessionmaker[AsyncSession],
+    claim: JobClaim,
+    *,
+    transcript: TranscribedCapture,
+    assistant: BoundedPlanningAssistant,
+    mark_continued: MarkSpeechContinued,
+    now: datetime,
+) -> bool:
+    """Use the same speech claim and atomically commit capture, reply, and speech completion."""
+    if claim.lane is not JobLane.SPEECH:
+        raise ValueError("transcript continuation requires the original speech claim")
+    prepared = assistant.with_allowance(
+        SqlAlchemyTurnAllowance(sessions, voice_seconds=transcript.voice_seconds)
+    )
+    return await _process_capture_job(
+        sessions,
+        claim,
+        now=now,
+        assistant=prepared,
+        transcript=transcript,
+        mark_continued=mark_continued,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,6 +164,18 @@ async def process_capture_application_job(
     assistant: PlanningAssistant | None,
 ) -> bool:
     """Handle capture text and callbacks; return False for onboarding/agenda work."""
+    return await _process_capture_job(sessions, claim, now=now, assistant=assistant)
+
+
+async def _process_capture_job(
+    sessions: async_sessionmaker[AsyncSession],
+    claim: JobClaim,
+    *,
+    now: datetime,
+    assistant: PlanningAssistant | None,
+    transcript: TranscribedCapture | None = None,
+    mark_continued: MarkSpeechContinued | None = None,
+) -> bool:
     if now.tzinfo is None or now.utcoffset() is None:
         raise ValueError("capture worker clock must be timezone-aware")
     if claim.owner_id is None:
@@ -110,6 +191,16 @@ async def process_capture_application_job(
         inbound = await _capture_inbound(session, claim)
         if inbound is None:
             return False
+        if transcript is not None:
+            message = inbound.inbox.payload.get("message")
+            if (
+                inbound.inbox.id != transcript.inbox_id
+                or not isinstance(message, dict)
+                or not isinstance(message.get("voice"), dict)
+                or inbound.callback_data is not None
+            ):
+                raise ValueError("transcript does not match the original private voice inbox")
+            inbound = _Inbound(inbound.inbox, inbound.telegram_user_id, transcript.text, None)
         telegram_user_id = inbound.telegram_user_id
         owner_id = inbound.inbox.owner_id
         if owner_id is None:
@@ -120,14 +211,43 @@ async def process_capture_application_job(
         onboarding_active = onboarding is not None and onboarding.step != "complete"
         language = preferences.language if preferences is not None else "ru"
 
+        if (
+            transcript is None
+            and inbound.text is not None
+            and preferences is not None
+            and not onboarding_active
+        ):
+            await lock_job_for_effects(session, claim)
+            mutation_message = await process_mutation_command(
+                session, owner_id=owner_id, text=inbound.text, language=language, now=at
+            )
+            if mutation_message is not None:
+                receipt = await record_job_effect_once(
+                    session,
+                    claim,
+                    effect_key=PRIVATE_TEXT_EFFECT,
+                    result={"status": "mutation_command_applied"},
+                )
+                if receipt.first_application:
+                    await _queue_mutation_reply(
+                        session,
+                        claim,
+                        chat_id=telegram_user_id,
+                        message=mutation_message,
+                        language=language,
+                        now=at,
+                    )
+                await complete_job(session, claim)
+                return True
+
         is_capture_callback = _is_capture_callback(inbound.callback_data)
         is_capture_text = (
             assistant is not None
             and inbound.text is not None
             and preferences is not None
             and not onboarding_active
-            and not inbound.text.lstrip().startswith("/")
-            and agenda_command(inbound.text) is None
+            and (transcript is not None or not inbound.text.lstrip().startswith("/"))
+            and (transcript is not None or agenda_command(inbound.text) is None)
         )
         if not is_capture_callback and not is_capture_text:
             return False
@@ -151,14 +271,63 @@ async def process_capture_application_job(
                 request_key=request_key,
                 text=inbound.text,
                 at=at,
-                context_factory=lambda draft, key, current_text: _conversation_context(
-                    draft, key, current_text, confirmed_preferences, at
+                context_factory=lambda draft, key, current_text: (
+                    _conversation_context(
+                        draft, key, current_text, confirmed_preferences, at
+                    ).model_copy(update={"input_kind": InputKind.TRANSCRIPT})
+                    if transcript is not None
+                    else _conversation_context(draft, key, current_text, confirmed_preferences, at)
                 ),
             )
             if isinstance(interpretation_or_reply, CaptureTurnReply):
                 turn_reply = interpretation_or_reply
             else:
                 interpretation = interpretation_or_reply
+                owned_targets = await get_owner_mutation_targets(session, owner_id=owner_id, at=at)
+                targets = [
+                    TargetSnapshot(
+                        id=item.occurrence_id,
+                        version=item.occurrence_version,
+                        kind="occurrence",
+                        title=item.title[:240],
+                    )
+                    for item in owned_targets
+                ]
+                series_seen: set[UUID] = set()
+                for item in owned_targets:
+                    if item.series_id is not None and item.series_id not in series_seen:
+                        assert item.series_version is not None
+                        targets.append(
+                            TargetSnapshot(
+                                id=item.series_id,
+                                version=item.series_version,
+                                kind="series",
+                                title=item.title[:240],
+                            )
+                        )
+                        series_seen.add(item.series_id)
+                interpretation = dataclass_replace(
+                    interpretation,
+                    context=bounded_target_snapshot(
+                        interpretation.context.model_copy(
+                            update={
+                                "targets": tuple(targets),
+                                "plans": tuple(
+                                    PlanSnapshot(
+                                        id=item.occurrence_id,
+                                        version=item.occurrence_version,
+                                        title=item.title[:240],
+                                        due_at=item.schedule.anchor_at,
+                                        timezone=item.schedule.event_zone,
+                                        ends_at=item.schedule.ends_at,
+                                        status="open",
+                                    )
+                                    for item in owned_targets
+                                ),
+                            }
+                        )
+                    ),
+                )
 
     if callback_inbound is not None:
         return await _process_capture_callback_job(
@@ -182,13 +351,38 @@ async def process_capture_application_job(
                 result={"status": "capture_interpreted"},
             )
             if not already_applied.first_application:
-                await complete_job(session, claim)
+                await _complete_capture_job(session, claim, at, mark_continued)
                 return True
             identity = SqlAlchemyIdentityStore(session)
             preferences = await identity.get_preferences(interpretation.draft.owner_id)
+            mutation_message = None
             if preferences is None:
                 turn_reply = _stale_reply(language)
             else:
+                if (
+                    isinstance(outcome, ModelSuccess)
+                    and isinstance(outcome.result, ActionProposal)
+                    and outcome.result.operation is not ProposalOperation.CREATE_PLAN
+                ):
+                    mutation_message = await prepare_proposed_mutation(
+                        session,
+                        owner_id=interpretation.draft.owner_id,
+                        proposal=outcome.result,
+                        language=preferences.language,
+                        now=at,
+                    )
+                    outcome = ModelSuccess(
+                        result=Reply(
+                            kind="reply",
+                            language=outcome.result.language,
+                            text=(
+                                "Review the change before confirming."
+                                if preferences.language == "en"
+                                else "Проверьте изменение перед подтверждением."
+                            ),
+                        ),
+                        provider_request_ids=outcome.provider_request_ids,
+                    )
                 turn_reply = await finish_interpretation(
                     SqlAlchemyCaptureStore(session),
                     interpretation,
@@ -197,6 +391,8 @@ async def process_capture_application_job(
                     at=at,
                 )
                 language = preferences.language
+                if mutation_message is not None:
+                    turn_reply = _mutation_reply(mutation_message)
             await _queue_reply(
                 session,
                 claim,
@@ -204,8 +400,9 @@ async def process_capture_application_job(
                 reply=turn_reply,
                 language=language,
                 now=at,
+                reply_markup=mutation_message.keyboard if mutation_message else None,
             )
-            await complete_job(session, claim)
+            await _complete_capture_job(session, claim, at, mark_continued)
         return True
 
     assert turn_reply is not None
@@ -217,7 +414,7 @@ async def process_capture_application_job(
             result={"status": "capture_replayed"},
         )
         if not already_applied.first_application:
-            await complete_job(session, claim)
+            await _complete_capture_job(session, claim, at, mark_continued)
             return True
         await _queue_reply(
             session,
@@ -227,8 +424,19 @@ async def process_capture_application_job(
             language=language,
             now=at,
         )
-        await complete_job(session, claim)
+        await _complete_capture_job(session, claim, at, mark_continued)
     return True
+
+
+async def _complete_capture_job(
+    session: AsyncSession,
+    claim: JobClaim,
+    at: datetime,
+    mark_continued: MarkSpeechContinued | None,
+) -> None:
+    if mark_continued is not None:
+        await mark_continued(session, claim, at)
+    await complete_job(session, claim)
 
 
 async def _capture_inbound(session: AsyncSession, claim: JobClaim) -> _Inbound | None:
@@ -245,14 +453,12 @@ async def _capture_inbound(session: AsyncSession, claim: JobClaim) -> _Inbound |
     actor = private_actor(inbox.payload)
     callback = inbox.payload.get("callback_query")
     message = (
-        callback.get("message")
-        if isinstance(callback, dict)
-        else inbox.payload.get("message")
+        callback.get("message") if isinstance(callback, dict) else inbox.payload.get("message")
     )
     if actor is None or not isinstance(message, dict):
         return None
     telegram_user_id, actor_kind, _ = actor
-    if actor_kind not in {"message", "callback_query"}:
+    if actor_kind not in {"message", "speech_message", "callback_query"}:
         return None
     trusted_owner = await PostgresTelegramOwnerResolver().resolve(
         session, bot_id=inbox.bot_id, telegram_user_id=telegram_user_id
@@ -373,12 +579,21 @@ async def _process_capture_callback_job(
             if not receipt.first_application:
                 await complete_job(session, claim)
                 return True
-            reply = await _apply_capture_callback(
-                session,
-                SqlAlchemyCaptureStore(session),
-                current,
-                now=now,
-            )
+            mutation_message = None
+            if is_mutation_callback(current.callback_data):
+                assert current.callback_data is not None
+                mutation_message = await process_mutation_callback(
+                    session,
+                    owner_id=_inbound_owner(current),
+                    data=current.callback_data,
+                    language=language,
+                    now=now,
+                )
+                reply = _mutation_reply(mutation_message)
+            else:
+                reply = await _apply_capture_callback(
+                    session, SqlAlchemyCaptureStore(session), current, now=now
+                )
             current_profile = await SqlAlchemyIdentityStore(session).get_preferences(
                 _inbound_owner(current)
             )
@@ -389,6 +604,7 @@ async def _process_capture_callback_job(
                 reply=reply,
                 language=current_profile.language if current_profile else language,
                 now=now,
+                reply_markup=mutation_message.keyboard if mutation_message else None,
             )
             await complete_job(session, claim)
         return True
@@ -447,9 +663,7 @@ def _conversation_context(
     pending = json.dumps(draft.normalized_actions, ensure_ascii=False, separators=(",", ":"))
     messages = list(draft.messages[:-1])
     while True:
-        history = "\n".join(
-            f"{message.role}: {message.text}" for message in messages[-8:]
-        )
+        history = "\n".join(f"{message.role}: {message.text}" for message in messages[-8:])
         sections = []
         if history:
             sections.append("Prior conversation:\n" + history)
@@ -500,6 +714,7 @@ async def _queue_reply(
     reply: CaptureTurnReply,
     language: str,
     now: datetime,
+    reply_markup: dict[str, object] | None = None,
 ) -> None:
     pages = list(render_capture_response(reply.response, language=language))
     choices = reply.response.get("choices")
@@ -547,7 +762,13 @@ async def _queue_reply(
         choice_callback_data=choice_data,
         language=language,
     )
-    keyboard = markup.model_dump(exclude_none=True) if markup is not None else None
+    keyboard = (
+        reply_markup
+        if reply_markup is not None
+        else markup.model_dump(exclude_none=True)
+        if markup is not None
+        else None
+    )
     for index, page in enumerate(pages):
         page_markup = keyboard if index == len(pages) - 1 else None
         await add_outbox_event(
@@ -577,8 +798,34 @@ async def _queue_reply(
 
 
 def _is_capture_callback(value: str | None) -> bool:
-    return value is not None and value.startswith(
-        (CAPTURE_CONFIRM_PREFIX, CAPTURE_CANCEL_PREFIX, CAPTURE_CHOICE_PREFIX)
+    return (
+        is_mutation_callback(value)
+        or value is not None
+        and value.startswith((CAPTURE_CONFIRM_PREFIX, CAPTURE_CANCEL_PREFIX, CAPTURE_CHOICE_PREFIX))
+    )
+
+
+def _mutation_reply(message: MutationMessage) -> CaptureTurnReply:
+    return CaptureTurnReply(UUID(int=0), 0, "mutation", {"kind": "reply", "text": message.text})
+
+
+async def _queue_mutation_reply(
+    session: AsyncSession,
+    claim: JobClaim,
+    *,
+    chat_id: int,
+    message: MutationMessage,
+    language: str,
+    now: datetime,
+) -> None:
+    await _queue_reply(
+        session,
+        claim,
+        chat_id=chat_id,
+        reply=_mutation_reply(message),
+        language=language,
+        now=now,
+        reply_markup=message.keyboard,
     )
 
 

@@ -16,7 +16,7 @@ from pin.contexts.identity.application.onboarding import (
     confirm_onboarding,
     get_preferences,
 )
-from pin.contexts.identity.domain.preferences import PreferenceVersionConflict
+from pin.contexts.identity.domain.preferences import Preferences, PreferenceVersionConflict
 
 __all__ = [
     "HomeZoneChangeHandoff",
@@ -24,6 +24,7 @@ __all__ = [
     "OnboardingDraft",
     "OnboardingResult",
     "PreferenceVersionConflict",
+    "Preferences",
     "PreferencesSnapshot",
     "TrialActivator",
     "answer_onboarding",
