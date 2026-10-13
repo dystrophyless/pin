@@ -33,7 +33,7 @@ from pin.contexts.conversation.infrastructure.usage import (
     SqlAlchemyTurnAllowance,
 )
 from pin.persistence.async_runner import run_local_async
-from pin.platform.jobs import Job, JobClaim, JobLane, LeaseLost, claim_job, enqueue_job
+from pin.platform.jobs import Job, JobClaim, JobLane, LeaseLost, enqueue_job
 
 DB_URL = os.environ.get("PIN_MODEL_TEST_DATABASE_URL")
 
@@ -247,13 +247,14 @@ async def _run_postgres_stale_job_claim_cannot_write_provider_cost_or_result() -
     engine = create_async_engine(_db_url())
     factory = async_sessionmaker(engine, expire_on_commit=False)
     recorder = SqlAlchemyProviderUsageRecorder(factory)
+    owner = uuid4()
     claim = JobClaim(
         job_id=uuid4(),
         lane=JobLane.APPLICATION,
         kind="conversation.interpret",
         payload_version=1,
         payload={},
-        owner_id=uuid4(),
+        owner_id=owner,
         conversation_sequence=1,
         attempt=1,
         worker_id="test-worker",
@@ -261,7 +262,7 @@ async def _run_postgres_stale_job_claim_cannot_write_provider_cost_or_result() -
         fencing_generation=1,
         lease_until=datetime.now(UTC),
     )
-    call = CallStart(uuid4(), f"stale-{uuid4()}", uuid4(), 1, ROUTE, datetime.now(UTC))
+    call = CallStart(owner, f"stale-{uuid4()}", uuid4(), 1, ROUTE, datetime.now(UTC))
     try:
         with pytest.raises(LeaseLost):
             await recorder.start_call(call, claim=claim)
@@ -287,6 +288,100 @@ def test_postgres_replay_recovers_valid_result_after_settlement_crash() -> None:
 
 def test_postgres_stale_job_claim_cannot_write_provider_cost_or_result() -> None:
     run_local_async(_run_postgres_stale_job_claim_cannot_write_provider_cost_or_result)
+
+
+async def _run_postgres_foreign_owner_claim_cannot_reserve_start_or_publish() -> None:
+    engine = create_async_engine(_db_url())
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    recorder = SqlAlchemyProviderUsageRecorder(factory)
+    allowance = SqlAlchemyTurnAllowance(factory)
+    claim_owner, target_owner = uuid4(), uuid4()
+    request_id = f"foreign-claim-{uuid4()}"
+    now = datetime.now(UTC)
+    try:
+        claim = JobClaim(
+            job_id=uuid4(),
+            lane=JobLane.APPLICATION,
+            kind="conversation.interpret",
+            payload_version=1,
+            payload={},
+            owner_id=claim_owner,
+            conversation_sequence=None,
+            attempt=1,
+            worker_id="foreign-owner-test",
+            token=uuid4(),
+            fencing_generation=None,
+            lease_until=now + timedelta(minutes=5),
+        )
+        transport = _FakeTransport(
+            json.dumps({"kind": "reply", "language": "ru", "text": "Готово"})
+        )
+        assistant = BoundedPlanningAssistant(
+            transport=transport,
+            usage=recorder,
+            allowance=allowance,
+            now=lambda: now,
+        )
+        outcome = await assistant.interpret(
+            _context(request_id).model_copy(update={"owner_id": target_owner}),
+            at=now,
+            claim=claim,
+        )
+        assert isinstance(outcome, ModelFailure)
+        assert outcome.category.value == "stale_job"
+        assert transport.calls == 0
+
+        call = CallStart(target_owner, request_id, uuid4(), 1, ROUTE, now)
+        with pytest.raises(ValueError, match="claim owner"):
+            await allowance.reserve(
+                owner_id=target_owner, request_id=request_id, at=now, claim=claim
+            )
+        with pytest.raises(ValueError, match="claim owner"):
+            await allowance.settle(
+                owner_id=target_owner, request_id=request_id, at=now, claim=claim
+            )
+        with pytest.raises(ValueError, match="claim owner"):
+            await allowance.refund(
+                owner_id=target_owner, request_id=request_id, at=now, claim=claim
+            )
+        with pytest.raises(ValueError, match="claim owner"):
+            await recorder.start_call(call, claim=claim)
+        with pytest.raises(ValueError, match="claim owner"):
+            await recorder.store_result(
+                owner_id=target_owner,
+                turn_id=request_id,
+                result={"kind": "reply"},
+                provider_request_ids=("gen-not-sent",),
+                claim=claim,
+            )
+
+        async with factory() as session:
+            assert await session.scalar(
+                select(ProviderCallRecord.call_id).where(
+                    ProviderCallRecord.owner_id == target_owner,
+                    ProviderCallRecord.turn_id == request_id,
+                )
+            ) is None
+            assert await session.scalar(
+                select(ConversationTurnResultRecord.id).where(
+                    ConversationTurnResultRecord.owner_id == target_owner,
+                    ConversationTurnResultRecord.turn_id == request_id,
+                )
+            ) is None
+            reservation = await session.execute(
+                text(
+                    "SELECT request_id FROM billing.usage_reservations "
+                    "WHERE owner_id = :owner AND request_id = :request"
+                ),
+                {"owner": target_owner, "request": request_id},
+            )
+            assert reservation.scalar_one_or_none() is None
+    finally:
+        await engine.dispose()
+
+
+def test_postgres_foreign_owner_claim_cannot_reserve_start_or_publish() -> None:
+    run_local_async(_run_postgres_foreign_owner_claim_cannot_reserve_start_or_publish)
 
 
 async def _run_postgres_stale_response_records_cost_without_settlement() -> None:
@@ -340,7 +435,7 @@ async def _run_postgres_stale_response_records_cost_without_settlement() -> None
                 ),
                 {"owner": owner, "starts": now - timedelta(minutes=1), "ends": period_end},
             )
-            await enqueue_job(
+            job = await enqueue_job(
                 session,
                 lane=JobLane.APPLICATION,
                 kind="conversation.interpret",
@@ -348,15 +443,33 @@ async def _run_postgres_stale_response_records_cost_without_settlement() -> None
                 deduplication_key=f"model-test:{request_id}",
                 owner_id=owner,
             )
-        async with factory() as session, session.begin():
-            claimed = await claim_job(
-                session,
-                lane=JobLane.APPLICATION,
-                worker_id="model-test-worker",
-                lease_for=timedelta(minutes=5),
+            token = uuid4()
+            lease_until = now + timedelta(minutes=5)
+            await session.execute(
+                update(Job)
+                .where(Job.id == job.id)
+                .values(
+                    status="leased",
+                    attempts=1,
+                    worker_id="model-test-worker",
+                    lease_token=token,
+                    lease_until=lease_until,
+                )
             )
-            assert claimed is not None
-            claim = claimed
+            claim = JobClaim(
+                job_id=job.id,
+                lane=JobLane.APPLICATION,
+                kind="conversation.interpret",
+                payload_version=1,
+                payload={},
+                owner_id=owner,
+                conversation_sequence=None,
+                attempt=1,
+                worker_id="model-test-worker",
+                token=token,
+                fencing_generation=None,
+                lease_until=lease_until,
+            )
 
         recorder = SqlAlchemyProviderUsageRecorder(factory)
         allowance = SqlAlchemyTurnAllowance(factory)

@@ -51,6 +51,7 @@ class SqlAlchemyTurnAllowance:
     ) -> ReservationStatus:
         if at.tzinfo is None or at.utcoffset() is None:
             raise ValueError("reservation time must be timezone-aware")
+        _require_claim_owner(owner_id, claim)
         async with SqlAlchemyUnitOfWork(self._session_factory) as uow:
             if claim is not None:
                 await lock_job_for_effects(uow.session, claim)
@@ -85,6 +86,7 @@ class SqlAlchemyTurnAllowance:
         at: datetime,
         claim: JobClaim | None = None,
     ) -> None:
+        _require_claim_owner(owner_id, claim)
         async with SqlAlchemyUnitOfWork(self._session_factory) as uow:
             if claim is not None:
                 await lock_job_for_effects(uow.session, claim)
@@ -104,6 +106,7 @@ class SqlAlchemyTurnAllowance:
         at: datetime,
         claim: JobClaim | None = None,
     ) -> None:
+        _require_claim_owner(owner_id, claim)
         async with SqlAlchemyUnitOfWork(self._session_factory) as uow:
             if claim is not None:
                 await lock_job_for_effects(uow.session, claim)
@@ -119,6 +122,7 @@ class SqlAlchemyProviderUsageRecorder:
         self._session_factory = session_factory
 
     async def start_call(self, call: CallStart, *, claim: JobClaim | None = None) -> None:
+        _require_claim_owner(call.owner_id, claim)
         async with SqlAlchemyUnitOfWork(self._session_factory) as uow:
             await self._fence(uow.session, claim)
             existing = await uow.session.scalar(
@@ -237,6 +241,7 @@ class SqlAlchemyProviderUsageRecorder:
         provider_request_ids: tuple[str, ...],
         claim: JobClaim | None = None,
     ) -> None:
+        _require_claim_owner(owner_id, claim)
         async with SqlAlchemyUnitOfWork(self._session_factory) as uow:
             await self._fence(uow.session, claim)
             existing = await uow.session.scalar(
@@ -337,3 +342,8 @@ class SqlAlchemyProviderUsageRecorder:
                 setattr(row, name, received)
         row.provider_request_id = usage.provider_request_id or row.provider_request_id
         row.latency_ms = usage.latency_ms
+
+
+def _require_claim_owner(owner_id: UUID, claim: JobClaim | None) -> None:
+    if claim is not None and claim.owner_id != owner_id:
+        raise ValueError("job claim owner does not match conversation owner")
