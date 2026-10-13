@@ -16,6 +16,10 @@ Honor the requested mode:
 
 This is an operating policy for the available agent tools, not a background daemon. Creating this document does not start product implementation, install an agent framework, or change account/model settings.
 
+## Current owner override — 2026-10-13
+
+For implementation of the existing reviewed Pin specification/issues, do not dispatch independent implementation Reviewer agents. The Executor implements and supplies raw checks; the Orchestrator verifies acceptance criteria, delivery conditions, revision/environment and limitations directly. This owner instruction supersedes the mandatory implementation-review stages and closure gates below for the current execution workflow. Planning/spec reviews are separate. Continue using GPT-6 Luna Executors/Publishers and preserve all required tests, DDD invariants and evidence; no reviewer ceremony is required for closure.
+
 ## Roles, models, and reasoning effort
 
 | Role | Model | Default effort | Responsibility |

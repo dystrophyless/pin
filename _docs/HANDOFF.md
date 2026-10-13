@@ -22,9 +22,12 @@ Recheck remote state at session start. A `git ls-remote` check on 2026-10-13 con
 
 - Existing source brief: [PROJECT_BRAINSTORM.md](PROJECT_BRAINSTORM.md). It is a product brief, not an approved implementation plan.
 - [SDD documentation](sdd/README.md) defines the workflow, templates, GitHub issue forms, PR template, project review skills, and examples.
-- There is no application code or established application test command. [SPEC-001](specifications/SPEC-001_pin_mvp.md) is the approved MVP baseline; section 11 records the user's resolved product decisions and routine technical details.
+- Runtime foundation code, role entrypoints, tests and a dependency lock are being implemented for issue #1. Its checks and independent review are pending final acceptance. [SPEC-001](specifications/SPEC-001_pin_mvp.md) is the approved MVP baseline; section 11 records the user's resolved product decisions and routine technical details.
 - [The MVP issue index](specifications/SPEC-001_pin_mvp_tasks.md) links to 28 published issues, with 95 real dependency edges and reverse Blocks. Local published drafts are link stubs. Task implementation, runtime qualification and release evidence remain pending.
 - Price, provider-capability, hosting, and benchmark statements in the brainstorm are historical research; revalidate the relevant claims before making production commitments.
+## Current authorized phase
+
+Owner decision, 2026-10-13: local development on Windows only, without Docker or deployment. Linux/container/hosted-CI proof, deployment, actual-host qualification, and full release acceptance are deferred until separately authorized. The existing 28-issue MVP contract remains future backlog; this phase does not claim MVP completion or acceptance.
 
 ## Start or resume work
 
@@ -51,15 +54,15 @@ Labels are optional and must be created before these filtered searches are usefu
 
 ## Last session checkpoint
 
-- Assignment: publish the reviewed MVP task package; do not implement tasks.
-- Linked spec: [SPEC-001 v0.2](specifications/SPEC-001_pin_mvp.md), with the real issue index in section 12.
-- Last completed action: reconcile existing issues #1–#28 with all reviewed draft hashes, finish real dependency links/readiness statuses, and replace local task bodies with issue-link stubs.
-- Live entry point: [Pin Issues](https://github.com/dystrophyless/pin/issues). [Runtime foundation #1](https://github.com/dystrophyless/pin/issues/1) is the next candidate for separately authorized execution; check its current body/status first.
-- Remaining owner decisions: late initial check-in/recovery-summary interaction, future-series anchor/count, and deletion-return rights/linkage. Qualification still needs an approved rubric/workload and actual evidence.
-- Repository boundary: source documents and issue-index edits are local and unpushed; no commit/push or implementation performed.
-- Next action: execute a selected ready issue only when requested; resolve affected owner decisions before dependent whole-task execution.
+- Active objective: implement all eligible MVP issues in dependency order, attach revision/environment/results/limitations evidence, and close only after AC, independent review and delivery conditions pass. The user delegated per-issue acceptance and closure; no repeated acceptance question is required.
+- Starting documentation commit: `45c32f0`; subsequent runtime/spec edits remain in progress and uncommitted. No push, deployment or paid services authorized.
+- Active task: [runtime #1](https://github.com/dystrophyless/pin/issues/1), GPT-6 Luna executor and independent GPT-6.1 Sol reviewer. Current Windows checks reported passing, but final raw evidence/review and Linux execution remain pending; do not infer acceptance.
+- Ownership: executor owns runtime code/config/lock/CI/tests and runtime README; publisher owns owner-decision spec/issue reconciliation; Orchestrator owns this checkpoint and acceptance routing.
+- Owner answers received: send a late missed completion check with one normal follow-up maximum; moving workout five in a ten-week series after four completions moves the remaining six without restarting count; remember prior trial use minimally and restore active paid access without deleted plans. Publisher is recording bounded amendments and issue readbacks.
+- Current review concern: architecture import resolution and domain boundaries; executor fixes, reviewer independently rechecks. Linux/container/hosted proof and deployment are deferred by the current owner scope decision; remaining product-policy details stay in the future backlog.
+- Next action: finish runtime verification and independent review; publish evidence/close only when full delivery proof exists, then unlock actual downstream prerequisites.
 
-No local task-status table is maintained. Verify issues and actual prerequisite evidence when resuming.
+Live task state belongs to issues; this checkpoint is not a parallel backlog.
 
 ## When updating this file
 
@@ -67,3 +70,5 @@ No local task-status table is maintained. Verify issues and actual prerequisite 
 - Do not mirror every issue, priority, checklist, or discussion.
 - Record synchronization time and any unavailable live checks. A local checkpoint does not change GitHub.
 - Do not append all session history; keep the latest checkpoint here and use issues/PRs for durable execution history.
+
+Owner override recorded 2026-10-13: implementation reviewers are not required; follow direct executor evidence and Orchestrator verification under the local-only scope.
