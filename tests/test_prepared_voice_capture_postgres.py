@@ -254,6 +254,13 @@ def test_started_prepared_model_call_is_not_resubmitted(prepared_voice_database)
             outcome = await assistant.interpret(_context(owner, key, now), at=now, claim=claim)
             assert isinstance(outcome, ModelFailure)
             assert outcome.category is FailureCategory.USAGE_UNKNOWN and transport.calls == 0
+            async with sessions() as session:
+                reservation = await SqlAlchemyAccessUsageStore(session).get_usage_reservation(
+                    owner, key
+                )
+                assert reservation is not None
+                assert reservation.state is ReservationState.REFUNDED
+                assert (reservation.ai_turns, reservation.voice_seconds) == (1, 4)
             with pytest.raises(LeaseLost):
                 await prepared.reserve(
                     owner_id=owner, request_id=key, at=now, claim=replace(claim, token=uuid4())

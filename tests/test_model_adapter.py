@@ -916,7 +916,8 @@ async def test_replay_without_result_receipt_is_unknown_and_never_calls_provider
     assert outcome.category is FailureCategory.USAGE_UNKNOWN
     assert transport.payloads == []
     assert not usage.started
-    assert allowance.settled == allowance.refunded == []
+    assert allowance.settled == []
+    assert allowance.refunded == [(OWNER, "turn-1")]
 
 
 def test_proposal_time_and_repeat_contract_keeps_calendar_elapsed_and_dst_fields_typed() -> None:
