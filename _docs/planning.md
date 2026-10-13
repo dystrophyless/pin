@@ -1,0 +1,13 @@
+# Planning command contract
+
+Planning owns typed, one-off appointments, timed tasks, deadlines, untimed dated tasks, their single stable occurrences, and reminder offsets. `src/pin/contexts/planning/api.py` is the consumer contract. `SqlAlchemyPlanningStore` writes through a caller-owned unit of work; it does not open or commit a session itself.
+
+The authenticated owner comes from the trusted ingress/application composition, never from the plan payload. Creation uses the published Identity preference reader and Billing access port on the same unit of work. It requires the current preference version shown in the approved preview, active `CREATE_PLAN` access, and an opaque proof accepted by an injected `ConfirmationVerifier`.
+
+The confirmation adapter is a required trust boundary. Its producer must issue an unguessable credential and bind the owner, preview ID/version, and SHA-256 digest of the exact canonical typed fields. `verify_and_consume` rejects unknown, forged, cancelled, expired, already-consumed, wrong-owner, wrong-version, wrong-producer, or changed-field proofs, then records consumption inside the same transaction as Planning writes. There is intentionally no boolean confirmation mode, default verifier, preview implementation, or client-provided owner/proof attestation. The owning capture or mutation producer supplies that adapter and its preview lifecycle later.
+
+The application locks `(authenticated owner, action key)` before receipt lookup. A matching receipt returns its original committed result. Reusing the key for a different canonical payload raises `IdempotencyConflict`. One batch validates every typed item before persistence; plan rows, stable occurrence IDs, reminder rules, version-1 `planning.plan_created` events, and the shared action receipt commit in one transaction.
+
+Timed schedules retain their IANA zone, intended local date/time and DST fold choice alongside UTC instants. Appointments require an explicit end or duration. Deadlines store a deadline instant; untimed plans store only their intended date. A nonexistent local time, past explicit time, or repeated one-off wall time without `earlier`/`later` raises `ScheduleNeedsClarification`. Calendar-day reminders are resolved in the event zone; elapsed offsets subtract seconds from the UTC instant. Past default reminders are omitted; past explicit reminders require clarification.
+
+The private `_reschedule_one_off_occurrence` repository primitive is for the later confirmed mutation consumer. It requires owner and expected occurrence version, preserves the occurrence ID, recalculates its existing reminder rules, and appends a versioned outbox event in the caller's transaction. It does not itself authorize a user mutation.
