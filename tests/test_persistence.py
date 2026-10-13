@@ -463,9 +463,10 @@ async def write_partial_command():
             {"operation_id": str(operation), "version": 1},
         )
         backend_pid = await uow.session.scalar(text("SELECT pg_backend_pid()"))
-        with open(ready_path, "w", encoding="ascii") as ready:
+        temporary_ready_path = ready_path + ".tmp"
+        with open(temporary_ready_path, "w", encoding="ascii") as ready:
             ready.write(str(backend_pid))
-            ready.flush()
+        os.replace(temporary_ready_path, ready_path)
         sys.stdin.buffer.read(1)
         os._exit(73)
 
