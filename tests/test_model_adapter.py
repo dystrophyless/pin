@@ -17,6 +17,7 @@ from pin.contexts.conversation.application.contracts import (
     ReservationStatus,
 )
 from pin.contexts.conversation.application.dto import (
+    ActionProposal,
     AppointmentSchedule,
     ConversationContext,
     ModelFailure,
@@ -268,6 +269,43 @@ async def test_valid_owner_filtered_proposal_is_typed_and_never_executes() -> No
     assert outcome.result.target_id == PLAN
     assert usage.reported[0][2] == "valid"
     assert allowance.settled == [(OWNER, "turn-1")]
+
+
+@pytest.mark.asyncio
+async def test_english_create_works_without_any_existing_plan_or_target() -> None:
+    context = _context(language=SourceLanguage.EN, input_kind=InputKind.TRANSCRIPT).model_copy(
+        update={"plans": (), "preferences": (), "targets": ()}
+    )
+    content = json.dumps(
+        {
+            "kind": "proposal",
+            "language": "en",
+            "operation": "propose_create_plan",
+            "fields": {
+                "title": "Project review",
+                "schedule": {
+                    "kind": "appointment",
+                    "local_start": "2026-10-14T10:00:00",
+                    "timezone": "Asia/Qyzylorda",
+                    "duration_minutes": 30,
+                },
+            },
+        }
+    )
+    transport = FakeTransport(_provider_response(content))
+    assistant, _, _ = _assistant(transport)
+
+    outcome = await assistant.interpret(context, at=NOW)
+
+    assert isinstance(outcome, ModelSuccess)
+    assert isinstance(outcome.result, ActionProposal)
+    assert outcome.result.operation.value == "propose_create_plan"
+    assert outcome.result.target_id is None
+    assert outcome.result.expected_version is None
+    assert outcome.result.fields.title == "Project review"
+    assert isinstance(outcome.result.fields.schedule, AppointmentSchedule)
+    system_prompt = str(transport.payloads[0]["messages"][0]["content"])
+    assert "does not require any existing plan or target" in system_prompt
 
 
 @pytest.mark.asyncio
