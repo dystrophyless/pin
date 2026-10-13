@@ -1,6 +1,6 @@
 # Pin handoff
 
-Updated: 2026-10-13. Time zone for this checkpoint: Asia/Qyzylorda.
+Updated: 2026-10-14. Time zone for this checkpoint: Asia/Qyzylorda.
 
 This file is a compact entry point, not a backlog or copied task-status table. Live execution state belongs in GitHub Issues. Verify live state at session start; this checkpoint can become stale.
 
@@ -81,3 +81,7 @@ Owner override recorded 2026-10-13: implementation reviewers are not required; f
 Telegram presentation #4 is accepted at commit `4e9d524`: real dedicated private-chat RU/EN smoke returned four successful pages and the owner confirmed both languages/buttons render correctly. Evidence: [render record](evidence/issue-4-telegram-render.md). After connector recovery, Publisher transferred the evidence and read back the closed/completed issue with `status:accepted` on 2026-10-13. No local commits have been pushed.
 
 Durable work #3 and access #6 are committed and accepted. The full regression run also found and fixed the smoke helper's configuration-boundary violation without weakening architecture checks; final parent suite passed 77 tests. New execution ownership: ingress #5 owns Telegram transport/gateway bootstrap and config/migration integration; model #13 owns Conversation provider normalization and provider cost records. Shared config/migration seams must be integrated sequentially. Read live issues for task state; these assignments do not claim implementation or provider verification. No Docker/deployment/reviewer agents or pushes are authorized for this local phase.
+
+## Active integration checkpoint — 2026-10-14
+
+Agenda #9 and recurrence #10 are being implemented on top of local `7f81397`; their feature source is dirty and uncommitted, with acceptance pending. Root registered the agenda snapshot and three series models in Alembic metadata and exported agenda reads through Planning's standard `.api` facade. Model imports, Ruff on the shared facade/environment, and architecture boundaries passed; these checks do not establish the feature PostgreSQL contracts. The agenda migration is authored as `agenda_pages_0001` after `planning_one_off_0001`; recurrence follows it. Root's fresh eleven-fixture proof runners are prepared at `C:/Users/roman/AppData/Local/Temp/pin-parent-agenda-series-b72c`, but fixture creation and final committed-source verification await stable candidates. Live progress readbacks: [#9](https://github.com/dystrophyless/pin/issues/9#issuecomment-6153013636), [#10](https://github.com/dystrophyless/pin/issues/10#issuecomment-6153014030). Preserve both workers' active edits; commit complete stable source before final proof. No additional provider calls, push or deployment.
