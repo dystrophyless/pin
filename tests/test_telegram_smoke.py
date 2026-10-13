@@ -42,3 +42,31 @@ def test_string_entity_types_are_summarized() -> None:
 def test_missing_local_credentials_fail_without_values(tmp_path) -> None:
     with pytest.raises(ValueError, match="configure PIN_BOT_TOKEN"):
         load_settings(project_root=tmp_path, environ={})
+
+
+def test_environment_smoke_settings_override_local_file(tmp_path) -> None:
+    (tmp_path / ".env.local").write_text(
+        "PIN_BOT_TOKEN=local-secret\nPIN_TEST_CHAT_ID=111\n", encoding="utf-8"
+    )
+
+    settings = load_settings(
+        project_root=tmp_path,
+        environ={"PIN_BOT_TOKEN": "environment-secret", "PIN_TEST_CHAT_ID": "222"},
+    )
+
+    assert settings.bot_token.get_secret_value() == "environment-secret"
+    assert settings.test_chat_id == 222
+    assert "environment-secret" not in repr(settings)
+
+
+def test_ignored_local_file_supplies_smoke_settings(tmp_path) -> None:
+    (tmp_path / ".env.local").write_text(
+        "PIN_BOT_TOKEN='local-secret'\nPIN_TEST_CHAT_ID=333\n"
+        "PIN_DATABASE_URL=ignored\n",
+        encoding="utf-8",
+    )
+
+    settings = load_settings(project_root=tmp_path, environ={})
+
+    assert settings.bot_token.get_secret_value() == "local-secret"
+    assert settings.test_chat_id == 333

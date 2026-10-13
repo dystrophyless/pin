@@ -5,7 +5,9 @@ from __future__ import annotations
 import os
 import re
 from collections.abc import Mapping
+from dataclasses import dataclass
 from enum import StrEnum
+from pathlib import Path
 from typing import Annotated
 from urllib.parse import urlsplit
 
@@ -21,6 +23,14 @@ class ProcessRole(StrEnum):
 
 class SettingsError(ValueError):
     """A configuration error whose message contains field names, never values."""
+
+
+@dataclass(frozen=True, slots=True)
+class SmokeSettings:
+    """Secrets and exact destination for the opt-in Telegram smoke sender."""
+
+    bot_token: SecretStr
+    test_chat_id: int
 
 
 class Settings(BaseModel):
@@ -114,4 +124,51 @@ def load_settings(
     if settings.webhook_secret and len(settings.webhook_secret.get_secret_value()) < 32:
         raise SettingsError("Invalid configuration: PIN_WEBHOOK_SECRET (too_short)")
     return settings
+
+
+def load_smoke_settings(
+    *,
+    project_root: Path | None = None,
+    environ: Mapping[str, str] | None = None,
+) -> SmokeSettings:
+    """Load smoke-only settings; environment values override ignored `.env.local`."""
+    source = os.environ if environ is None else environ
+    local_values: dict[str, str] = {}
+    config_path = (project_root or Path.cwd()) / ".env.local"
+    if config_path.is_file():
+        local_values = _parse_smoke_local_config(config_path.read_text(encoding="utf-8"))
+
+    token = source.get("PIN_BOT_TOKEN") or local_values.get("PIN_BOT_TOKEN")
+    chat_value = source.get("PIN_TEST_CHAT_ID") or local_values.get("PIN_TEST_CHAT_ID")
+    if not token or not chat_value:
+        raise SettingsError("configure PIN_BOT_TOKEN and PIN_TEST_CHAT_ID in .env.local")
+    if any(character.isspace() for character in token):
+        raise SettingsError("PIN_BOT_TOKEN has an invalid format")
+    try:
+        chat_id = int(chat_value)
+    except ValueError:
+        raise SettingsError("PIN_TEST_CHAT_ID must be a private-chat numeric ID") from None
+    if chat_id == 0:
+        raise SettingsError("PIN_TEST_CHAT_ID must be a non-zero private-chat numeric ID")
+    return SmokeSettings(SecretStr(token), chat_id)
+
+
+def _parse_smoke_local_config(content: str) -> dict[str, str]:
+    """Read only the smoke settings from simple KEY=VALUE lines."""
+    values: dict[str, str] = {}
+    for line_number, raw_line in enumerate(content.splitlines(), start=1):
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        key, separator, value = line.partition("=")
+        key = key.strip()
+        value = value.strip()
+        if not separator or key not in {"PIN_BOT_TOKEN", "PIN_TEST_CHAT_ID"}:
+            continue
+        if value.startswith(('"', "'")) and value.endswith(value[0]) and len(value) >= 2:
+            value = value[1:-1]
+        if key in values:
+            raise SettingsError(f"duplicate local setting on line {line_number}")
+        values[key] = value
+    return values
 

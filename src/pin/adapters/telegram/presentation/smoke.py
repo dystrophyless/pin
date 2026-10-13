@@ -4,10 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import os
 from collections import Counter
-from dataclasses import dataclass
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from aiogram import Bot
@@ -21,62 +18,13 @@ from pin.adapters.telegram.presentation.formatting import (
     MessagePage,
     paginate_entries,
 )
+from pin.bootstrap.config import SmokeSettings
+from pin.bootstrap.config import load_smoke_settings as load_settings
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-
-@dataclass(frozen=True, slots=True)
-class SmokeSettings:
-    bot_token: str
-    test_chat_id: int
-
-
-def _parse_local_config(content: str) -> dict[str, str]:
-    """Parse simple KEY=VALUE lines without interpolation or exposing values."""
-    values: dict[str, str] = {}
-    for line_number, raw_line in enumerate(content.splitlines(), start=1):
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
-            continue
-        key, separator, value = line.partition("=")
-        key = key.strip()
-        value = value.strip()
-        if not separator or key not in {"PIN_BOT_TOKEN", "PIN_TEST_CHAT_ID"}:
-            continue
-        if value.startswith(('"', "'")) and value.endswith(value[0]) and len(value) >= 2:
-            value = value[1:-1]
-        if key in values:
-            raise ValueError(f"duplicate local setting on line {line_number}")
-        values[key] = value
-    return values
-
-
-def load_settings(
-    *,
-    project_root: Path | None = None,
-    environ: dict[str, str] | None = None,
-) -> SmokeSettings:
-    """Load the two allowed settings from the process environment or ignored .env.local."""
-    source_env = os.environ if environ is None else environ
-    local_values: dict[str, str] = {}
-    config_path = (project_root or Path.cwd()) / ".env.local"
-    if config_path.is_file():
-        local_values = _parse_local_config(config_path.read_text(encoding="utf-8"))
-
-    token = source_env.get("PIN_BOT_TOKEN") or local_values.get("PIN_BOT_TOKEN")
-    chat_value = source_env.get("PIN_TEST_CHAT_ID") or local_values.get("PIN_TEST_CHAT_ID")
-    if not token or not chat_value:
-        raise ValueError("configure PIN_BOT_TOKEN and PIN_TEST_CHAT_ID in .env.local")
-    if any(character.isspace() for character in token):
-        raise ValueError("PIN_BOT_TOKEN has an invalid format")
-    try:
-        chat_id = int(chat_value)
-    except ValueError as error:
-        raise ValueError("PIN_TEST_CHAT_ID must be a private-chat numeric ID") from error
-    if chat_id == 0:
-        raise ValueError("PIN_TEST_CHAT_ID must be a non-zero private-chat numeric ID")
-    return SmokeSettings(token, chat_id)
+__all__ = ["load_settings"]
 
 
 def build_smoke_pages(language: str) -> list[MessagePage]:
@@ -178,7 +126,7 @@ def main(
 
 async def _run_with_bot(settings: SmokeSettings) -> None:
     bot = Bot(
-        token=settings.bot_token,
+        token=settings.bot_token.get_secret_value(),
         default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN_V2),
     )
     try:
