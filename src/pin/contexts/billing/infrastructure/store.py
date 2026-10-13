@@ -6,6 +6,7 @@ from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy import case, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from pin.contexts.billing.application.contracts import (
@@ -13,6 +14,9 @@ from pin.contexts.billing.application.contracts import (
     CheckAccess,
     ReserveUsage,
     ReserveUsageResult,
+    StartTrial,
+    TrialActivationResult,
+    TrialActivationStatus,
 )
 from pin.contexts.billing.domain.access import (
     AccessAccount,
@@ -33,6 +37,7 @@ from pin.contexts.billing.domain.access import (
 from pin.contexts.billing.infrastructure.models import (
     AccessAccountRecord,
     AccessPeriodRecord,
+    TrialActivationRecord,
     UsageReservationRecord,
 )
 
@@ -42,6 +47,113 @@ class SqlAlchemyAccessUsageStore(AccessUsageStore):
 
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
+
+    async def activate_trial(self, command: StartTrial) -> TrialActivationResult:
+        if type(command.telegram_user_id) is not int or command.telegram_user_id <= 0:
+            raise ValueError("telegram_user_id must be a positive integer")
+        if command.at.tzinfo is None or command.at.utcoffset() is None:
+            raise ValueError("at must be timezone-aware")
+
+        await self._session.execute(
+            pg_insert(AccessAccountRecord)
+            .values(owner_id=command.owner_id)
+            .on_conflict_do_nothing(index_elements=[AccessAccountRecord.owner_id])
+        )
+        account = await self._session.scalar(
+            select(AccessAccountRecord)
+            .where(AccessAccountRecord.owner_id == command.owner_id)
+            .with_for_update()
+        )
+        if account is None:
+            raise InvalidTransition("access account could not be established")
+
+        prior = await self._session.get(TrialActivationRecord, command.owner_id)
+        if prior is not None:
+            if prior.telegram_user_id != command.telegram_user_id:
+                raise InvalidTransition("owner does not match the prior trial identity")
+        other_owner = await self._session.scalar(
+            select(TrialActivationRecord.owner_id).where(
+                TrialActivationRecord.telegram_user_id == command.telegram_user_id
+            )
+        )
+        if other_owner is not None and other_owner != command.owner_id:
+            raise InvalidTransition("Telegram identity already belongs to another trial owner")
+
+        periods = await self._active_periods(command.owner_id, command.at, lock=True)
+        active = next(
+            (row for row in periods if row.policy_kind == PeriodKind.PAID.value),
+            periods[0] if periods else None,
+        )
+        if active is not None:
+            if prior is not None and active.policy_kind == PeriodKind.TRIAL.value:
+                if account.deleted_at is not None:
+                    prior.revoked_at = command.at
+                    account.deleted_at = None
+                return TrialActivationResult(
+                    TrialActivationStatus.PREVIOUSLY_ACTIVATED,
+                    prior.period_id,
+                    active.starts_at,
+                    active.ends_at,
+                )
+            if account.deleted_at is not None:
+                if active.policy_kind != PeriodKind.PAID.value:
+                    return TrialActivationResult(
+                        TrialActivationStatus.PREVIOUSLY_ACTIVATED,
+                        prior.period_id if prior is not None else active.period_id,
+                        None,
+                        None,
+                    )
+                account.deleted_at = None
+            return TrialActivationResult(
+                TrialActivationStatus.ALREADY_ACTIVE,
+                active.period_id,
+                active.starts_at,
+                active.ends_at,
+            )
+        if prior is not None:
+            if account.deleted_at is not None:
+                # Confirmed return restores the account, not expired entitlement.
+                account.deleted_at = None
+            return TrialActivationResult(
+                TrialActivationStatus.PREVIOUSLY_ACTIVATED,
+                prior.period_id,
+                None,
+                None,
+            )
+        if account.deleted_at is not None:
+            return TrialActivationResult(
+                TrialActivationStatus.PREVIOUSLY_ACTIVATED,
+                prior.period_id if prior is not None else None,
+                None,
+                None,
+            )
+
+        policy = PlanPolicy.trial()
+        period_id = f"trial-{command.owner_id}"
+        ends_at = command.at + policy.duration
+        self._session.add(
+            AccessPeriodRecord(
+                owner_id=command.owner_id,
+                period_id=period_id,
+                policy_kind=PeriodKind.TRIAL.value,
+                policy_version=policy.version,
+                starts_at=command.at,
+                ends_at=ends_at,
+                ai_turn_limit=policy.allowance.ai_turns,
+                voice_second_limit=policy.allowance.voice_seconds,
+            )
+        )
+        self._session.add(
+            TrialActivationRecord(
+                owner_id=command.owner_id,
+                telegram_user_id=command.telegram_user_id,
+                period_id=period_id,
+                activated_at=command.at,
+            )
+        )
+        return TrialActivationResult(
+            TrialActivationStatus.ACTIVATED, period_id, command.at, ends_at
+        )
 
     async def check_access(self, query: CheckAccess) -> AccessDecision:
         periods = await self._active_periods(query.owner_id, query.at, lock=False)
@@ -198,7 +310,23 @@ class SqlAlchemyAccessUsageStore(AccessUsageStore):
         )
         if lock:
             query = query.with_for_update()
-        return list((await self._session.scalars(query)).all())
+        periods = list((await self._session.scalars(query)).all())
+        revoked_trial_id = await self._session.scalar(
+            select(TrialActivationRecord.period_id).where(
+                TrialActivationRecord.owner_id == owner_id,
+                TrialActivationRecord.revoked_at.is_not(None),
+            )
+        )
+        if revoked_trial_id is not None:
+            periods = [
+                period
+                for period in periods
+                if not (
+                    period.period_id == revoked_trial_id
+                    and period.policy_kind == PeriodKind.TRIAL.value
+                )
+            ]
+        return periods
 
     async def _period_for_update(self, owner_id: UUID, period_id: str) -> AccessPeriodRecord | None:
         record: AccessPeriodRecord | None = await self._session.scalar(

@@ -5,6 +5,9 @@ from pin.contexts.billing.application.contracts import (
     CheckAccess,
     ReserveUsage,
     ReserveUsageResult,
+    StartTrial,
+    TrialActivationResult,
+    TrialActivationStatus,
 )
 from pin.contexts.billing.domain.access import (
     AccessDecision,
@@ -37,5 +40,8 @@ __all__ = [
     "ReserveUsage",
     "ReserveUsageResult",
     "SqlAlchemyAccessUsageStore",
+    "StartTrial",
+    "TrialActivationResult",
+    "TrialActivationStatus",
     "UsageReservation",
 ]

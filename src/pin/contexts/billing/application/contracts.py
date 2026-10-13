@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from enum import StrEnum
 from typing import Protocol
 from uuid import UUID
 
@@ -37,6 +38,27 @@ class CheckAccess:
     owner_id: UUID
     operation: Operation
     at: datetime
+
+
+class TrialActivationStatus(StrEnum):
+    ACTIVATED = "activated"
+    ALREADY_ACTIVE = "already_active"
+    PREVIOUSLY_ACTIVATED = "previously_activated"
+
+
+@dataclass(frozen=True, slots=True)
+class StartTrial:
+    owner_id: UUID
+    telegram_user_id: int
+    at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class TrialActivationResult:
+    status: TrialActivationStatus
+    period_id: str | None
+    starts_at: datetime | None
+    ends_at: datetime | None
 
 
 class AccessUsageStore(Protocol):

@@ -22,10 +22,13 @@ from pin.contexts.billing.api import (
     ReservationState,
     ReserveUsage,
     SqlAlchemyAccessUsageStore,
+    StartTrial,
+    TrialActivationStatus,
 )
 from pin.contexts.billing.infrastructure.models import (
     AccessAccountRecord,
     AccessPeriodRecord,
+    TrialActivationRecord,
     UsageReservationRecord,
 )
 from pin.persistence import run_local_async
@@ -76,6 +79,298 @@ def _seed_period(
         )
     )
     return starts_at, ends_at
+
+
+def test_trial_activation_is_owner_scoped_and_replay_safe(billing_database: str) -> None:
+    async def scenario() -> None:
+        engine = create_engine(billing_database)
+        sessions = create_session_factory(engine)
+        owner_id, now, telegram_id = uuid4(), datetime.now(UTC), uuid4().int % 2**52
+        try:
+            async with sessions() as session, session.begin():
+                first = await SqlAlchemyAccessUsageStore(session).activate_trial(
+                    StartTrial(owner_id, telegram_id, now)
+                )
+                assert first.status is TrialActivationStatus.ACTIVATED
+                assert first.starts_at == now
+                assert first.ends_at == now + timedelta(days=7)
+            async with sessions() as session, session.begin():
+                replay = await SqlAlchemyAccessUsageStore(session).activate_trial(
+                    StartTrial(owner_id, telegram_id, now + timedelta(days=20))
+                )
+                assert replay.status is TrialActivationStatus.PREVIOUSLY_ACTIVATED
+                assert replay.period_id == first.period_id
+            async with sessions() as session, session.begin():
+                with pytest.raises(InvalidTransition, match="prior trial identity"):
+                    await SqlAlchemyAccessUsageStore(session).activate_trial(
+                        StartTrial(owner_id, telegram_id + 1, now + timedelta(days=21))
+                    )
+            async with sessions() as session:
+                rows = list(
+                    (await session.scalars(
+                        select(AccessPeriodRecord).where(
+                            AccessPeriodRecord.owner_id == owner_id,
+                            AccessPeriodRecord.policy_kind == PeriodKind.TRIAL.value,
+                        )
+                    )).all()
+                )
+                assert len(rows) == 1
+        finally:
+            await engine.dispose()
+
+    run_local_async(scenario)
+
+
+def test_concurrent_trial_activation_creates_one_period(billing_database: str) -> None:
+    async def scenario() -> None:
+        engine = create_engine(billing_database)
+        sessions = create_session_factory(engine)
+        owner_id, now = uuid4(), datetime.now(UTC)
+        telegram_id = uuid4().int % 2**52
+        try:
+            async def activate() -> TrialActivationStatus:
+                async with sessions() as session, session.begin():
+                    result = await SqlAlchemyAccessUsageStore(session).activate_trial(
+                        StartTrial(owner_id, telegram_id, now)
+                    )
+                    return result.status
+
+            assert sorted(await asyncio.gather(activate(), activate())) == sorted(
+                (TrialActivationStatus.ACTIVATED, TrialActivationStatus.PREVIOUSLY_ACTIVATED)
+            )
+            async with sessions() as session:
+                count = await session.scalar(
+                    select(func.count()).select_from(AccessPeriodRecord).where(
+                        AccessPeriodRecord.owner_id == owner_id,
+                        AccessPeriodRecord.policy_kind == PeriodKind.TRIAL.value,
+                    )
+                )
+                assert count == 1
+        finally:
+            await engine.dispose()
+
+    run_local_async(scenario)
+
+
+def test_trial_activation_preserves_active_paid_period(billing_database: str) -> None:
+    async def scenario() -> None:
+        engine = create_engine(billing_database)
+        sessions = create_session_factory(engine)
+        owner_id, now = uuid4(), datetime.now(UTC)
+        telegram_id = uuid4().int % 2**52
+        try:
+            async with sessions() as session, session.begin():
+                paid_start = now - timedelta(days=1)
+                paid_end = paid_start + timedelta(days=30)
+                session.add(AccessAccountRecord(owner_id=owner_id, deleted_at=now))
+                session.add(
+                    AccessPeriodRecord(
+                        owner_id=owner_id,
+                        period_id="paid-current",
+                        policy_kind=PeriodKind.PAID.value,
+                        policy_version="paid-v1",
+                        starts_at=paid_start,
+                        ends_at=paid_end,
+                        ai_turn_limit=1000,
+                        voice_second_limit=3600,
+                    )
+                )
+                session.add(
+                    UsageReservationRecord(
+                        owner_id=owner_id,
+                        period_id="paid-current",
+                        request_id="paid-usage-preserved",
+                        reserved_ai_turns=1,
+                        reserved_voice_seconds=0,
+                        settled_ai_turns=1,
+                        settled_voice_seconds=0,
+                        state=ReservationState.SETTLED.value,
+                        created_at=now,
+                        expires_at=paid_end,
+                        finalized_at=now,
+                    )
+                )
+            async with sessions() as session, session.begin():
+                result = await SqlAlchemyAccessUsageStore(session).activate_trial(
+                    StartTrial(owner_id, telegram_id, now)
+                )
+                assert result.status is TrialActivationStatus.ALREADY_ACTIVE
+                assert result.period_id == "paid-current"
+                assert result.starts_at == paid_start and result.ends_at == paid_end
+            async with sessions() as session:
+                account = await session.get(AccessAccountRecord, owner_id)
+                assert account is not None and account.deleted_at is None
+                count = await session.scalar(
+                    select(func.count()).select_from(AccessPeriodRecord).where(
+                        AccessPeriodRecord.owner_id == owner_id
+                    )
+                )
+                assert count == 1
+                usage = await session.scalar(
+                    select(UsageReservationRecord).where(
+                        UsageReservationRecord.owner_id == owner_id,
+                        UsageReservationRecord.request_id == "paid-usage-preserved",
+                    )
+                )
+                assert usage is not None and usage.settled_ai_turns == 1
+        finally:
+            await engine.dispose()
+
+    run_local_async(scenario)
+
+
+def test_trial_activation_shares_caller_transaction_and_survives_return(
+    billing_database: str,
+) -> None:
+    async def scenario() -> None:
+        engine = create_engine(billing_database)
+        sessions = create_session_factory(engine)
+        owner_id, now, telegram_id = uuid4(), datetime.now(UTC), uuid4().int % 2**52
+        try:
+            async with sessions() as session, session.begin():
+                session.add(AccessAccountRecord(owner_id=owner_id))
+            with pytest.raises(RuntimeError, match="rollback onboarding"):
+                async with sessions() as session, session.begin():
+                    await SqlAlchemyAccessUsageStore(session).activate_trial(
+                        StartTrial(owner_id, telegram_id, now)
+                    )
+                    raise RuntimeError("rollback onboarding")
+            async with sessions() as session:
+                assert await session.scalar(
+                    select(func.count()).select_from(AccessPeriodRecord).where(
+                        AccessPeriodRecord.owner_id == owner_id
+                    )
+                ) == 0
+
+            async with sessions() as session, session.begin():
+                result = await SqlAlchemyAccessUsageStore(session).activate_trial(
+                    StartTrial(owner_id, telegram_id, now)
+                )
+                assert result.status is TrialActivationStatus.ACTIVATED
+            async with sessions() as session, session.begin():
+                await session.delete(await session.get(AccessAccountRecord, owner_id))
+            async with sessions() as session, session.begin():
+                session.add(AccessAccountRecord(owner_id=owner_id))
+            async with sessions() as session, session.begin():
+                returned = await SqlAlchemyAccessUsageStore(session).activate_trial(
+                    StartTrial(owner_id, telegram_id, now + timedelta(days=30))
+                )
+                assert returned.status is TrialActivationStatus.PREVIOUSLY_ACTIVATED
+        finally:
+            await engine.dispose()
+
+    run_local_async(scenario)
+
+
+def test_return_after_expired_paid_period_restores_account_only(billing_database: str) -> None:
+    async def scenario() -> None:
+        engine = create_engine(billing_database)
+        sessions = create_session_factory(engine)
+        owner_id, telegram_id = uuid4(), uuid4().int % 2**52
+        now = datetime.now(UTC)
+        paid_start = now - timedelta(days=40)
+        paid_end = paid_start + timedelta(days=30)
+        try:
+            async with sessions() as session, session.begin():
+                session.add(AccessAccountRecord(owner_id=owner_id, deleted_at=now))
+                session.add(
+                    AccessPeriodRecord(
+                        owner_id=owner_id,
+                        period_id="expired-paid",
+                        policy_kind=PeriodKind.PAID.value,
+                        policy_version="paid-v1",
+                        starts_at=paid_start,
+                        ends_at=paid_end,
+                        ai_turn_limit=1000,
+                        voice_second_limit=3600,
+                    )
+                )
+                session.add(
+                    TrialActivationRecord(
+                        owner_id=owner_id,
+                        telegram_user_id=telegram_id,
+                        period_id="old-trial",
+                        activated_at=paid_start - timedelta(days=10),
+                    )
+                )
+            async with sessions() as session, session.begin():
+                result = await SqlAlchemyAccessUsageStore(session).activate_trial(
+                    StartTrial(owner_id, telegram_id, now)
+                )
+                assert result.status is TrialActivationStatus.PREVIOUSLY_ACTIVATED
+            async with sessions() as session:
+                account = await session.get(AccessAccountRecord, owner_id)
+                assert account is not None and account.deleted_at is None
+                store = SqlAlchemyAccessUsageStore(session)
+                for operation in (
+                    Operation.VIEW_PLAN,
+                    Operation.COMPLETE_PLAN,
+                    Operation.CANCEL_PLAN,
+                ):
+                    assert (await store.check_access(CheckAccess(owner_id, operation, now))).allowed
+                assert not (await store.check_access(
+                    CheckAccess(owner_id, Operation.AI_TURN, now)
+                )).allowed
+                assert await session.scalar(
+                    select(func.count()).select_from(AccessPeriodRecord).where(
+                        AccessPeriodRecord.owner_id == owner_id
+                    )
+                ) == 1
+        finally:
+            await engine.dispose()
+
+    run_local_async(scenario)
+
+
+def test_return_does_not_restore_deleted_active_trial_coverage(billing_database: str) -> None:
+    async def scenario() -> None:
+        engine = create_engine(billing_database)
+        sessions = create_session_factory(engine)
+        owner_id, telegram_id = uuid4(), uuid4().int % 2**52
+        now = datetime.now(UTC)
+        starts_at, ends_at = now - timedelta(days=1), now + timedelta(days=6)
+        try:
+            async with sessions() as session, session.begin():
+                session.add(AccessAccountRecord(owner_id=owner_id, deleted_at=now))
+                session.add(
+                    AccessPeriodRecord(
+                        owner_id=owner_id,
+                        period_id="deleted-trial",
+                        policy_kind=PeriodKind.TRIAL.value,
+                        policy_version="v1",
+                        starts_at=starts_at,
+                        ends_at=ends_at,
+                        ai_turn_limit=250,
+                        voice_second_limit=900,
+                    )
+                )
+                session.add(
+                    TrialActivationRecord(
+                        owner_id=owner_id,
+                        telegram_user_id=telegram_id,
+                        period_id="deleted-trial",
+                        activated_at=starts_at,
+                    )
+                )
+            async with sessions() as session, session.begin():
+                result = await SqlAlchemyAccessUsageStore(session).activate_trial(
+                    StartTrial(owner_id, telegram_id, now)
+                )
+                assert result.status is TrialActivationStatus.PREVIOUSLY_ACTIVATED
+            async with sessions() as session:
+                store = SqlAlchemyAccessUsageStore(session)
+                assert (await store.check_access(
+                    CheckAccess(owner_id, Operation.VIEW_PLAN, now)
+                )).allowed
+                assert not (await store.check_access(
+                    CheckAccess(owner_id, Operation.AI_TURN, now)
+                )).allowed
+                period = await session.get(AccessPeriodRecord, (owner_id, "deleted-trial"))
+                assert period is not None and period.ends_at == ends_at
+        finally:
+            await engine.dispose()
+
+    run_local_async(scenario)
 
 
 def _reservation_command(

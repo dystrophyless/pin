@@ -22,8 +22,10 @@ from pin.adapters.telegram.presentation.formatting import (
     paginate_entries,
     telegram_utf16_length,
 )
+from pin.adapters.telegram.presentation.onboarding import render_onboarding
 from pin.adapters.telegram.presentation.router import create_help_support_router
 from pin.adapters.telegram.presentation.templates import render_help, render_support
+from pin.contexts.identity.application.onboarding import OnboardingResult
 
 
 class MemoryCallbackStore:
@@ -56,6 +58,58 @@ def test_markdown_v2_escapes_all_reserved_characters_and_preserves_unicode() -> 
     assert escaped == "Привет " + "".join(f"\\{char}" for char in specials) + " 😀 e\u0301"
 
 
+def test_onboarding_markdown_keeps_code_spans_and_ru_buttons_are_localized() -> None:
+    language = render_onboarding(
+        OnboardingResult("started", step="language", mode="initial", draft={"language": "ru"})
+    )
+    assert language is not None
+    assert language.markdown == r"Выберите язык: отправьте `ru` или `en`\."
+    assert language.plain_text == "Выберите язык: отправьте ru или en."
+    assert {button.text for button in language.buttons} >= {"English", "Русский", "Отмена"}
+
+    reminders = render_onboarding(
+        OnboardingResult("started", step="reminders", mode="initial", draft={"language": "ru"})
+    )
+    assert reminders is not None
+    assert "suggested" not in reminders.plain_text.casefold()
+    assert any(button.text == "Использовать предложенное" for button in reminders.buttons)
+    zone = render_onboarding(
+        OnboardingResult("started", step="home_zone", mode="initial", draft={"language": "ru"})
+    )
+    assert zone is not None and "Asia/Almaty (пример)" in {button.text for button in zone.buttons}
+    quiet = render_onboarding(
+        OnboardingResult("started", step="quiet_review", mode="initial", draft={"language": "ru"})
+    )
+    assert quiet is not None
+    assert "`22:00-08:00; 20:00`" in quiet.markdown
+    assert "22:00-08:00; 20:00" in quiet.plain_text
+
+    confirmation = render_onboarding(
+        OnboardingResult(
+            "advanced",
+            step="confirm",
+            mode="initial",
+            draft={"language": "ru", "home_zone": "Asia/Almaty"},
+        )
+    )
+    assert confirmation is not None
+    assert "*Проверьте настройки:*" in confirmation.markdown
+    assert "**" not in confirmation.plain_text
+
+
+def test_onboarding_cancel_copy_matches_initial_and_preview_states() -> None:
+    initial = render_onboarding(OnboardingResult("cancelled", mode="initial"))
+    preview = render_onboarding(
+        OnboardingResult("cancelled", mode="preferences", draft={"language": "en"})
+    )
+    assert initial is not None and "no trial was started" in initial.plain_text
+    assert (
+        preview is not None
+        and "saved preferences and access are unchanged" in preview.plain_text.casefold()
+    )
+    assert "no trial was started" not in preview.plain_text
+
+
 def test_pagination_keeps_unicode_and_button_targets_on_safe_pages() -> None:
     entries = [
         MessageEntry(f"пункт {index} 😀 " + "_*[x]" * 80, target_id=f"target-{index}")
@@ -74,9 +128,7 @@ def test_pagination_keeps_unicode_and_button_targets_on_safe_pages() -> None:
 def test_long_unicode_entry_is_split_without_loss_or_oversize() -> None:
     long_text = ("Ж😀e\u0301_*" * 1500) + " end"
     pages = paginate_entries("Текст", [MessageEntry(long_text)], empty_text="empty", limit=512)
-    recovered = "".join(
-        line[2:] for page in pages for line in page.plain_text.splitlines()[1:]
-    )
+    recovered = "".join(line[2:] for page in pages for line in page.plain_text.splitlines()[1:])
     assert recovered == long_text
     assert all(telegram_utf16_length(page.plain_text) <= 512 for page in pages)
 
@@ -109,17 +161,11 @@ async def test_callback_tokens_bind_owner_version_expiry_and_are_single_use() ->
     assert len(token.encode("utf-8")) <= 64
 
     with pytest.raises(InvalidCallbackToken):
-        await tokens.consume(
-            token, actor_id=UUID(int=18), current_target_version=3, now=now
-        )
+        await tokens.consume(token, actor_id=UUID(int=18), current_target_version=3, now=now)
     with pytest.raises(InvalidCallbackToken):
-        await tokens.consume(
-            token, actor_id=UUID(int=17), current_target_version=4, now=now
-        )
+        await tokens.consume(token, actor_id=UUID(int=17), current_target_version=4, now=now)
     with pytest.raises(InvalidCallbackToken):
-        await tokens.consume(
-            token, actor_id=UUID(int=17), current_target_version=3, now=now
-        )
+        await tokens.consume(token, actor_id=UUID(int=17), current_target_version=3, now=now)
 
     valid = await tokens.issue(
         owner_id=UUID(int=17),
@@ -129,9 +175,7 @@ async def test_callback_tokens_bind_owner_version_expiry_and_are_single_use() ->
         expires_at=now + timedelta(minutes=5),
         now=now,
     )
-    binding = await tokens.consume(
-        valid, actor_id=UUID(int=17), current_target_version=5, now=now
-    )
+    binding = await tokens.consume(valid, actor_id=UUID(int=17), current_target_version=5, now=now)
     assert (binding.action, binding.target_id, binding.target_version) == (
         "complete",
         "occurrence-2",
@@ -210,7 +254,10 @@ class FakeBot:
 async def test_only_confirmed_format_rejection_retries_as_plain_text() -> None:
     bot = FakeBot(TelegramBadRequest(SendMessage(chat_id=1, text="x"), "can't parse entities"))
     await send_formatted_message(
-        bot, chat_id=1, markdown="*x", plain_text="x"  # type: ignore[arg-type]
+        bot,
+        chat_id=1,
+        markdown="*x",
+        plain_text="x",  # type: ignore[arg-type]
     )
     assert [call["parse_mode"] for call in bot.calls] == [ParseMode.MARKDOWN_V2, None]
 
@@ -228,7 +275,10 @@ async def test_non_format_telegram_error_is_not_retried() -> None:
     bot = FakeBot(TelegramBadRequest(SendMessage(chat_id=1, text="x"), "chat not found"))
     with pytest.raises(TelegramBadRequest):
         await send_formatted_message(
-            bot, chat_id=1, markdown="*x*", plain_text="x"  # type: ignore[arg-type]
+            bot,
+            chat_id=1,
+            markdown="*x*",
+            plain_text="x",  # type: ignore[arg-type]
         )
     assert len(bot.calls) == 1
 

@@ -1,11 +1,47 @@
-from pin.bootstrap.config import ProcessRole
-from pin.entrypoints._common import run
+from __future__ import annotations
+
+import argparse
+import logging
+import os
+import socket
+
+from pin.adapters.telegram.application_worker import run_application_worker
+from pin.bootstrap.config import ProcessRole, SettingsError, load_settings
+from pin.observability import configure_logging
+from pin.persistence import create_engine, create_session_factory, run_local_async
+
+logger = logging.getLogger("pin.runtime")
 
 
 def main() -> None:
-    run(ProcessRole.APP_WORKER)
+    parser = argparse.ArgumentParser(prog="pin-app-worker")
+    parser.add_argument("--check", action="store_true", help="validate configuration only")
+    args = parser.parse_args()
+    configure_logging()
+    try:
+        settings = load_settings(ProcessRole.APP_WORKER)
+    except SettingsError as error:
+        logger.error("startup_rejected: %s", error)
+        raise SystemExit(2) from None
+    logger.info("startup_ready: role=%s", ProcessRole.APP_WORKER.value)
+    if args.check:
+        return
+    engine = create_engine(settings.database_url.get_secret_value())
+    sessions = create_session_factory(engine)
+    worker_id = f"app-{socket.gethostname()}-{os.getpid()}"
+
+    async def run() -> None:
+        try:
+            await run_application_worker(sessions, worker_id=worker_id)
+        finally:
+            await engine.dispose()
+
+    try:
+        run_local_async(run)
+    except Exception as error:
+        logger.error("worker_stopped: error=%s", type(error).__name__)
+        raise SystemExit(1) from None
 
 
 if __name__ == "__main__":
     main()
-
