@@ -124,6 +124,7 @@ class SqlAlchemyNotificationsStore(ReminderIntentStore):
                 existing.series_version = occurrence.series_version
                 existing.source_event_id = change.event_id
                 existing.dispatch_version += 1
+                existing.not_before_at = None
                 existing.invalidated_at = None
                 updated += 1
 

@@ -89,6 +89,16 @@ class AgendaReadStore(Protocol):
         include_completed: bool,
     ) -> tuple[AgendaRecord, ...]: ...
 
+    async def list_overdue(
+        self,
+        owner_id: UUID,
+        *,
+        as_of: datetime,
+        display_zone: str,
+        limit: int = 100,
+        for_update: bool = False,
+    ) -> tuple[AgendaRecord, ...]: ...
+
     async def save_snapshot(self, snapshot: AgendaSnapshot) -> None: ...
 
     async def get_snapshot(

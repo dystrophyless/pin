@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import (
     JSON,
@@ -14,7 +15,11 @@ from sqlalchemy import (
     Index,
     String,
     Uuid,
+    and_,
+    case,
+    cast,
     delete,
+    func,
     or_,
     select,
 )
@@ -95,6 +100,95 @@ class SqlAlchemyAgendaReadStore(AgendaReadStore):
             .order_by(occurrence.id)
         )
         rows = (await self._session.execute(statement)).all()
+        return tuple(_agenda_record(record, title) for record, title in rows)
+
+    async def list_overdue(
+        self,
+        owner_id: UUID,
+        *,
+        as_of: datetime,
+        display_zone: str,
+        limit: int = 100,
+        for_update: bool = False,
+    ) -> tuple[AgendaRecord, ...]:
+        if as_of.tzinfo is None or as_of.utcoffset() is None:
+            raise ValueError("overdue read clock must be timezone-aware")
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 1000:
+            raise ValueError("overdue read limit must be between 1 and 1000")
+        local_today = as_of.astimezone(ZoneInfo(display_zone)).date()
+        instant = as_of.astimezone(UTC)
+        occurrence = OccurrenceRecord
+        timed_due = case(
+            (occurrence.kind == "appointment", occurrence.ends_at),
+            (occurrence.kind == "deadline", occurrence.deadline_at),
+            (occurrence.kind == "task", occurrence.starts_at),
+            else_=None,
+        )
+        age_order = case(
+            (
+                occurrence.kind == "untimed",
+                func.timezone(display_zone, cast(occurrence.local_date, DateTime())),
+            ),
+            else_=timed_due,
+        )
+        statement = (
+            select(occurrence, PlanItemRecord.title)
+            .join(
+                PlanItemRecord,
+                (PlanItemRecord.id == occurrence.plan_item_id)
+                & (PlanItemRecord.owner_id == occurrence.owner_id),
+            )
+            .where(
+                occurrence.owner_id == owner_id,
+                occurrence.state == "open",
+                or_(
+                    and_(occurrence.kind == "appointment", occurrence.ends_at <= instant),
+                    and_(occurrence.kind == "deadline", occurrence.deadline_at <= instant),
+                    and_(occurrence.kind == "task", occurrence.starts_at <= instant),
+                    and_(occurrence.kind == "untimed", occurrence.local_date < local_today),
+                ),
+            )
+            .order_by(age_order.asc(), occurrence.id.asc())
+            .limit(limit)
+        )
+        if for_update:
+            membership = (
+                await self._session.execute(
+                    statement.with_only_columns(occurrence.id, occurrence.plan_item_id)
+                )
+            ).all()
+            if not membership:
+                return ()
+            occurrence_ids = tuple(row.id for row in membership)
+            plan_item_ids = tuple(sorted({row.plan_item_id for row in membership}))
+
+            await self._session.execute(
+                select(PlanItemRecord.id)
+                .where(
+                    PlanItemRecord.owner_id == owner_id,
+                    PlanItemRecord.id.in_(plan_item_ids),
+                )
+                .order_by(PlanItemRecord.id)
+                .with_for_update(of=PlanItemRecord)
+            )
+            await self._session.execute(
+                select(occurrence.id)
+                .where(
+                    occurrence.owner_id == owner_id,
+                    occurrence.id.in_(occurrence_ids),
+                )
+                .order_by(occurrence.id)
+                .with_for_update(of=occurrence)
+            )
+            rows = (
+                await self._session.execute(
+                    statement.where(occurrence.id.in_(occurrence_ids)).execution_options(
+                        populate_existing=True
+                    )
+                )
+            ).all()
+        else:
+            rows = (await self._session.execute(statement)).all()
         return tuple(_agenda_record(record, title) for record, title in rows)
 
     async def save_snapshot(self, snapshot: AgendaSnapshot) -> None:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import os
 from collections.abc import Iterator
@@ -380,6 +381,449 @@ def test_postgres_agenda_owner_boundaries_status_and_event_zones(agenda_database
                 assert str(ids["completed"]) in completed.snapshot.item_ids
                 assert str(ids["cancelled"]) not in completed.snapshot.item_ids
             await engine.dispose()
+        finally:
+            await engine.dispose()
+
+    run_local_async(scenario)
+
+
+@pytest.mark.parametrize(
+    ("mutation", "for_update", "blocks"),
+    (("completion", True, True), ("title", True, True), ("title", False, False)),
+)
+def test_postgres_overdue_reader_lock_contract(
+    agenda_database: str, mutation: str, for_update: bool, blocks: bool
+) -> None:
+    async def scenario() -> None:
+        engine = create_engine(agenda_database)
+        sessions = create_session_factory(engine)
+        owner = uuid4()
+        now = datetime(2026, 6, 10, 12, tzinfo=UTC)
+        try:
+            async with sessions() as session, session.begin():
+                occurrence_id = await _add_occurrence(
+                    session,
+                    owner,
+                    name="Original overdue title",
+                    kind="task",
+                    event_zone="UTC",
+                    local_date=date(2026, 6, 9),
+                    local_time=time(10),
+                    starts_at=now - timedelta(hours=2),
+                )
+                item_id = await session.scalar(
+                    select(OccurrenceRecord.plan_item_id).where(
+                        OccurrenceRecord.id == occurrence_id
+                    )
+                )
+                assert item_id is not None
+
+            writer_started = asyncio.Event()
+            writer_pid: int | None = None
+
+            async def mutate() -> None:
+                nonlocal writer_pid
+                async with sessions() as session, session.begin():
+                    writer_pid = await session.scalar(text("SELECT pg_backend_pid()"))
+                    writer_started.set()
+                    if mutation == "completion":
+                        await session.execute(
+                            update(OccurrenceRecord)
+                            .where(OccurrenceRecord.id == occurrence_id)
+                            .values(state="completed")
+                        )
+                    else:
+                        await session.execute(
+                            update(PlanItemRecord)
+                            .where(PlanItemRecord.id == item_id)
+                            .values(title="Updated overdue title")
+                        )
+
+            async with sessions() as reader:
+                async with reader.begin():
+                    records = await SqlAlchemyAgendaReadStore(reader).list_overdue(
+                        owner,
+                        as_of=now,
+                        display_zone="UTC",
+                        for_update=for_update,
+                    )
+                    assert tuple(record.occurrence_id for record in records) == (occurrence_id,)
+                    assert records[0].title == "Original overdue title"
+                    reader_pid = await reader.scalar(text("SELECT pg_backend_pid()"))
+                    assert reader_pid is not None
+                    writer = asyncio.create_task(mutate())
+                    await writer_started.wait()
+                    if blocks:
+                        assert writer_pid is not None
+                        deadline = asyncio.get_running_loop().time() + 3
+                        blocked_by_reader = False
+                        while asyncio.get_running_loop().time() < deadline:
+                            async with sessions() as monitor:
+                                blocked_by_reader = bool(
+                                    await monitor.scalar(
+                                        text(
+                                            "SELECT :reader_pid = ANY "
+                                            "(pg_blocking_pids(:writer_pid))"
+                                        ),
+                                        {"reader_pid": reader_pid, "writer_pid": writer_pid},
+                                    )
+                                )
+                            if blocked_by_reader:
+                                break
+                            await asyncio.sleep(0.05)
+                        assert blocked_by_reader, "writer was not blocked by the reader transaction"
+                        assert not writer.done()
+                    else:
+                        await asyncio.wait_for(writer, timeout=3)
+                await asyncio.wait_for(writer, timeout=3)
+
+            async with sessions() as session:
+                current = await SqlAlchemyAgendaReadStore(session).list_overdue(
+                    owner, as_of=now, display_zone="UTC"
+                )
+                assert len(current) == (0 if mutation == "completion" else 1)
+                if current:
+                    assert current[0].title == "Updated overdue title"
+        finally:
+            await engine.dispose()
+
+    run_local_async(scenario)
+
+
+def test_postgres_overdue_reader_refreshes_terminal_state_and_preserves_membership(
+    agenda_database: str,
+) -> None:
+    async def scenario() -> None:
+        engine = create_engine(agenda_database)
+        sessions = create_session_factory(engine)
+        owner, other_owner = uuid4(), uuid4()
+        now = datetime(2026, 6, 10, 12, tzinfo=UTC)
+        ids: dict[str, UUID] = {}
+        try:
+            async with sessions() as session, session.begin():
+                for index in range(4):
+                    ids[str(index)] = await _add_occurrence(
+                        session,
+                        owner,
+                        name=f"Overdue {index}",
+                        kind="task",
+                        event_zone="UTC",
+                        local_date=date(2026, 6, 9),
+                        local_time=time(10),
+                        starts_at=now - timedelta(hours=index + 1),
+                    )
+                ids["other"] = await _add_occurrence(
+                    session,
+                    other_owner,
+                    name="Other owner's older row",
+                    kind="task",
+                    event_zone="UTC",
+                    local_date=date(2026, 6, 8),
+                    local_time=time(10),
+                    starts_at=now - timedelta(days=2),
+                )
+                ids["terminal"] = await _add_occurrence(
+                    session,
+                    owner,
+                    name="Already completed",
+                    kind="task",
+                    event_zone="UTC",
+                    local_date=date(2026, 6, 9),
+                    local_time=time(9),
+                    starts_at=now - timedelta(hours=5),
+                    state="completed",
+                )
+
+            async with sessions() as session, session.begin():
+                await session.execute(
+                    update(OccurrenceRecord)
+                    .where(OccurrenceRecord.id == ids["0"])
+                    .values(state="completed")
+                )
+
+            async with sessions() as session, session.begin():
+                store = SqlAlchemyAgendaReadStore(session)
+                current = await store.list_overdue(
+                    owner, as_of=now, display_zone="UTC", for_update=True
+                )
+                assert ids["0"] not in {record.occurrence_id for record in current}
+                limited = await store.list_overdue(
+                    owner, as_of=now, display_zone="UTC", limit=2, for_update=True
+                )
+                assert tuple(record.occurrence_id for record in limited) == (
+                    ids["3"],
+                    ids["2"],
+                )
+                assert all(record.owner_id == owner for record in limited)
+        finally:
+            await engine.dispose()
+
+    run_local_async(scenario)
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_title"),
+    (("completion", None), ("title", "Committed before locking")),
+)
+def test_postgres_overdue_reader_rereads_changes_committed_after_membership(
+    agenda_database: str, mutation: str, expected_title: str | None
+) -> None:
+    async def scenario() -> None:
+        engine = create_engine(agenda_database)
+        sessions = create_session_factory(engine)
+        owner = uuid4()
+        now = datetime(2026, 6, 10, 12, tzinfo=UTC)
+        membership_read = asyncio.Event()
+        continue_read = asyncio.Event()
+        try:
+            async with sessions() as session, session.begin():
+                occurrence_id = await _add_occurrence(
+                    session,
+                    owner,
+                    name="Original overdue title",
+                    kind="task",
+                    event_zone="UTC",
+                    local_date=date(2026, 6, 9),
+                    local_time=time(10),
+                    starts_at=now - timedelta(hours=2),
+                )
+                item_id = await session.scalar(
+                    select(OccurrenceRecord.plan_item_id).where(
+                        OccurrenceRecord.id == occurrence_id
+                    )
+                )
+                assert item_id is not None
+
+            class PausedSession:
+                def __init__(self, session: AsyncSession) -> None:
+                    self._session = session
+                    self._paused = False
+
+                async def execute(self, statement):
+                    result = await self._session.execute(statement)
+                    if not self._paused:
+                        self._paused = True
+                        membership_read.set()
+                        await continue_read.wait()
+                    return result
+
+            async with sessions() as reader, reader.begin():
+                task = asyncio.create_task(
+                    SqlAlchemyAgendaReadStore(PausedSession(reader)).list_overdue(
+                        owner,
+                        as_of=now,
+                        display_zone="UTC",
+                        for_update=True,
+                    )
+                )
+                await membership_read.wait()
+                async with sessions() as writer, writer.begin():
+                    if mutation == "completion":
+                        await writer.execute(
+                            update(OccurrenceRecord)
+                            .where(OccurrenceRecord.id == occurrence_id)
+                            .values(state="completed")
+                        )
+                    else:
+                        await writer.execute(
+                            update(PlanItemRecord)
+                            .where(PlanItemRecord.id == item_id)
+                            .values(title="Committed before locking")
+                        )
+                continue_read.set()
+                records = await asyncio.wait_for(task, timeout=3)
+                if mutation == "completion":
+                    assert records == ()
+                else:
+                    assert len(records) == 1
+                    assert records[0].title == expected_title
+        finally:
+            continue_read.set()
+            await engine.dispose()
+
+    run_local_async(scenario)
+
+
+def test_postgres_overdue_read_uses_current_owner_rows_and_bounded_stable_order(
+    agenda_database: str,
+) -> None:
+    async def scenario() -> None:
+        engine = create_engine(agenda_database)
+        sessions = create_session_factory(engine)
+        owner, other_owner = uuid4(), uuid4()
+        as_of = datetime(2026, 6, 3, 0, 30, tzinfo=UTC)
+        ids: dict[str, UUID] = {}
+        try:
+            async with sessions() as session, session.begin():
+                ids["older_untimed"] = await _add_occurrence(
+                    session,
+                    owner,
+                    name="Older untimed",
+                    kind="untimed",
+                    event_zone="Asia/Tokyo",
+                    local_date=date(2026, 6, 1),
+                    local_time=None,
+                    starts_at=None,
+                )
+                ids["today_untimed"] = await _add_occurrence(
+                    session,
+                    owner,
+                    name="Display-zone today",
+                    kind="untimed",
+                    event_zone="UTC",
+                    local_date=date(2026, 6, 2),
+                    local_time=None,
+                    starts_at=None,
+                )
+                ids["older_task"] = await _add_occurrence(
+                    session,
+                    owner,
+                    name="Older timed task",
+                    kind="task",
+                    event_zone="America/Los_Angeles",
+                    local_date=date(2026, 6, 2),
+                    local_time=time(16),
+                    starts_at=datetime(2026, 6, 2, 23, tzinfo=UTC),
+                )
+                ids["boundary_appointment"] = await _add_occurrence(
+                    session,
+                    owner,
+                    name="Boundary appointment",
+                    kind="appointment",
+                    event_zone="Asia/Tokyo",
+                    local_date=date(2026, 6, 2),
+                    local_time=time(15),
+                    starts_at=as_of - timedelta(hours=1),
+                    ends_at=as_of,
+                    end_local_date=date(2026, 6, 3),
+                    end_local_time=time(9, 30),
+                )
+                ids["boundary_deadline"] = await _add_occurrence(
+                    session,
+                    owner,
+                    name="Boundary deadline",
+                    kind="deadline",
+                    event_zone="Asia/Tokyo",
+                    local_date=date(2026, 6, 3),
+                    local_time=time(9, 30),
+                    starts_at=None,
+                    deadline_at=as_of,
+                )
+                ids["boundary_task"] = await _add_occurrence(
+                    session,
+                    owner,
+                    name="Boundary task",
+                    kind="task",
+                    event_zone="Europe/Berlin",
+                    local_date=date(2026, 6, 3),
+                    local_time=time(2, 30),
+                    starts_at=as_of,
+                )
+                ids["ongoing"] = await _add_occurrence(
+                    session,
+                    owner,
+                    name="Ongoing appointment",
+                    kind="appointment",
+                    event_zone="UTC",
+                    local_date=date(2026, 6, 2),
+                    local_time=time(23),
+                    starts_at=as_of - timedelta(hours=1),
+                    ends_at=as_of + timedelta(seconds=1),
+                    end_local_date=date(2026, 6, 3),
+                    end_local_time=time(0, 30, 1),
+                )
+                ids["completed"] = await _add_occurrence(
+                    session,
+                    owner,
+                    name="Completed task",
+                    kind="task",
+                    event_zone="UTC",
+                    local_date=date(2026, 6, 1),
+                    local_time=time(0),
+                    starts_at=as_of - timedelta(days=2),
+                    state="completed",
+                )
+                ids["cancelled"] = await _add_occurrence(
+                    session,
+                    owner,
+                    name="Cancelled task",
+                    kind="task",
+                    event_zone="UTC",
+                    local_date=date(2026, 6, 1),
+                    local_time=time(0),
+                    starts_at=as_of - timedelta(days=2),
+                    state="cancelled",
+                )
+                ids["other_owner"] = await _add_occurrence(
+                    session,
+                    other_owner,
+                    name="Other owner task",
+                    kind="task",
+                    event_zone="UTC",
+                    local_date=date(2026, 6, 1),
+                    local_time=time(0),
+                    starts_at=as_of - timedelta(days=2),
+                )
+
+                store = SqlAlchemyAgendaReadStore(session)
+                records = await store.list_overdue(
+                    owner,
+                    as_of=as_of,
+                    display_zone="America/Los_Angeles",
+                    limit=1000,
+                )
+                expected_ids = (
+                    ids["older_untimed"],
+                    ids["older_task"],
+                    *sorted(
+                        (
+                            ids["boundary_appointment"],
+                            ids["boundary_deadline"],
+                            ids["boundary_task"],
+                        )
+                    ),
+                )
+                assert tuple(record.occurrence_id for record in records) == expected_ids
+                assert records[0].event_zone == "Asia/Tokyo"
+                assert records[-1].owner_id == owner
+
+                limited = await store.list_overdue(
+                    owner,
+                    as_of=as_of,
+                    display_zone="America/Los_Angeles",
+                    limit=3,
+                )
+                repeated = await store.list_overdue(
+                    owner,
+                    as_of=as_of,
+                    display_zone="America/Los_Angeles",
+                    limit=3,
+                )
+                assert tuple(record.occurrence_id for record in limited) == expected_ids[:3]
+                assert tuple(record.occurrence_id for record in repeated) == expected_ids[:3]
+
+                with pytest.raises(ValueError, match="timezone-aware"):
+                    await store.list_overdue(
+                        owner,
+                        as_of=datetime(2026, 6, 3, 0, 30),
+                        display_zone="UTC",
+                    )
+                with pytest.raises(ValueError, match="1 and 1000"):
+                    await store.list_overdue(
+                        owner, as_of=as_of, display_zone="UTC", limit=0
+                    )
+                with pytest.raises(ValueError, match="1 and 1000"):
+                    await store.list_overdue(
+                        owner, as_of=as_of, display_zone="UTC", limit=1001
+                    )
+                with pytest.raises(ValueError, match="1 and 1000"):
+                    await store.list_overdue(
+                        owner, as_of=as_of, display_zone="UTC", limit=True
+                    )
+                with pytest.raises(KeyError):
+                    await store.list_overdue(
+                        owner, as_of=as_of, display_zone="Invalid/Zone"
+                    )
         finally:
             await engine.dispose()
 
