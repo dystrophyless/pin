@@ -24,7 +24,11 @@ from pin.adapters.telegram.application_worker import (
 )
 from pin.adapters.telegram.ingress import PostgresTelegramOwnerResolver, persist_update
 from pin.adapters.telegram.speech_download import TelegramFile
-from pin.adapters.telegram.speech_worker import claim_speech_job, process_speech_job
+from pin.adapters.telegram.speech_worker import (
+    _LazyWhisperRecognizer,
+    claim_speech_job,
+    process_speech_job,
+)
 from pin.contexts.billing.api import (
     Operation,
     ReserveUsage,
@@ -92,6 +96,12 @@ def speech_worker_database() -> str:
     config.set_main_option("sqlalchemy.url", database_url.replace("%", "%%"))
     command.upgrade(config, "head")
     return database_url
+
+
+@pytest.fixture(scope="module")
+def local_whisper_recognizer() -> _LazyWhisperRecognizer:
+    """Match the worker's process-lifetime model reuse in direct job tests."""
+    return _LazyWhisperRecognizer()
 
 
 class _VoiceBot:
@@ -438,6 +448,7 @@ def _assistant(
 def test_voice_worker_runs_actual_local_whisper_and_continues_original_capture(
     speech_worker_database: str,
     tmp_path: Path,
+    local_whisper_recognizer: _LazyWhisperRecognizer,
     language: str,
     expected_transcript: str,
     reply: str,
@@ -476,6 +487,7 @@ def test_voice_worker_runs_actual_local_whisper_and_continues_original_capture(
                 assistant=_assistant(sessions, transport, now),
                 now=now,
                 files=PrivateAudioFiles(tmp_path / "private-speech"),
+                recognizer=local_whisper_recognizer,
             )
             assert bot.get_file_calls == bot.download_calls == 1
             assert transport.calls == 1
@@ -548,7 +560,9 @@ def test_voice_worker_runs_actual_local_whisper_and_continues_original_capture(
 
 
 def test_actual_voice_capture_clarification_text_preview_and_confirmation_saves_exact_plan(
-    speech_worker_database: str, tmp_path: Path
+    speech_worker_database: str,
+    tmp_path: Path,
+    local_whisper_recognizer: _LazyWhisperRecognizer,
 ) -> None:
     async def scenario() -> None:
         engine = create_engine(speech_worker_database)
@@ -611,6 +625,7 @@ def test_actual_voice_capture_clarification_text_preview_and_confirmation_saves_
                 assistant=_assistant(sessions, transport, now),
                 now=now,
                 files=files,
+                recognizer=local_whisper_recognizer,
             )
             assert transport.calls == 1
             assert bot.get_file_calls == bot.download_calls == 1
