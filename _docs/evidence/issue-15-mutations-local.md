@@ -1,17 +1,39 @@
-# Issue 15 mutation implementation evidence
+# Issue #15 mutation acceptance evidence
 
-Issue #15 remains open and in progress. This is local implementation evidence, not Orchestrator acceptance. All cited commits are local and unpushed.
+Accepted scope: Windows local development, recorded 2026-10-14 (Asia/Qyzylorda).
 
-Latest checkpoint: `0213a5d289282c746bbb155aaeff3ee68bc39f3d` adds current `RESCHEDULE_PLAN` authorization for explicit home-zone reinterpretation and reminder overrides at preview and locked confirmation, before proof consumption or profile/Planning writes. Guarded coordinator13 and native settings6 cases pass, including real expired-period rejection and expiry between preview and confirmation. The older `83d9b86` archive passed394 tests with zero failures/errors/skips and all underlying static, migration and speech checks, but that passing suite did not cover this permission gap. Its raw wrapper aggregation failure is preserved and reconciled in the `1518c` packet. A new exact-source gate is running from `0213a5d` in `C:/Users/roman/AppData/Local/Temp/pin-parent-mutation-voice-20261014-1518d`; issue acceptance remains pending its results and the direct requirement audit. Voice #18 is independently accepted at the older qualified source.
+## Qualified source and environment
 
-The mutation flow provides durable owner-bound previews and explicit one-time confirmation for occurrence completion, cancellation, rescheduling, and future-series cancellation. Preview and confirmation revalidate current targets and policy in the caller-owned unit of work. Future cancellation is bound to the selected generated open occurrences; completed history, occurrence identity, recurrence count, and stable series metadata are preserved where the operation requires it. Confirmed changes integrate with native reminder delivery and the settings flow for selected home-zone changes.
+- Accepted source commit: `0213a5d289282c746bbb155aaeff3ee68bc39f3d`; source tree: `10a17bf3c26454d14655159efdfbb09140a8eb4c`.
+- Evidence packet: `C:/Users/roman/AppData/Local/Temp/pin-parent-mutation-voice-20261014-1518d`, frozen from the exact accepted source. The live checkout had concurrent uncommitted executor work; acceptance uses the archived commit and tree, not unrelated dirty changes.
+- Windows 11 build 26200, Python 3.12.12, PostgreSQL 18.6 at `127.0.0.1:51017` (`pin_test`), using the project lock and offline `speech` extra. The cluster data directory was `C:/Users/roman/AppData/Local/Temp/pin-issue2-eeadfd1-20261013`.
 
-The current feature integration is committed at `e1ada7311a723161218ae8369a33c9e2afa3b71a`. Relevant follow-up evidence commits are mutation runtime tests `7da69a2`, native delivery interleavings and reminder behavior `4b70324`, selected-zone settings callback tests `666ba4b`, failed model-replay usage-hold release `8b2a126`, and actual expired-trial policy tests `39decb051538199d2df0c0e46610f7510bb05694`.
+Archived qualification commands:
 
-Guarded PostgreSQL evidence currently includes mutation core 5/5, mutation runtime 12/12, actual-application mutation 10/10, home-zone coordinator 9/9, actual settings callbacks 5/5, and native delivery 4/4, all with zero skips. The cases establish that Done and Cancel remain allowed after trial expiry while Reschedule is rejected both for a post-expiry preview and for a previously live preview confirmed after expiry; rejected rescheduling incurs no AI charge. Actual settings callbacks change only selected occurrence/series schedules in the chosen home zone; foreign or stale targets leave the profile unchanged, and recurrence count and completed history remain intact. Native delivery suppresses obsolete claimed cancel/done/reschedule reminders, sends the later version-2 reminder, and reports a send that started before a concurrent cancel as confirmed without scheduling a future follow-up. Model replay after an unknown source fault releases the combined usage hold, retains cost facts, and does not resubmit the provider request.
+```text
+python freeze_archive.py 0213a5d289282c746bbb155aaeff3ee68bc39f3d
+uv run --project source --locked --offline --extra speech python -c <source_guards.validate_source against frozen source>
+uv run --project source --locked --offline --extra speech python create.py
+uv run --project source --locked --offline --extra speech python migrations.py
+uv run --project source --locked --offline --extra speech python verify.py
+uv run --project source --locked --offline --extra speech python speech.py
+uv run --project source --locked --offline --extra speech python cleanup.py
+```
 
-Additional local suites report 38 model tests, 22 Speech unit tests, 11 Speech worker tests, and 3 prepared-voice tests passing. Actual process-kill coverage is still underway. Root architecture checks and scoped Ruff/mypy checks pass. These focused results do not establish whole-project acceptance.
+The packet preserves logs, JUnit, fixture manifests, raw result JSON, migration results, and cleanup proof. It created 23 fresh guarded databases; two separately reserved regression fixtures were preserved. Cleanup verified all 23 packet databases absent.
 
-Archived-source baseline qualification at `666ba4b` used `C:/Users/roman/AppData/Local/Temp/pin-parent-mutation-voice-20261014-1518b` and 23 fresh owned databases. Head/check/base/head/check passed with no schema drift. Full pytest reported 373 passed, 16 failed and zero skipped in 210.04 seconds; Ruff and architecture passed. The packet omitted `--extra speech`, explaining 13 speech-related failures and the missing-dependency mypy errors. Three other failures expose stale foundation test assumptions: the capture fake lacks the new owner-snapshot read, Identity expects an immediate zone write before confirmation, and the migration test hardcodes an obsolete head. Those tests are being corrected. The baseline also predates `39decb0` and later Speech tests. A new frozen revision, the speech extra, fresh databases and a complete passing qualification are required before acceptance.
+## Acceptance evidence
 
-Progress-only GitHub updates keep both issues open; no acceptance, push, deployment, Docker run or additional live OpenRouter request is claimed. The historical `pin_model_adapter_20261013` database remains preserved.
+Issue #15 scope, acceptance criteria and delivery conditions were checked against the qualified source and archived artifacts by the Orchestrator. The full archived qualifier itself reported PASS/exit 0: **399 passed, 0 failed, 0 errors, 0 skipped** in 189.79 seconds. Ruff, mypy with `--no-incremental` (152 files), architecture, and the six-step head/current/check/base/head/check migration lifecycle all passed with zero schema drift. Archived actual Russian and English fixtures were recognized; decoded audio durations were 4.169 and 3.149 seconds, and silence was rejected. Those are clip durations, not runtime or performance measurements; no speed or capacity claim is made.
+
+Fifty focused PostgreSQL cases were included: mutation core 5, runtime 12, actual-application mutation 10, native delivery 4, home-zone coordinator 13, and native settings callbacks 6. They exercised durable owner/version-bound previews and opaque 15-minute confirmation; deterministic commands/menus and AI proposal handoff; no plan mutation before confirmation; pagination beyond 50 items; stale, cross-owner, and corrected-target rejection; appointment duration/end/reminder preservation and explicit clarification; and savepoint rollback of usage, receipts, and events after failure even if the caller commits.
+
+Mutation and consumer evidence verified occurrence-only Done with no reopening, stable reschedule occurrence identity, and count/history preservation for the June 1/15/29 series moved to June 8/22 and July 6. Future cancellation targets exactly the generated open occurrences and stops generation atomically. Native delivery suppresses already-claimed obsolete Cancel/Done/Reschedule reminders, sends the current version-2 reminder after rescheduling, and truthfully reports a send that began before cancellation without creating future intent.
+
+Home-zone cases verified that explicit reinterpretation affects only the selected items, Keep behavior preserves unselected schedules and event zones, and history/count, untimed items, DST behavior, and stopped series are preserved. Missing legacy reminders require an explicit choice or a bounded rejection. Billing `RESCHEDULE_PLAN` access is enforced for selected home-zone occurrence/series/reminder changes both at preview and locked confirmation, before proof consumption or business writes. Real expired-access and expiry-between-preview-and-confirmation cases verified no write.
+
+Accountability cycle close/supersede integration remains Issue #16's responsibility and is not claimed as part of this Issue #15 acceptance. The older packet's raw wrapper aggregation defect remains preserved as historical evidence; the accepted `1518d` packet is the later exact-source run whose qualification wrapper itself passed.
+
+## Qualification limits
+
+This accepts the assigned Windows local-development increment. It does not claim live provider or Telegram qualification, host speed/capacity, Docker, deployment, public rollout, push, or overall MVP acceptance. The speech transport and provider integrations were injected where the tests required them; no live provider calls were added.
