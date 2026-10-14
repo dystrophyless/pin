@@ -18,7 +18,7 @@ from pin.adapters.telegram.accountability_composition import (
 )
 from pin.contexts.accountability.api import ReviewProfile
 from pin.contexts.identity.infrastructure.store import SqlAlchemyIdentityStore
-from pin.contexts.notifications.infrastructure.accountability_delivery import (
+from pin.contexts.notifications.api import (
     ACCOUNTABILITY_DELIVERY_JOB_KIND,
     deliver_accountability_job,
 )
