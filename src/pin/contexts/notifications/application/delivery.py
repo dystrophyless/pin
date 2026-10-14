@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import Literal
+from typing import Literal, Protocol
 from uuid import UUID
+
+ACCOUNTABILITY_DELIVERY_JOB_KIND = "accountability.deliver"
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,6 +35,10 @@ class TelegramReplySend:
     plain_text: str
     reply_markup: dict[str, object] | None = None
     parse_mode: Literal["MarkdownV2"] | None = "MarkdownV2"
+
+
+class AccountabilityTransport(Protocol):
+    async def send_reply(self, message: TelegramReplySend) -> str | None: ...
 
 
 class KnownDeliveryFailure(Exception):

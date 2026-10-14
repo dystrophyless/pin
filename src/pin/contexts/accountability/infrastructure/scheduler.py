@@ -28,7 +28,7 @@ from pin.contexts.accountability.infrastructure.models import (
     CheckInCycleRecord,
     DailyReviewRecord,
 )
-from pin.contexts.notifications.quiet_hours_api import defer_until_quiet_hours_end
+from pin.contexts.notifications.api import defer_until_quiet_hours_end
 from pin.platform.jobs import JobLane, enqueue_job
 
 DELIVERY_JOB_KIND = "accountability.deliver"
@@ -304,6 +304,38 @@ async def apply_delivery_outcome(
     )
     if receipt is not None:
         return False
+    candidate = (
+        await session.execute(
+            select(
+                AccountabilityIntentRecord.cycle_id,
+                AccountabilityIntentRecord.review_id,
+            ).where(
+                AccountabilityIntentRecord.id == intent_id,
+                AccountabilityIntentRecord.owner_id == owner_id,
+            )
+        )
+    ).one_or_none()
+    if candidate is None:
+        session.add(
+            AccountabilityOutcomeReceiptRecord(id=uuid4(), owner_id=owner_id, event_id=event_id)
+        )
+        await session.flush()
+        return True
+    cycle_id, review_id = candidate
+    cycle = None
+    review = None
+    if cycle_id is not None:
+        cycle = await session.scalar(
+            select(CheckInCycleRecord)
+            .where(CheckInCycleRecord.id == cycle_id, CheckInCycleRecord.owner_id == owner_id)
+            .with_for_update()
+        )
+    elif review_id is not None:
+        review = await session.scalar(
+            select(DailyReviewRecord)
+            .where(DailyReviewRecord.id == review_id, DailyReviewRecord.owner_id == owner_id)
+            .with_for_update()
+        )
     intent = await session.scalar(
         select(AccountabilityIntentRecord)
         .where(
@@ -311,11 +343,12 @@ async def apply_delivery_outcome(
             AccountabilityIntentRecord.owner_id == owner_id,
         )
         .with_for_update()
+        .execution_options(populate_existing=True)
     )
     session.add(
         AccountabilityOutcomeReceiptRecord(id=uuid4(), owner_id=owner_id, event_id=event_id)
     )
-    if intent is None:
+    if intent is None or intent.cycle_id != cycle_id or intent.review_id != review_id:
         await session.flush()
         return True
     newer = attempt_number > intent.last_outcome_attempt
@@ -330,14 +363,6 @@ async def apply_delivery_outcome(
             else:
                 intent.state = "unknown" if outcome == "unknown" else "exhausted"
     if intent.cycle_id is not None and newer:
-        cycle = await session.scalar(
-            select(CheckInCycleRecord)
-            .where(
-                CheckInCycleRecord.id == intent.cycle_id,
-                CheckInCycleRecord.owner_id == owner_id,
-            )
-            .with_for_update()
-        )
         if cycle is not None and cycle.state == CycleState.OPEN.value:
             if intent.slot == MessageSlot.INITIAL.value and outcome == "confirmed":
                 confirmed_at = occurred_at.astimezone(UTC)
@@ -357,14 +382,6 @@ async def apply_delivery_outcome(
             ):
                 cycle.state = CycleState.EXHAUSTED.value
     if intent.review_id is not None and newer:
-        review = await session.scalar(
-            select(DailyReviewRecord)
-            .where(
-                DailyReviewRecord.id == intent.review_id,
-                DailyReviewRecord.owner_id == owner_id,
-            )
-            .with_for_update()
-        )
         if review is not None and review.state == CycleState.OPEN.value:
             if intent.slot == MessageSlot.INITIAL.value and outcome == "confirmed":
                 confirmed_at = occurred_at.astimezone(UTC)
