@@ -12,7 +12,7 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine as create_sync_engine
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from pin.adapters.telegram import delivery_worker as telegram_delivery_worker
@@ -40,13 +40,17 @@ from pin.contexts.accountability.infrastructure.models import (
     CheckInCycleRecord,
     DailyReviewRecord,
 )
-from pin.contexts.accountability.infrastructure.scheduler import synchronize_occurrence
+from pin.contexts.accountability.infrastructure.scheduler import (
+    apply_delivery_outcome,
+    synchronize_occurrence,
+)
 from pin.contexts.billing.api import AccessDecision, CheckAccess, SqlAlchemyAccessUsageStore
 from pin.contexts.billing.domain.access import PeriodKind
 from pin.contexts.billing.infrastructure.models import AccessAccountRecord, AccessPeriodRecord
 from pin.contexts.identity.domain.preferences import Preferences
 from pin.contexts.identity.infrastructure.models import PreferencesRecord
 from pin.contexts.identity.infrastructure.store import SqlAlchemyIdentityStore
+from pin.contexts.notifications.api import ACCOUNTABILITY_DELIVERY_JOB_KIND
 from pin.contexts.notifications.application.delivery import (
     KnownDeliveryFailure,
     ReminderSend,
@@ -55,7 +59,6 @@ from pin.contexts.notifications.application.delivery import (
 )
 from pin.contexts.notifications.domain.delivery import DeliveryOutcomeKind
 from pin.contexts.notifications.infrastructure.accountability_delivery import (
-    ACCOUNTABILITY_DELIVERY_JOB_KIND,
     deliver_accountability_job,
 )
 from pin.contexts.notifications.infrastructure.delivery_worker import DELIVERY_LEASE
@@ -357,29 +360,56 @@ async def _claim_accountability_job(
 async def _retire_own_accountability_job(
     sessions: async_sessionmaker[AsyncSession], *, owner_id: UUID
 ) -> None:
-    """Keep a deferred test job from leaking into later global-queue iterations."""
+    """Retire this test owner's synthetic jobs after its assertions complete."""
     async with sessions() as session, session.begin():
-        intent = await session.scalar(
-            select(AccountabilityIntentRecord).where(
-                AccountabilityIntentRecord.owner_id == owner_id,
-                AccountabilityIntentRecord.slot == "initial",
-            )
+        jobs = list(
+            (
+                await session.scalars(
+                    select(Job).where(
+                        Job.owner_id == owner_id,
+                        Job.kind == ACCOUNTABILITY_DELIVERY_JOB_KIND,
+                    )
+                )
+            ).all()
         )
-        assert intent is not None
-        job = await session.scalar(
-            select(Job).where(
-                Job.owner_id == owner_id,
-                Job.kind == ACCOUNTABILITY_DELIVERY_JOB_KIND,
-                Job.deduplication_key == f"accountability:{intent.id}",
-            )
+        for job in jobs:
+            assert job.status in {"pending", "succeeded"}
+            job.status = "succeeded"
+            job.finished_at = NOW
+            job.worker_id = None
+            job.lease_token = None
+            job.lease_until = None
+
+        # Later tests call the real global scheduler at later instants. Close only
+        # this scenario's synthetic subjects after assertions have proved their
+        # open-cycle/review behavior, preventing a later test from creating a
+        # nudge for an earlier test owner.
+        cycles = list(
+            (
+                await session.scalars(
+                    select(CheckInCycleRecord).where(
+                        CheckInCycleRecord.owner_id == owner_id,
+                        CheckInCycleRecord.state == "open",
+                    )
+                )
+            ).all()
         )
-        assert job is not None
-        assert job.status in {"pending", "succeeded"}
-        job.status = "succeeded"
-        job.finished_at = NOW
-        job.worker_id = None
-        job.lease_token = None
-        job.lease_until = None
+        reviews = list(
+            (
+                await session.scalars(
+                    select(DailyReviewRecord).where(
+                        DailyReviewRecord.owner_id == owner_id,
+                        DailyReviewRecord.state == "open",
+                    )
+                )
+            ).all()
+        )
+        for cycle in cycles:
+            cycle.state = "cancelled"
+            cycle.nudge_slot_used = True
+        for review in reviews:
+            review.state = "cancelled"
+            review.nudge_slot_used = True
 
 
 def _profile(owner_id: UUID) -> ReviewProfile:
@@ -1158,6 +1188,7 @@ def test_preferences_changed_after_profile_fence_wait_for_attempt_start(
                 assert cycle is not None and cycle.initial_confirmed_at == NOW
                 assert cycle.nudge_due_at == NOW + timedelta(hours=1)
                 assert preferences is not None and preferences.version == 2
+            await _retire_own_accountability_job(sessions, owner_id=owner_id)
         finally:
             release_profile_reader.set()
             if delivery_task is not None and not delivery_task.done():
@@ -1185,9 +1216,13 @@ def test_scheduler_cycle_lock_precedes_intent_lock_against_send_authorization(
             )
         cycle_locked = asyncio.Event()
         authorization_started = asyncio.Event()
+        scheduler_pid: int | None = None
+        authorization_pid: int | None = None
 
         async def schedule_while_holding_cycle() -> int:
+            nonlocal scheduler_pid
             async with sessions() as session, session.begin():
+                scheduler_pid = await session.scalar(text("SELECT pg_backend_pid()"))
                 cycle = await session.scalar(
                     select(CheckInCycleRecord)
                     .where(
@@ -1199,6 +1234,26 @@ def test_scheduler_cycle_lock_precedes_intent_lock_against_send_authorization(
                 assert cycle is not None
                 cycle_locked.set()
                 await authorization_started.wait()
+                deadline = asyncio.get_running_loop().time() + 3
+                authorization_blocked_by_scheduler = False
+                while asyncio.get_running_loop().time() < deadline:
+                    async with sessions() as monitor:
+                        authorization_blocked_by_scheduler = bool(
+                            await monitor.scalar(
+                                text(
+                                    "SELECT :scheduler_pid = ANY "
+                                    "(pg_blocking_pids(:authorization_pid))"
+                                ),
+                                {
+                                    "scheduler_pid": scheduler_pid,
+                                    "authorization_pid": authorization_pid,
+                                },
+                            )
+                        )
+                    if authorization_blocked_by_scheduler:
+                        break
+                    await asyncio.sleep(0.05)
+                assert authorization_blocked_by_scheduler
                 return await schedule_due_accountability(
                     session,
                     profiles=(_profile(owner_id),),
@@ -1207,6 +1262,7 @@ def test_scheduler_cycle_lock_precedes_intent_lock_against_send_authorization(
                 )
 
         async def authorize_after_scheduler_has_cycle() -> None:
+            nonlocal authorization_pid
             await cycle_locked.wait()
             async with sessions() as session, session.begin():
                 intent = await session.scalar(
@@ -1216,6 +1272,7 @@ def test_scheduler_cycle_lock_precedes_intent_lock_against_send_authorization(
                     )
                 )
                 assert intent is not None
+                authorization_pid = await session.scalar(text("SELECT pg_backend_pid()"))
                 authorization_started.set()
                 result = await authorize_accountability_send(
                     session,
@@ -1231,8 +1288,6 @@ def test_scheduler_cycle_lock_precedes_intent_lock_against_send_authorization(
         await asyncio.wait_for(cycle_locked.wait(), timeout=5)
         authorization_task = asyncio.create_task(authorize_after_scheduler_has_cycle())
         try:
-            await asyncio.sleep(0.1)
-            assert not authorization_task.done()
             assert await asyncio.wait_for(scheduler_task, timeout=5) == 0
             await asyncio.wait_for(authorization_task, timeout=5)
             await _retire_own_accountability_job(sessions, owner_id=owner_id)
@@ -1241,6 +1296,112 @@ def test_scheduler_cycle_lock_precedes_intent_lock_against_send_authorization(
                 if not task.done():
                     task.cancel()
             await asyncio.gather(scheduler_task, authorization_task, return_exceptions=True)
+            await engine.dispose()
+
+    _run(scenario)
+
+
+def test_delivery_outcome_cycle_lock_precedes_intent_lock_against_scheduler(
+    runtime_database: str,
+) -> None:
+    async def scenario() -> None:
+        engine = create_engine(runtime_database)
+        sessions = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+        owner_id, occurrence_id, _plan_id = await _seed(sessions)
+        async with sessions() as session, session.begin():
+            await schedule_due_accountability(
+                session,
+                profiles=(_profile(owner_id),),
+                today_untimed=PlanningAccountabilityReads(session),
+                now=NOW,
+            )
+            intent = await session.scalar(
+                select(AccountabilityIntentRecord).where(
+                    AccountabilityIntentRecord.owner_id == owner_id,
+                    AccountabilityIntentRecord.slot == "initial",
+                )
+            )
+            assert intent is not None
+            intent_id = intent.id
+
+        cycle_locked = asyncio.Event()
+        outcome_started = asyncio.Event()
+        scheduler_pid: int | None = None
+        outcome_pid: int | None = None
+
+        async def schedule_while_holding_cycle() -> int:
+            nonlocal scheduler_pid
+            async with sessions() as session, session.begin():
+                scheduler_pid = await session.scalar(text("SELECT pg_backend_pid()"))
+                cycle = await session.scalar(
+                    select(CheckInCycleRecord)
+                    .where(
+                        CheckInCycleRecord.owner_id == owner_id,
+                        CheckInCycleRecord.occurrence_id == occurrence_id,
+                    )
+                    .with_for_update()
+                )
+                assert cycle is not None
+                cycle_locked.set()
+                await outcome_started.wait()
+                deadline = asyncio.get_running_loop().time() + 3
+                outcome_blocked_by_scheduler = False
+                while asyncio.get_running_loop().time() < deadline:
+                    async with sessions() as monitor:
+                        outcome_blocked_by_scheduler = bool(
+                            await monitor.scalar(
+                                text(
+                                    "SELECT :scheduler_pid = ANY (pg_blocking_pids(:outcome_pid))"
+                                ),
+                                {"scheduler_pid": scheduler_pid, "outcome_pid": outcome_pid},
+                            )
+                        )
+                    if outcome_blocked_by_scheduler:
+                        break
+                    await asyncio.sleep(0.05)
+                assert outcome_blocked_by_scheduler
+                return await schedule_due_accountability(
+                    session,
+                    profiles=(_profile(owner_id),),
+                    today_untimed=PlanningAccountabilityReads(session),
+                    now=NOW,
+                )
+
+        async def apply_outcome_after_scheduler_has_cycle() -> None:
+            nonlocal outcome_pid
+            await cycle_locked.wait()
+            async with sessions() as session, session.begin():
+                outcome_pid = await session.scalar(text("SELECT pg_backend_pid()"))
+                outcome_started.set()
+                assert await apply_delivery_outcome(
+                    session,
+                    event_id=uuid4(),
+                    owner_id=owner_id,
+                    intent_id=intent_id,
+                    outcome="confirmed",
+                    occurred_at=NOW,
+                    attempt_number=1,
+                )
+
+        scheduler_task = asyncio.create_task(schedule_while_holding_cycle())
+        outcome_task = asyncio.create_task(apply_outcome_after_scheduler_has_cycle())
+        try:
+            assert await asyncio.wait_for(scheduler_task, timeout=6) == 0
+            await asyncio.wait_for(outcome_task, timeout=6)
+            async with sessions() as session:
+                cycle = await session.scalar(
+                    select(CheckInCycleRecord).where(CheckInCycleRecord.owner_id == owner_id)
+                )
+                intent = await session.get(AccountabilityIntentRecord, intent_id)
+                assert cycle is not None and cycle.initial_confirmed_at == NOW
+                assert cycle.nudge_due_at == NOW + timedelta(hours=1)
+                assert intent is not None and intent.state == "confirmed"
+            await _retire_own_accountability_job(sessions, owner_id=owner_id)
+        finally:
+            for task in (scheduler_task, outcome_task):
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(scheduler_task, outcome_task, return_exceptions=True)
             await engine.dispose()
 
     _run(scenario)
@@ -1518,6 +1679,113 @@ def test_expired_entitlement_skips_send_and_renewal_does_not_revive_exhausted_cy
                 assert len(intents) == 1 and intents[0].state == "skipped"
                 assert attempts == []
                 assert transport.messages == []
+        finally:
+            await engine.dispose()
+
+    _run(scenario)
+
+
+def test_expired_entitlement_reconciles_reclaimed_started_attempt_as_unknown(
+    runtime_database: str,
+) -> None:
+    async def scenario() -> None:
+        engine = create_engine(runtime_database)
+        sessions = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+        owner_id, occurrence_id, _plan_id = await _seed(sessions)
+        async with sessions() as session, session.begin():
+            await schedule_due_accountability(
+                session,
+                profiles=(_profile(owner_id),),
+                today_untimed=PlanningAccountabilityReads(session),
+                now=NOW,
+            )
+        claim = await _claim_accountability_job(
+            sessions, owner_id=owner_id, worker_id="accountability-expired-reclaim"
+        )
+        async with sessions() as session, session.begin():
+            intent = await session.scalar(
+                select(AccountabilityIntentRecord).where(
+                    AccountabilityIntentRecord.owner_id == owner_id,
+                    AccountabilityIntentRecord.slot == "initial",
+                )
+            )
+            period = await session.scalar(
+                select(AccessPeriodRecord).where(AccessPeriodRecord.owner_id == owner_id)
+            )
+            assert intent is not None and period is not None
+            intent.state = "sending"
+            period.ends_at = NOW - timedelta(seconds=1)
+            session.add(
+                AccountabilityDeliveryAttemptRecord(
+                    id=uuid4(),
+                    owner_id=owner_id,
+                    intent_id=intent.id,
+                    target_id=987654321,
+                    attempt_number=1,
+                    outcome="started",
+                    access_period_id=period.period_id,
+                    started_at=NOW - timedelta(minutes=5),
+                )
+            )
+        transport = _Transport(sessions)
+
+        async def profile_must_not_be_read(
+            _session: AsyncSession, _owner_id: UUID
+        ) -> ReviewProfile:
+            raise AssertionError("reclaimed external attempt must reconcile before authorization")
+
+        try:
+            outcome = await deliver_accountability_job(
+                sessions,
+                claim,
+                transport,
+                profile_reader=profile_must_not_be_read,
+                current_occurrences_factory=PlanningAccountabilityReads,
+                today_untimed_factory=PlanningAccountabilityReads,
+                render=render_accountability_message,
+                now=lambda: NOW,
+            )
+            assert outcome is DeliveryOutcomeKind.UNKNOWN
+            assert transport.messages == []
+            async with sessions() as session, session.begin():
+                assert await consume_delivery_outcomes(session, at=NOW) == 1
+            async with sessions() as session:
+                attempt = await session.scalar(
+                    select(AccountabilityDeliveryAttemptRecord).where(
+                        AccountabilityDeliveryAttemptRecord.owner_id == owner_id
+                    )
+                )
+                intent = await session.scalar(
+                    select(AccountabilityIntentRecord).where(
+                        AccountabilityIntentRecord.owner_id == owner_id,
+                        AccountabilityIntentRecord.slot == "initial",
+                    )
+                )
+                cycle = await session.scalar(
+                    select(CheckInCycleRecord).where(
+                        CheckInCycleRecord.owner_id == owner_id,
+                        CheckInCycleRecord.occurrence_id == occurrence_id,
+                    )
+                )
+                events = list(
+                    (
+                        await session.scalars(
+                            select(OutboxEvent).where(
+                                OutboxEvent.owner_id == owner_id,
+                                OutboxEvent.event_type == "notifications.delivery_attempt_outcome",
+                            )
+                        )
+                    ).all()
+                )
+                assert attempt is not None and attempt.outcome == "unknown"
+                assert attempt.failure_code == "worker_lost_after_send_started"
+                assert attempt.finished_at == NOW
+                assert intent is not None and intent.state == "unknown"
+                assert cycle is not None and cycle.initial_confirmed_at is None
+                assert cycle.nudge_due_at is None
+                assert len(events) == 1
+                assert events[0].payload["payload"]["outcome"] == "unknown"
+                assert events[0].payload["payload"]["attempt_number"] == 1
         finally:
             await engine.dispose()
 
