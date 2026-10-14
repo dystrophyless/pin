@@ -13,10 +13,10 @@ This file is a compact entry point, not a backlog or copied task-status table. L
 | GitHub repository | [dystrophyless/pin](https://github.com/dystrophyless/pin), verified read-only on 2026-10-13 |
 | Issues URL | [Pin Issues](https://github.com/dystrophyless/pin/issues); 28 task issues confirmed; live issue bodies own scope, dependencies and workflow status |
 | Optional GitHub Project | Not configured; not required for this workflow |
-| Remote default branch | `main`; HEAD `3106612277d3315117546285330c9253ac804c39` at this checkpoint |
-| Local Git connection | `origin` points to `https://github.com/dystrophyless/pin.git`; local commits have not been pushed |
+| Remote default branch | `main`; HEAD `34f45733601b7255f9893b2fc8d07b38dc4c16a9` verified on 2026-10-14 |
+| Local Git connection | `origin` points to `https://github.com/dystrophyless/pin.git`; `main` was pushed through `34f45733601b7255f9893b2fc8d07b38dc4c16a9` on 2026-10-14; later checkpoints remain local until published |
 
-Recheck remote state at session start. A `git ls-remote` check on 2026-10-13 confirmed the remote HEAD above. The documentation commit moves the root brief and `docs/ARCHITECTURE.md` into `_docs/`; publish those moves together with the updated entry points when pushing is authorized. Do not maintain duplicate source briefs.
+Recheck remote state at session start. A `git ls-remote` check on 2026-10-14 confirmed the remote HEAD above after the authorized push. The root brief and architecture now live in `_docs/` with their updated entry points published. Do not maintain duplicate source briefs.
 
 ## Current project state
 
@@ -54,7 +54,7 @@ Labels are optional and must be created before these filtered searches are usefu
 
 ## Current execution checkpoint — 2026-10-14
 
-The active user goal authorizes implementation of eligible published issues in dependency order, local commits, meaningful evidence, issue updates and closure after direct Orchestrator acceptance. GPT-6 Luna High implements features; GPT-6 Luna Low publishes verified facts. Spec/task reviews are separate from execution; **no implementation Reviewer agents** are required. No repeated per-issue acceptance approval is needed. No push, paid provisioning, Docker or deployment is authorized.
+The active user goal authorizes implementation of eligible published issues in dependency order, local commits, meaningful evidence, issue updates and closure after direct Orchestrator acceptance. GPT-6 Luna High implements features; GPT-6 Luna Low publishes verified facts. Spec/task reviews are separate from execution; **no implementation Reviewer agents** are required. No repeated per-issue acceptance approval is needed. The user explicitly authorized GitHub push on 2026-10-14. Paid provisioning, Docker and deployment remain outside the current authorization.
 
 | Local increment | Accepted source / authoritative evidence |
 |---|---|
@@ -77,11 +77,11 @@ Mutation #15 is accepted and closed for Windows local development at `0213a5d289
 
 ## Current checkpoint — 2026-10-14
 
-Issue #15 mutation integration is committed at `e1ada7311a723161218ae8369a33c9e2afa3b71a`. Follow-up local commits add mutation runtime tests (`7da69a2`), native delivery interleavings (`4b70324`), selected-zone settings callback tests (`666ba4b`), failed model-replay hold release (`8b2a126`), and actual expired-trial policy tests (`39decb051538199d2df0c0e46610f7510bb05694`). Everything remains unpushed; #15 is accepted and closed, #16/#17 are in progress with assigned executors, and #18 remains accepted/closed. See [Issue 15 local evidence](evidence/issue-15-mutations-local.md).
+Issue #15 mutation integration is committed at `e1ada7311a723161218ae8369a33c9e2afa3b71a`. Follow-up local commits add mutation runtime tests (`7da69a2`), native delivery interleavings (`4b70324`), selected-zone settings callback tests (`666ba4b`), failed model-replay hold release (`8b2a126`), and actual expired-trial policy tests (`39decb051538199d2df0c0e46610f7510bb05694`). The accepted implementation/evidence commits were pushed through 34f4573; #15 is accepted and closed, #16/#17 are in progress with assigned executors, and #18 remains accepted/closed. See [Issue 15 local evidence](evidence/issue-15-mutations-local.md).
 
 The accepted Issue #15 archive includes 50 focused PostgreSQL cases with zero skips: mutation core5, runtime12, actual-application mutation10, native delivery4, home-zone coordinator13, and native settings6. Expired-trial behavior is specifically covered: Done and Cancel are allowed, while Reschedule is rejected for both an after-expiry preview and a live preview confirmed after expiry, with no AI charge. Selected home-zone settings affect only chosen occurrences/series; stale or foreign correction is a no-op and history/count are preserved. Delivery suppresses old claimed cancel/done/reschedule notices, sends the later version-2 reminder, and truthfully confirms a send already started before concurrent cancellation without future follow-up. Failed model replay after an unknown source fault releases the combined hold, preserves cost facts, and does not resubmit.
 
-The final archived voice qualification is recorded in [Issue #18 evidence](evidence/issue-18-voice-local.md); the voice worker and prepared-capture checks are included in its accepted full-suite result. No further live OpenRouter requests, Docker, deployment, or push are authorized.
+The final archived voice qualification is recorded in [Issue #18 evidence](evidence/issue-18-voice-local.md); the voice worker and prepared-capture checks are included in its accepted full-suite result. No further live OpenRouter requests, Docker or deployment are authorized. GitHub push was explicitly authorized on 2026-10-14.
 
 The earlier archived baseline packets at `C:/Users/roman/AppData/Local/Temp/pin-parent-mutation-voice-20261014-1518b` and `1518c` remain preserved as historical evidence; `1518d` is the exact-source passing qualification for Issue #15. The historical `pin_model_adapter_20261013` remains preserved.
 
@@ -89,7 +89,7 @@ The integration migration chain remains `telegram_mutation_runtime_0001`; mutabl
 
 ## Environment and evidence boundaries
 
-- Repository is `D:\Program\python\pin`, even when the app starts in OneDrive. Use explicit workdir. All recent implementation/evidence commits are local and unpushed; inspect Git for current HEAD.
+- Repository is `D:\Program\python\pin`, even when the app starts in OneDrive. Use explicit workdir. Implementation/evidence through `34f4573` is published; inspect Git for later local commits and current HEAD.
 - Owned disposable PostgreSQL18.6 cluster: `127.0.0.1:51017`, user `pin_test`, exact data directory `C:/Users/roman/AppData/Local/Temp/pin-issue2-eeadfd1-20261013`. Before destructive fixture operations verify this directory and exact owned names. Installed PostgreSQL and unrelated DBs remain untouched.
 - Parent #12 and #14 proof databases and stopped helper/feature fixtures were cleaned up with absence checks. Older #12/#14 prototypes remain intentionally retained and are not current migration proof. Historical `pin_model_adapter_20261013` must never be reset or dropped. The new refund proof fixture `pin_issue18_prepared_20261014_refund_f742` is retained. Do not reuse the older `pin_issue18_prepared_20261014_98de` fixture for proof because of known queue interference. Preserve active fixtures until final proof and deliberate cleanup; set opt-in variables per test process.
 - **Never reset/drop historical `pin_model_adapter_20261013`.** It retains real model receipts. The authorized eight-call/$0.01 smoke window is exhausted: seven reported costs sum $0.0002930409, the first ID/cost is unknown, and this is not an exact total bill. No additional calls, unknown-request resubmission or budget-window reset is authorized. Future live qualification needs its own authorization; injected tests may continue.
@@ -105,3 +105,10 @@ The integration migration chain remains `telegram_mutation_runtime_0001`; mutabl
 - Do not append all session history; keep the latest checkpoint here and use issues/PRs for durable execution history.
 
 Owner override recorded 2026-10-13: implementation reviewers are not required; follow direct executor evidence and Orchestrator verification under the local-only scope.
+
+### Active integration checkpoint
+
+- `29f8366` adds bounded Identity roster and transaction-bound Planning occurrence/today-untimed read ports. Direct Orchestrator rerun on the assigned PostgreSQL 18.6 cluster: 3 passed, zero skips; whole-source mypy (173 files) and architecture passed. This is foundation progress, not Issue #16 acceptance.
+- The existing owned PostgreSQL cluster was stopped; it was restarted at the same data directory without resetting databases. SQL identity and port were verified after crash recovery, before the successful read-port rerun.
+- Issue #16 outer delivery/callback composition and native failure/race checks are still in progress. Issue #17 retains the approved text request followed by preview and confirmation; an optional button preference is pending, and bounded advice output validation is being completed. Neither issue is accepted or closed.
+- The separate `pin-parent-accountability-support-20261014-1617a` qualification packet has scripts ready for 27 fresh guarded fixtures. It has not frozen a revision or created databases; exact-source inventory and qualification remain pending.
