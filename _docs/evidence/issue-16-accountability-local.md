@@ -1,6 +1,6 @@
-# Issue #16 Accountability implementation progress
+# Issue #16 Accountability local acceptance
 
-Issue #16 remains open. Requirements are the published task contract and SPEC-001 §11. No final acceptance is claimed.
+Issue #16 is accepted and closed for Windows local development. Requirements remain the published task contract and SPEC-001 §11. [GitHub acceptance](https://github.com/dystrophyless/pin/issues/16#issuecomment-6163832097) records the exact compatible source and limits; overall MVP/release acceptance is not claimed.
 
 Checkpoint `c9a2857` adds persisted per-occurrence checks and grouped daily reviews, bounded follow-up intents, Planning/outcome consumers, private owner-bound item actions entering ordinary mutation previews, and native delivery/application composition. New migration `accountability_cycles_0001` follows `telegram_mutation_runtime_0001`.
 
@@ -20,6 +20,14 @@ These checks used the mutable development checkout and injected transport/clock.
 An accidental second run on already populated `...14x` produced **10 failures / 11 passes** from cross-run shared-queue interference. That database and evidence are preserved; the fresh first-run result is not a repeatability claim. The final qualification uses a new isolated fixture for this test file and retains all raw results.
 
 The cluster is `127.0.0.1:51017`, user `pin_test`, data directory `C:/Users/roman/AppData/Local/Temp/pin-issue2-eeadfd1-20261013`. Historical model receipts and prior fixtures remain untouched. No live Telegram/model requests, Docker, deployment or real-host qualification were performed. Real grouped-review evidence remains an explicit core-gate requirement.
+
+## Final qualification and acceptance
+
+Source `55dfb022e74483936ecf8ae820c72b0296b5a455`, tree `a578d287eaacfb1dbf48fd43b3bcb5710542f81b`, was qualified from a Git archive in packet `1617b` on Windows/Python3.12.12/PostgreSQL18.6 with locked offline speech dependencies. Raw JUnit: **452 passed, zero failures/errors/skips**, 208.97 seconds. The wrapper itself exited0/overallPASS, including both pre-migration setup steps, archived-source import provenance, Ruff, full no-incremental mypy174 and architecture. Complete upgrade/current/check/base/head/check and real offline RU/EN/silence speech passed. All28 manifest-created fixtures were cleaned and their absence verified; historical/reserved/diagnostic databases were excluded.
+
+Acceptance coverage includes persisted appointment-end/deadline eligibility; confirmed-send timer/replay/retry, failed/unknown initial outcomes, one nudge only; quiet/DST fences; today's profile-zone reviews with owner-bound access to all paginated items; real private APPLICATION preview/confirmation and Planning event consumption; cancel/reschedule/terminal and before/after-start races; current access/preferences and shared blocked destinations; lock-order and expired-started-attempt recovery; and no exhausted-cycle revival across days/renewal. Injected transport establishes SQL/attempt behavior, not actual Telegram rendering or human reading. The live grouped-review scenario remains in #25.
+
+Root read back GitHub `closed/completed`, workflow `accepted`, and unchanged task-contract text. #19's prerequisites are now satisfied for this phase and its executor is dispatched. Earlier partial/failed diagnostics below remain preserved rather than relabeled as passing.
 
 ## Frozen-source diagnostic run
 

@@ -1,6 +1,10 @@
-# Issue #17 planning support progress
+# Issue #17 planning support local acceptance
 
-Issue #17 remains open and in progress. Product requirements remain SPEC-001 §11 and the published task contract. This records implementation progress, not final acceptance.
+Issue #17 is accepted and closed for Windows local development. Product requirements remain SPEC-001 §11 and the published task contract. [GitHub acceptance](https://github.com/dystrophyless/pin/issues/17#issuecomment-6163832993) records exact-source qualification and its limits.
+
+Final source `55dfb022e74483936ecf8ae820c72b0296b5a455`, tree `a578d287eaacfb1dbf48fd43b3bcb5710542f81b`: frozen-source **452 passed, zero failures/errors/skips**, 208.97 seconds. Wrapper/setup/import provenance, Ruff, full mypy174, architecture, complete migration lifecycle/drift, actual offline RU/EN/silence and cleanup/absence of28 fixtures all passed. Both native Russian/English application flows verify advice without plan changes, retained selected steps through clarification, editable atomic preview, exact confirmed titles, conflict handling and exhausted/expired access without extra calls. Root read back closed/completed/accepted and preserved task-contract text. See [integrated evidence](issue-16-accountability-local.md) for environment and retained failures.
+
+Advice is bounded and typed; owned shared plans do not establish external-calendar availability. Prompt/injection fixtures and validated output/write boundaries are qualified with injected provider responses. Broader live-model quality and live Telegram integration remain separate gate evidence, not asserted here. Earlier progress records below retain their original boundaries.
 
 Checkpoint: `542ea03` adds typed Russian/English advice, bounded ordered steps, durable advice history for explicit text selection, and ordinary clarification/preview/confirmation. Steps become ordinary tasks only through the existing confirmed creation flow; no priority/subtask persistence was added. The model receives only owned bounded Planning snapshots and is instructed to treat them as shared plans rather than a verified free calendar.
 
