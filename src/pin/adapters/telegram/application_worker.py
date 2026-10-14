@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import secrets
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
@@ -38,13 +39,26 @@ from pin.adapters.telegram.presentation.callbacks import (
 )
 from pin.adapters.telegram.presentation.formatting import escape_markdown_v2
 from pin.adapters.telegram.presentation.onboarding import OnboardingReply, render_onboarding
+from pin.adapters.telegram.presentation.payments import (
+    render_cancel_result,
+    render_payment_result,
+    render_payment_support,
+    render_payment_terms,
+    render_terms_accepted,
+)
 from pin.adapters.telegram.presentation.subscription import render_subscription_status
 from pin.adapters.telegram.presentation.tokens import SqlAlchemyCallbackTokenStore
 from pin.contexts.billing.api import (
+    AcceptPaymentTerms,
+    CreateStarsOrder,
+    PaymentRejected,
     ReadSubscriptionStatus,
+    RecordStarsPayment,
     SqlAlchemyAccessUsageStore,
+    SqlAlchemyStarsPaymentStore,
     StartTrial,
     TrialActivationResult,
+    ViewPaymentTerms,
 )
 from pin.contexts.identity.application.onboarding import OnboardingResult
 from pin.contexts.identity.infrastructure.store import SqlAlchemyIdentityStore
@@ -88,6 +102,7 @@ async def process_application_job(
     *,
     now: datetime,
     assistant: PlanningAssistant | None = None,
+    payment_support_contact: str | None = None,
 ) -> None:
     """Apply one fenced work item and persist its reply request atomically."""
     if now.tzinfo is None or now.utcoffset() is None:
@@ -153,27 +168,128 @@ async def process_application_job(
             )
         else:
             message_text = message.get("text")
-            if not isinstance(message_text, str):
+            successful_payment = message.get("successful_payment")
+            if isinstance(successful_payment, dict):
+                profile = await store.get_preferences(inbox.owner_id)
+                paid = False
+                expiration = successful_payment.get("subscription_expiration_date")
+                try:
+                    paid = await SqlAlchemyStarsPaymentStore(session).record_payment(
+                        RecordStarsPayment(
+                            owner_id=inbox.owner_id,
+                            telegram_user_id=telegram_user_id,
+                            invoice_payload=successful_payment.get("invoice_payload", ""),
+                            telegram_charge_id=successful_payment.get(
+                                "telegram_payment_charge_id", ""
+                            ),
+                            provider_charge_id=(
+                                successful_payment.get("provider_payment_charge_id") or None
+                            ),
+                            currency=successful_payment.get("currency", ""),
+                            total_amount=successful_payment.get("total_amount", -1),
+                            is_recurring=successful_payment.get("is_recurring") is True,
+                            is_first_recurring=(
+                                successful_payment.get("is_first_recurring") is True
+                            ),
+                            subscription_expiration_date=(
+                                datetime.fromtimestamp(expiration, UTC)
+                                if type(expiration) is int and expiration > 0
+                                else None
+                            ),
+                            at=now.astimezone(UTC),
+                        )
+                    )
+                except (PaymentRejected, OverflowError, OSError, ValueError):
+                    logger.warning("telegram_stars_receipt_rejected")
+                payment_result_reply = render_payment_result(
+                    profile.language if profile else "en", accepted=paid
+                )
+                result = PrivateMessageResult(
+                    DispatchDisposition.HANDLED,
+                    OnboardingResult("unhandled", preferences=profile),
+                    payment_result_reply,
+                )
+                message_text = "/__payment_receipt__"
+            elif not isinstance(message_text, str):
                 await complete_job(session, claim)
                 return
             view = agenda_command(message_text)
             words = message_text.strip().split(maxsplit=1)
             subscription = bool(words) and words[0].split("@", 1)[0] == "/subscription"
-            profile = (
-                await store.get_preferences(inbox.owner_id)
-                if view is not None or subscription
+            command_profile = await store.get_preferences(inbox.owner_id)
+            payment_reply = (
+                await _handle_payment_command(
+                    session,
+                    owner_id=inbox.owner_id,
+                    telegram_user_id=telegram_user_id,
+                    command=words[0].split("@", 1)[0],
+                    now=now.astimezone(UTC),
+                    payment_support_contact=payment_support_contact,
+                    language=command_profile.language if command_profile else "en",
+                )
+                if isinstance(message_text, str)
                 else None
             )
-            if subscription and profile is not None:
+            profile = command_profile if view is not None or subscription else None
+            if isinstance(successful_payment, dict):
+                pass
+            elif payment_reply is not None:
+                result = PrivateMessageResult(
+                    DispatchDisposition.HANDLED,
+                    OnboardingResult("unhandled", preferences=command_profile),
+                    payment_reply,
+                )
+            elif subscription and profile is not None:
                 status = await SqlAlchemyAccessUsageStore(session).read_subscription_status(
                     ReadSubscriptionStatus(inbox.owner_id, now.astimezone(UTC))
+                )
+                renewal_state = await SqlAlchemyStarsPaymentStore(session).renewal_status(
+                    inbox.owner_id
+                )
+                subscription_reply = render_subscription_status(
+                    status, language=profile.language, zone_name=profile.home_zone
+                )
+                if renewal_state == "cancelled":
+                    renewal_text = (
+                        "Автопродление отключено; оплаченный период сохраняется до даты выше."
+                        if profile.language == "ru"
+                        else "Auto-renewal is disabled; paid access remains through its end date."
+                    )
+                elif renewal_state in {"queued", "sending"}:
+                    renewal_text = (
+                        "Отключение автопродления обрабатывается; проверьте статус позже."
+                        if profile.language == "ru"
+                        else "Renewal cancellation is being processed; check again shortly."
+                    )
+                elif renewal_state in {"failed", "unknown"}:
+                    renewal_text = (
+                        "Статус отключения продления требует проверки: /paysupport."
+                        if profile.language == "ru"
+                        else "Renewal cancellation needs support review: /paysupport."
+                    )
+                elif status.period_kind is not None and status.period_kind.value == "paid":
+                    renewal_text = (
+                        "Для отключения будущих продлений отправьте /cancel."
+                        if profile.language == "ru"
+                        else "Send /cancel to stop future renewals."
+                    )
+                else:
+                    renewal_text = (
+                        "Для перехода на подписку прочитайте /terms."
+                        if profile.language == "ru"
+                        else "Read /terms to upgrade to a paid subscription."
+                    )
+                subscription_reply = replace(
+                    subscription_reply,
+                    markdown=(
+                        f"{subscription_reply.markdown}\n\n{escape_markdown_v2(renewal_text)}"
+                    ),
+                    plain_text=f"{subscription_reply.plain_text}\n\n{renewal_text}",
                 )
                 result = PrivateMessageResult(
                     DispatchDisposition.HANDLED,
                     OnboardingResult("unhandled", preferences=profile),
-                    render_subscription_status(
-                        status, language=profile.language, zone_name=profile.home_zone
-                    ),
+                    subscription_reply,
                 )
             elif view is not None and profile is not None:
                 agenda_reply = await handle_agenda_command(
@@ -216,7 +332,7 @@ async def process_application_job(
                         now=now.astimezone(UTC),
                         trial_activator=trial_activator,
                     )
-        reply = agenda_reply or result.reply
+        reply: AgendaReply | OnboardingReply | None = agenda_reply or result.reply
         reply_markup = await _reply_markup(session, store, inbox.owner_id, reply, now)
         if reply is not None:
             version = max(1, claim.conversation_sequence or 1)
@@ -271,6 +387,7 @@ async def run_application_worker(
     *,
     worker_id: str,
     assistant: PlanningAssistant | None = None,
+    payment_support_contact: str | None = None,
 ) -> None:
     while True:
         try:
@@ -283,7 +400,11 @@ async def run_application_worker(
             continue
         try:
             await process_application_job(
-                sessions, claim, now=datetime.now(UTC), assistant=assistant
+                sessions,
+                claim,
+                now=datetime.now(UTC),
+                assistant=assistant,
+                payment_support_contact=payment_support_contact,
             )
         except Exception as error:
             logger.error(
@@ -550,6 +671,85 @@ async def _reply_markup(
     if row:
         rows.append(row)
     return {"inline_keyboard": rows}
+
+
+async def _handle_payment_command(
+    session: AsyncSession,
+    *,
+    owner_id: UUID,
+    telegram_user_id: int,
+    command: str,
+    now: datetime,
+    language: str,
+    payment_support_contact: str | None,
+) -> OnboardingReply | None:
+    payments = SqlAlchemyStarsPaymentStore(session)
+    if command == "/terms":
+        await payments.view_terms(ViewPaymentTerms(owner_id, now))
+        return render_payment_terms(language)
+    if command == "/acceptterms":
+        try:
+            await payments.accept_terms(AcceptPaymentTerms(owner_id, now))
+        except PaymentRejected:
+            text = (
+                "Open /terms and read the subscription terms first."
+                if language == "en"
+                else "Сначала откройте /terms и прочитайте условия."
+            )
+            return OnboardingReply(escape_markdown_v2(text), text)
+        return render_terms_accepted(language)
+    if command == "/buy":
+        try:
+            invoice = await payments.create_order(
+                CreateStarsOrder(owner_id, telegram_user_id, secrets.token_urlsafe(32), now)
+            )
+        except PaymentRejected:
+            text = (
+                "A valid account with no active paid period and accepted terms is required. "
+                "Check /terms and /subscription."
+                if language == "en"
+                else "Нужны действующий аккаунт, принятые условия и отсутствие активной платной "
+                "подписки. Проверьте /terms и /subscription."
+            )
+            return OnboardingReply(escape_markdown_v2(text), text)
+        if invoice.invoice_status == "sent":
+            text = (
+                "Счёт уже отправлен; используйте его сообщение для оплаты."
+                if language == "ru"
+                else "The invoice was already sent; use its existing message to pay."
+            )
+        elif invoice.invoice_status in {"sending", "unknown"}:
+            text = (
+                "Неизвестно, доставлен ли счёт. Не создавайте повторную оплату; "
+                "обратитесь в /paysupport."
+                if language == "ru"
+                else "Invoice delivery is uncertain. Avoid creating another payment; "
+                "use /paysupport."
+            )
+        else:
+            text = (
+                "Заказ создан. Счёт Telegram появится после доставки ботом; "
+                "оплата пока не подтверждена."
+                if language == "ru"
+                else "Order created. The Telegram invoice will arrive from the delivery worker; "
+                "no payment is confirmed yet."
+            )
+        return OnboardingReply(escape_markdown_v2(text), text)
+    if command == "/cancel":
+        try:
+            state = await payments.request_cancellation(owner_id=owner_id, at=now)
+        except PaymentRejected:
+            text = (
+                "No active renewal could be cancelled. Check /subscription or use /paysupport."
+                if language == "en"
+                else "Не удалось отключить продление. Проверьте /subscription или обратитесь "
+                "в /paysupport."
+            )
+            return OnboardingReply(escape_markdown_v2(text), text)
+        return render_cancel_result(language, state)
+    if command == "/paysupport":
+        return render_payment_support(language, payment_support_contact)
+    return None
 
 
 def _uuid_field(value: object) -> UUID:

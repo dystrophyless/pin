@@ -51,6 +51,7 @@ class Settings(BaseModel):
     gateway_host: Annotated[str, Field(min_length=1)] = "127.0.0.1"
     gateway_port: Annotated[int, Field(ge=1, le=65535)] = 8080
     openrouter_api_key: SecretStr | None = None
+    payment_support_contact: str | None = None
 
     @field_validator("bot_token")
     @classmethod
@@ -76,6 +77,17 @@ class Settings(BaseModel):
             if not 32 <= len(secret) <= 256 or not re.fullmatch(r"[A-Za-z0-9_-]+", secret):
                 raise ValueError("must be a 32-256 character webhook secret")
         return value
+
+    @field_validator("payment_support_contact")
+    @classmethod
+    def payment_support_contact_format(cls, value: str | None) -> str | None:
+        if value is not None and (
+            not value.strip()
+            or any(char.isspace() for char in value.strip())
+            or "placeholder" in value.casefold()
+        ):
+            raise ValueError("must be a configured contact handle or URL")
+        return value.strip() if value is not None else None
 
     @field_validator("database_url", mode="before")
     @classmethod
@@ -112,6 +124,7 @@ def load_settings(
         "gateway_host": "PIN_GATEWAY_HOST",
         "gateway_port": "PIN_GATEWAY_PORT",
         "openrouter_api_key": "PIN_OPENROUTER_API_KEY",
+        "payment_support_contact": "PIN_PAYMENT_SUPPORT_CONTACT",
     }
     values = {field: source[name] for field, name in names.items() if source.get(name)}
     if (

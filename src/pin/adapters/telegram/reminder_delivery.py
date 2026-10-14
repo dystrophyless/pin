@@ -11,12 +11,19 @@ from aiogram.exceptions import (
     TelegramForbiddenError,
     TelegramRetryAfter,
 )
-from aiogram.types import InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove
+from aiogram.types import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    LabeledPrice,
+    ReplyKeyboardMarkup,
+    ReplyKeyboardRemove,
+)
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from pin.adapters.telegram.ingress import TelegramOwnerRecord
 from pin.adapters.telegram.presentation.delivery import send_formatted_message
+from pin.contexts.billing.domain.payments import STARS_CURRENCY, STARS_PERIOD_SECONDS, STARS_PRICE
 from pin.contexts.notifications.application.delivery import (
     KnownDeliveryFailure,
     ReminderSend,
@@ -90,6 +97,69 @@ class TelegramReminderTransport:
         except Exception as error:
             raise UnknownDeliveryFailure("telegram_transport_unknown") from error
         return str(result.message_id)
+
+    async def send_stars_invoice(self, *, chat_id: int, payload: str, language: str) -> int:
+        russian = language == "ru"
+        try:
+            invoice_link = await self._bot.create_invoice_link(
+                title="Подписка Pin на месяц" if russian else "Pin monthly subscription",
+                description=(
+                    "Доступ Pin на 30 дней с автоматическим продлением"
+                    if russian
+                    else "Pin access for 30 days with automatic renewal"
+                ),
+                payload=payload,
+                provider_token="",
+                currency=STARS_CURRENCY,
+                prices=[
+                    LabeledPrice(
+                        label="Подписка на 30 дней" if russian else "30-day subscription",
+                        amount=STARS_PRICE,
+                    )
+                ],
+                subscription_period=STARS_PERIOD_SECONDS,
+            )
+            result = await self._bot.send_message(
+                chat_id=chat_id,
+                text=(
+                    "Нажмите кнопку, чтобы оформить подписку за 250 ⭐ с продлением каждые 30 дней."
+                    if russian
+                    else "Use the button to subscribe for 250 ⭐, renewing every 30 days."
+                ),
+                reply_markup=InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [
+                            InlineKeyboardButton(
+                                text="Оплатить 250 ⭐" if russian else "Pay 250 ⭐",
+                                url=invoice_link,
+                            )
+                        ]
+                    ]
+                ),
+            )
+        except TelegramRetryAfter as error:
+            raise KnownDeliveryFailure(
+                "rate_limited", retry_after=timedelta(seconds=error.retry_after)
+            ) from error
+        except TelegramForbiddenError as error:
+            raise KnownDeliveryFailure("destination_forbidden", blocked=True) from error
+        except TelegramBadRequest as error:
+            raise KnownDeliveryFailure("provider_rejected_invoice") from error
+        except Exception as error:
+            raise UnknownDeliveryFailure("telegram_invoice_outcome_unknown") from error
+        return result.message_id
+
+    async def cancel_stars_renewal(self, *, user_id: int, first_charge_id: str) -> bool:
+        try:
+            return await self._bot.edit_user_star_subscription(
+                user_id=user_id,
+                telegram_payment_charge_id=first_charge_id,
+                is_canceled=True,
+            )
+        except TelegramBadRequest as error:
+            raise KnownDeliveryFailure("provider_rejected_cancellation") from error
+        except Exception as error:
+            raise UnknownDeliveryFailure("telegram_cancellation_outcome_unknown") from error
 
 
 def _parse_markup(
