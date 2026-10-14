@@ -16,7 +16,12 @@ from pin.contexts.identity.application.onboarding import (
     confirm_onboarding,
     get_preferences,
 )
+from pin.contexts.identity.application.review_roster import (
+    PreferencesPage,
+    ReviewProfilesReadStore,
+)
 from pin.contexts.identity.domain.preferences import Preferences, PreferenceVersionConflict
+from pin.contexts.identity.infrastructure.review_roster import list_review_profiles
 
 __all__ = [
     "HomeZoneChangeHandoff",
@@ -26,6 +31,9 @@ __all__ = [
     "PreferenceVersionConflict",
     "Preferences",
     "PreferencesSnapshot",
+    "PreferencesPage",
+    "ReviewProfilesReadStore",
+    "list_review_profiles",
     "TrialActivator",
     "answer_onboarding",
     "begin_onboarding",
