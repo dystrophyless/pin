@@ -3,12 +3,14 @@
 from pin.contexts.conversation.application.contracts import PlanningAssistant
 from pin.contexts.conversation.application.dto import (
     ActionProposal,
+    Advice,
     ConversationContext,
     ModelFailure,
     ModelOutcome,
     ModelSuccess,
     ProposalBatch,
     Reply,
+    SuggestedStep,
 )
 from pin.contexts.conversation.capture_api import (
     CAPTURE_TTL,
@@ -29,6 +31,7 @@ from pin.contexts.conversation.capture_api import (
 
 __all__ = [
     "ActionProposal",
+    "Advice",
     "CAPTURE_TTL",
     "CaptureBegin",
     "CaptureClarification",
@@ -43,6 +46,7 @@ __all__ = [
     "PlanningAssistant",
     "ProposalBatch",
     "Reply",
+    "SuggestedStep",
     "SqlAlchemyCaptureStore",
     "apply_clarification_choice",
     "cancel_draft",

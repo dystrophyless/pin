@@ -233,6 +233,41 @@ class Reply(StrictModel):
     text: Annotated[str, Field(min_length=1, max_length=4_000)]
 
 
+class SuggestedStep(StrictModel):
+    title: Annotated[str, Field(min_length=1, max_length=160)]
+    reason: Annotated[str, Field(min_length=1, max_length=400)]
+
+
+class Advice(StrictModel):
+    """Structured, non-persistent planning advice with stable selection order."""
+
+    kind: Literal["advice"]
+    language: SourceLanguage
+    summary: Annotated[str, Field(min_length=1, max_length=1_200)]
+    steps: Annotated[tuple[SuggestedStep, ...], Field(min_length=1, max_length=8)]
+
+    def rendered_text(self) -> str:
+        english = self.language.value == "en"
+        heading = "Suggested steps:" if english else "Предлагаемые шаги:"
+        rows = [self.summary.strip(), heading]
+        for index, step in enumerate(self.steps, start=1):
+            rows.append(f"{index}. {step.title.strip()} — {step.reason.strip()}")
+        return "\n".join(rows)
+
+    def to_reply(self) -> Reply:
+        return Reply(kind="reply", language=self.language, text=self.rendered_text())
+
+    @model_validator(mode="after")
+    def is_renderable_as_reply(self) -> Advice:
+        if not self.summary.strip() or any(
+            not step.title.strip() or not step.reason.strip() for step in self.steps
+        ):
+            raise ValueError("advice text fields must not be whitespace-only")
+        if len(self.rendered_text()) > 4_000:
+            raise ValueError("rendered advice exceeds the durable reply limit")
+        return self
+
+
 class ActionProposal(StrictModel):
     kind: Literal["proposal"]
     language: SourceLanguage
@@ -299,7 +334,9 @@ class ProposalBatch(StrictModel):
         return self
 
 
-ConversationResult = Annotated[Reply | ActionProposal | ProposalBatch, Field(discriminator="kind")]
+ConversationResult = Annotated[
+    Reply | Advice | ActionProposal | ProposalBatch, Field(discriminator="kind")
+]
 
 
 class ModelFailure(StrictModel):
@@ -311,7 +348,7 @@ class ModelFailure(StrictModel):
 
 class ModelSuccess(StrictModel):
     kind: Literal["success"] = "success"
-    result: Reply | ActionProposal | ProposalBatch
+    result: Reply | Advice | ActionProposal | ProposalBatch
     provider_request_ids: Annotated[tuple[str, ...], Field(min_length=1, max_length=4)]
 
 

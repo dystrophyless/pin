@@ -13,6 +13,7 @@ from pin.adapters.telegram.presentation.capture import (
     capture_confirmation_callback_data,
     render_capture_response,
 )
+from pin.contexts.conversation.application.advice import render_advice
 from pin.contexts.conversation.application.capture import (
     CaptureClarification,
     CaptureInterpretation,
@@ -24,11 +25,13 @@ from pin.contexts.conversation.application.capture import (
 from pin.contexts.conversation.application.contracts import CaptureProofPart, CaptureStore
 from pin.contexts.conversation.application.dto import (
     ActionProposal,
+    Advice,
     ConversationContext,
     ModelSuccess,
     ProposalBatch,
     RelativeReminder,
     Reply,
+    SuggestedStep,
 )
 from pin.contexts.conversation.domain.capture import (
     CaptureConflict,
@@ -600,3 +603,84 @@ def test_cancel_expiry_and_confirmation_callback_are_fenced() -> None:
     assert len(pages) == 1
     assert "A\\_B" in pages[0].markdown
     assert "Confirm only after reviewing." in pages[0].plain_text
+
+
+def test_structured_advice_renders_stable_localized_selection_numbers() -> None:
+    english = Advice.model_validate(
+        {
+            "kind": "advice",
+            "language": SourceLanguage.EN,
+            "summary": "Start with the blocker.",
+            "steps": (
+                {"title": "Gather notes", "reason": "The review depends on them."},
+                {"title": "Draft outline", "reason": "It is small and concrete."},
+            ),
+        }
+    )
+    russian = Advice.model_validate(
+        {
+            "kind": "advice",
+            "language": SourceLanguage.RU,
+            "summary": "Начните с препятствия.",
+            "steps": ({"title": "Собрать заметки", "reason": "Они нужны для встречи."},),
+        }
+    )
+
+    assert render_advice(english) == (
+        "Start with the blocker.\nSuggested steps:\n"
+        "1. Gather notes — The review depends on them.\n"
+        "2. Draft outline — It is small and concrete."
+    )
+    assert render_advice(russian) == (
+        "Начните с препятствия.\nПредлагаемые шаги:\n"
+        "1. Собрать заметки — Они нужны для встречи."
+    )
+
+
+@pytest.mark.asyncio
+async def test_advice_only_keeps_capture_collecting_without_plan_preview_or_confirmation() -> None:
+    draft = start_capture(
+        draft_id=uuid4(),
+        owner_id=OWNER,
+        text="What should I do next?",
+        request_key="advice-only",
+        at=NOW,
+        expires_at=NOW + timedelta(hours=24),
+        sequence=1,
+    )
+    interpretation = CaptureInterpretation(
+        draft=draft,
+        request_key="advice-only",
+        context=ConversationContext(
+            owner_id=OWNER,
+            request_id="advice-only",
+            language=SourceLanguage.EN,
+            input_kind=InputKind.TEXT,
+            text="Current user turn: What should I do next?",
+            reference_date=NOW.date(),
+            timezone="Asia/Qyzylorda",
+        ),
+    )
+    store = _MemoryCaptureStore()
+    advice = Advice(
+        kind="advice",
+        language=SourceLanguage.EN,
+        summary="Start with the blocker.",
+        steps=(SuggestedStep(title="Gather notes", reason="The review depends on them."),),
+    )
+
+    reply = await finish_interpretation(
+        cast(CaptureStore, store),
+        interpretation,
+        ModelSuccess(result=advice, provider_request_ids=("advice-only-request",)),
+        preferences=_preferences(),
+        at=NOW + timedelta(seconds=1),
+    )
+
+    assert reply.state == "collecting"
+    assert reply.confirmation_credential is None
+    assert store.draft is not None
+    assert store.draft.preview is None
+    assert store.draft.normalized_actions in (None, ())
+    assert store.parts == ()
+    assert "1. Gather notes" in str(reply.response["text"])
