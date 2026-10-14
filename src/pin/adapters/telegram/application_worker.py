@@ -215,19 +215,26 @@ async def process_application_job(
                 return
             view = agenda_command(message_text)
             words = message_text.strip().split(maxsplit=1)
-            subscription = bool(words) and words[0].split("@", 1)[0] == "/subscription"
+            command = words[0].split("@", 1)[0] if words else ""
+            subscription = command == "/subscription"
             command_profile = await store.get_preferences(inbox.owner_id)
+            active_draft = (
+                await store.get_onboarding(inbox.owner_id)
+                if command.casefold() == "/cancel"
+                else None
+            )
+            cancel_onboarding = active_draft is not None and active_draft.step != "complete"
             payment_reply = (
                 await _handle_payment_command(
                     session,
                     owner_id=inbox.owner_id,
                     telegram_user_id=telegram_user_id,
-                    command=words[0].split("@", 1)[0],
+                    command=command,
                     now=now.astimezone(UTC),
                     payment_support_contact=payment_support_contact,
                     language=command_profile.language if command_profile else "en",
                 )
-                if isinstance(message_text, str)
+                if isinstance(message_text, str) and not cancel_onboarding
                 else None
             )
             profile = command_profile if view is not None or subscription else None
@@ -305,7 +312,7 @@ async def process_application_job(
                     reply=None,
                 )
             else:
-                active_draft = await store.get_onboarding(inbox.owner_id)
+                active_draft = active_draft or await store.get_onboarding(inbox.owner_id)
                 current_profile = await store.get_preferences(inbox.owner_id)
                 if (
                     message_text.strip().casefold() in {"confirm", "yes", "да", "подтверждаю"}

@@ -423,6 +423,11 @@ def test_cancel_and_preview_are_non_mutating_and_zone_change_is_handed_off(
                 assert refreshed.base_profile_version == baseline_version + 2
                 assert refreshed.draft["review_time"] == "19:00:00"
             await send(125, "/cancel")
+            async with sessions() as session:
+                assert await session.get(OnboardingRecord, owner_id) is None
+            plan_cancel = await send(128, "/cancel")
+            assert "There are no open tasks for this action." in str(plan_cancel["plain_text"])
+            assert plan_cancel["handling"] == "handled"
         finally:
             await engine.dispose()
 
