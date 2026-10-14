@@ -1320,7 +1320,7 @@ def test_reply_deletion_after_authoritative_check_waits_for_started_boundary(
     async def scenario() -> None:
         owner_id, event_id = uuid4(), uuid4()
         chat_id = uuid4().int % 2_000_000_000 + 1
-        at = NOW
+        at = datetime.now(UTC).replace(microsecond=0)
         async with delivery_sessions() as session, session.begin():
             session.add(
                 TelegramOwnerRecord(
@@ -1343,6 +1343,10 @@ def test_reply_deletion_after_authoritative_check_waits_for_started_boundary(
                 },
             )
             await add_outbox_event(session, event)
+            await session.flush()
+            persisted_event = await session.get(OutboxEvent, event_id)
+            assert persisted_event is not None
+            at = persisted_event.created_at
             assert await enqueue_due_reply_jobs(session, now=at) == 1
             reply_job = await session.scalar(
                 select(Job).where(Job.deduplication_key == f"reply:{event_id}")
