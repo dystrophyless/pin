@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#f7f5ef">
+    <meta name="description" content="Pin помогает спокойно планировать дела в Telegram.">
+    <title>Pin — планы, которые помнят о вас</title>
+    <link rel="stylesheet" href="styles.css?v=2">
+    <script defer src="app.js"></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Перейти к содержимому</a>
+    <div class="preview-note" role="status" data-copy="previewNote" data-preview-note>
+      Локальный просмотр. Доступность предложения и Telegram-провайдер ещё не подтверждены.
+    </div>
+    <header class="site-header wrap">
+      <a class="brand" href="index.html" aria-label="Pin — главная">pin<span>.</span></a>
+      <nav class="nav" aria-label="Навигация">
+        <a href="#how" data-copy="navHow">Как это работает</a>
+        <a href="#plans" data-copy="navPlan">Тарифы</a>
+        <a href="privacy.html" data-copy="privacy">Конфиденциальность</a>
+        <a href="terms.html" data-copy="terms">Условия</a>
+      </nav>
+      <div class="header-actions">
+        <label class="sr-only" for="language" data-copy="languageLabel">Язык</label>
+        <select id="language" aria-label="Выбрать язык" data-language>
+          <option value="ru">RU</option><option value="en">EN</option>
+        </select>
+        <a class="button button-small" data-telegram aria-disabled="true" tabindex="-1" data-copy="openTelegram">Открыть Telegram</a>
+      </div>
+    </header>
+
+    <main id="main" tabindex="-1">
+      <section class="hero wrap">
+        <div class="hero-copy">
+          <p class="eyebrow"><span class="spark">✳</span> <span data-copy="eyebrow">Ваш спокойный план на каждый день</span></p>
+          <h1 data-copy="headline">Меньше держать в голове.<br><em>Больше успевать.</em></h1>
+          <p class="lead" data-copy="intro">Расскажите Pin о задаче текстом или голосом. Он уточнит детали, покажет план и напомнит вовремя — прямо в Telegram.</p>
+          <div class="hero-actions">
+            <a class="button" data-telegram aria-disabled="true" tabindex="-1"><span data-copy="openTelegram">Открыть Telegram</span><span aria-hidden="true">↗</span></a>
+            <a class="text-link" href="#how"><span data-copy="seeHow">Посмотреть, как это работает</span><span aria-hidden="true">↓</span></a>
+          </div>
+          <p class="fine-print" data-copy="private">Личные чаты. Ваши планы остаются под вашим контролем.</p>
+        </div>
+        <div class="hero-art" aria-label="Пример диалога с Pin" data-copy-aria="chatIllustration">
+          <div class="sun-shape"></div>
+          <div class="chat-window">
+            <div class="chat-top"><span class="avatar">p</span><span><b>Pin</b><small data-copy="assistant">Ваш помощник</small></span><span class="online" aria-label="Pin"></span></div>
+            <div class="chat-body">
+              <div class="bubble user-bubble" data-copy="chatUser">Напомни подготовить презентацию завтра к 15:00</div>
+              <div class="bubble bot-bubble"><small data-copy="previewLabel">Предлагаю добавить план</small><strong data-copy="chatPlan">Подготовить презентацию</strong><span data-copy="chatWhen">Завтра · 15:00</span></div>
+              <div class="confirm-row"><span>✓</span> <span data-copy="chatConfirmed">Сохранено после подтверждения</span></div>
+              <div class="typing"><i></i><i></i><i></i></div>
+            </div>
+          </div>
+          <div class="orbit orbit-one"></div><div class="orbit orbit-two"></div>
+          <span class="art-sticker sticker-one" aria-hidden="true">✳</span><span class="art-sticker sticker-two" aria-hidden="true">↗</span>
+          <p class="art-caption" data-copy="previewAlways">Сначала — понятный план.<br>Сохранение — только после вашего подтверждения.</p>
+        </div>
+      </section>
+
+      <section class="trust-strip wrap" aria-label="Возможности Pin">
+        <div><span class="strip-icon">◷</span><span data-copy="stripReminders">Напомнит вовремя</span></div>
+        <div><span class="strip-icon">⌁</span><span data-copy="stripVoice">Понимает голос и текст</span></div>
+        <div><span class="strip-icon">✓</span><span data-copy="stripControl">Ничего без подтверждения</span></div>
+      </section>
+
+      <section id="how" class="how-section section-pad">
+        <div class="wrap">
+          <div class="section-heading"><p class="eyebrow" data-copy="howEyebrow">Просто начать</p><h2 data-copy="howTitle">Из мысли — в план.<br><em>В пару сообщений.</em></h2><p data-copy="howIntro">Pin помогает разобрать день на понятные шаги — и оставляет последнее слово за вами.</p></div>
+          <div class="steps">
+            <article class="step-card"><span class="step-number">01</span><div class="step-icon icon-message">“</div><h3 data-copy="stepOneTitle">Расскажите</h3><p data-copy="stepOneText">Напишите, что нужно сделать, или отправьте голосовое сообщение.</p><div class="mini-example" data-copy="stepOneEx">«Позвонить врачу в пятницу утром»</div></article>
+            <article class="step-card"><span class="step-number">02</span><div class="step-icon icon-spark">✳</div><h3 data-copy="stepTwoTitle">Уточните</h3><p data-copy="stepTwoText">Если не хватает времени или деталей, Pin спросит. Затем покажет, что именно собирается сохранить.</p><div class="mini-example preview-example"><span data-copy="previewLabel">Предлагаю добавить план</span><b data-copy="previewExample">Позвонить врачу · пятница, 10:00</b></div></article>
+            <article class="step-card"><span class="step-number">03</span><div class="step-icon icon-check">✓</div><h3 data-copy="stepThreeTitle">Подтвердите</h3><p data-copy="stepThreeText">План появится только после вашего подтверждения. Дальше Pin пришлёт напоминание.</p><div class="mini-example confirmed-example"><span>✓</span> <span data-copy="confirmedExample">План добавлен</span></div></article>
+          </div>
+        </div>
+      </section>
+
+      <section id="plans" class="offer-section section-pad wrap">
+        <div class="offer-intro"><p class="eyebrow" data-copy="offerEyebrow">Начните в своём темпе</p><h2 data-copy="offerTitle">Сначала попробуйте.<br><em>Решите потом.</em></h2><p data-copy="offerText">Пробный период начинается после завершения знакомства с Pin. Платное продление — отдельное условие с понятными лимитами.</p><p class="offer-status" data-copy="offerStatus">Локальный предварительный просмотр: подключение и доступность предложения ещё не подтверждены.</p></div>
+        <div class="plans">
+          <article class="plan-card trial-card"><div class="plan-kicker"><span class="plan-dot"></span><span data-copy="trialName">Пробный период</span></div><div class="price"><strong data-copy="sevenDays">7 дней</strong><span data-copy="free">без оплаты</span></div><p data-copy="trialStarts">После завершения знакомства с Pin</p><ul><li data-copy="trialTurns">250 AI-взаимодействий</li><li data-copy="trialVoice">15 минут голосовых сообщений</li></ul></article>
+          <article class="plan-card paid-card"><div class="plan-kicker"><span class="plan-dot"></span><span data-copy="paidName">Подписка</span></div><div class="price"><strong>250 <span data-copy="stars">Stars</span></strong><span data-copy="per30">за 30 дней</span></div><p data-copy="paidAuto">Автопродление. Отменить можно в любое время.</p><ul><li data-copy="paidTurns">1 000 AI-взаимодействий за период</li><li data-copy="paidVoice">60 минут голосовых сообщений за период</li><li data-copy="paidCancel">После отмены доступ сохранится до конца оплаченного периода</li></ul></article>
+        </div>
+        <p class="allowance-note" data-copy="allowanceNote">Одно AI-взаимодействие — один ваш запрос и ответ Pin. Обработка каждого голосового сообщения расходует одно AI-взаимодействие и время из отдельного лимита голосовых минут; одно сообщение — не более 3 минут. Команды и кнопки не расходуют AI-лимит.</p>
+        <p class="expiry-note" data-copy="expiryNote">Перед окончанием пробного периода Pin предупредит вас. После окончания пробного периода или оплаченного доступа новые планы, AI и голосовые сообщения приостанавливаются; напоминания тоже ставятся на паузу. Просматривать планы, отмечать их выполненными и отменять их можно.</p>
+        <p class="reminder-note" data-copy="reminderNote">Если доступ возобновится, Pin напомнит о предстоящих делах, предложит один обзор просроченных и не будет переносить их автоматически.</p>
+      </section>
+
+      <section class="closing-section"><div class="wrap closing-inner"><span class="closing-mark" aria-hidden="true">✳</span><p class="eyebrow" data-copy="closingEyebrow">Освободите место для важного</p><h2 data-copy="closingTitle">Пусть планы будут<br>под рукой, а не в голове.</h2><a class="button button-light" data-telegram aria-disabled="true" tabindex="-1"><span data-copy="openTelegram">Открыть Telegram</span><span aria-hidden="true">↗</span></a><p data-copy="ctaUnavailable" data-cta-status>Ссылка на бота не настроена для локального просмотра.</p></div></section>
+    </main>
+    <footer class="site-footer wrap"><a class="brand" href="index.html">pin<span>.</span></a><span data-copy="footerTag">Планы с заботой о вашем времени.</span><nav aria-label="Информация"><a href="privacy.html" data-copy="privacy">Конфиденциальность</a><a href="terms.html" data-copy="terms">Условия</a><a data-support aria-disabled="true" tabindex="-1" data-copy="support">Поддержка</a></nav><small>© Pin</small></footer>
+  </body>
+</html>
