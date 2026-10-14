@@ -221,3 +221,39 @@ class DeliveryAttemptRecord(Base):
     quiet_conflict: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class AccountabilityDeliveryAttemptRecord(Base):
+    """Notifications-owned external send attempt for an Accountability intent."""
+
+    __tablename__ = "accountability_delivery_attempts"
+    __table_args__ = (
+        CheckConstraint("attempt_number >= 1", name="ck_notifications_accountability_attempt"),
+        CheckConstraint("target_id > 0", name="ck_notifications_accountability_target"),
+        CheckConstraint(
+            "outcome IN ('started', 'confirmed', 'failed', 'unknown', 'blocked')",
+            name="ck_notifications_accountability_outcome",
+        ),
+        CheckConstraint(
+            "(outcome = 'started' AND finished_at IS NULL) OR "
+            "(outcome <> 'started' AND finished_at IS NOT NULL)",
+            name="ck_notifications_accountability_finished",
+        ),
+        UniqueConstraint(
+            "intent_id", "attempt_number", name="uq_notifications_accountability_attempt"
+        ),
+        Index("ix_notifications_accountability_intent_outcome", "intent_id", "outcome"),
+        {"schema": "notifications"},
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    owner_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    intent_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    target_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    attempt_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    outcome: Mapped[str] = mapped_column(String(12), nullable=False)
+    failure_code: Mapped[str | None] = mapped_column(String(80))
+    provider_message_id: Mapped[str | None] = mapped_column(String(100))
+    access_period_id: Mapped[str | None] = mapped_column(String(120))
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

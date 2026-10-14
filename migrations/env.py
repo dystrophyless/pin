@@ -9,6 +9,7 @@ from pin.adapters.telegram.ingress import TelegramIngressBotRecord, TelegramOwne
 from pin.adapters.telegram.mutation_runtime_store import MutationRuntimePendingRecord
 from pin.adapters.telegram.presentation.tokens import TelegramCallbackTokenRecord
 from pin.bootstrap.config import load_database_url
+from pin.contexts.accountability.infrastructure import models as accountability_models
 from pin.contexts.billing.infrastructure import models as billing_models  # noqa: F401
 from pin.contexts.conversation.infrastructure import capture_models
 from pin.contexts.conversation.infrastructure.models import (
@@ -35,6 +36,10 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 target_metadata = Base.metadata
+assert accountability_models.CheckInCycleRecord.metadata is target_metadata
+assert accountability_models.DailyReviewRecord.metadata is target_metadata
+assert accountability_models.AccountabilityIntentRecord.metadata is target_metadata
+assert accountability_models.AccountabilityOutcomeReceiptRecord.metadata is target_metadata
 assert TelegramCallbackTokenRecord.metadata is target_metadata
 assert TelegramIngressBotRecord.metadata is target_metadata
 assert TelegramOwnerRecord.metadata is target_metadata
@@ -60,6 +65,7 @@ assert SeriesExceptionRecord.metadata is target_metadata
 assert notifications_models.ReminderIntentRecord.metadata is target_metadata
 assert notifications_models.NotificationReconciliationReceiptRecord.metadata is target_metadata
 assert notifications_models.DeliveryAttemptRecord.metadata is target_metadata
+assert notifications_models.AccountabilityDeliveryAttemptRecord.metadata is target_metadata
 
 
 def _database_url() -> str:

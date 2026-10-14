@@ -39,6 +39,9 @@ from pin.contexts.notifications.domain.delivery import (
     render_recovery_summary,
     render_reminder,
 )
+from pin.contexts.notifications.infrastructure.blocked_destinations import (
+    destination_is_blocked,
+)
 from pin.contexts.notifications.infrastructure.models import (
     DeliveryAttemptRecord,
     ReminderIntentRecord,
@@ -135,9 +138,7 @@ async def enqueue_due_reminder_jobs(
                 select(ReminderIntentRecord)
                 .where(
                     ReminderIntentRecord.state == "scheduled",
-                    func.coalesce(
-                        ReminderIntentRecord.not_before_at, ReminderIntentRecord.due_at
-                    )
+                    func.coalesce(ReminderIntentRecord.not_before_at, ReminderIntentRecord.due_at)
                     <= now.astimezone(UTC),
                     ~select(Job.id)
                     .where(
@@ -177,9 +178,7 @@ async def enqueue_due_reminder_jobs(
     return count
 
 
-async def enqueue_due_reply_jobs(
-    session: AsyncSession, *, now: datetime, limit: int = 100
-) -> int:
+async def enqueue_due_reply_jobs(session: AsyncSession, *, now: datetime, limit: int = 100) -> int:
     """Move queued private replies onto the existing durable delivery lane."""
     _require_aware(now)
     if limit < 1 or limit > 1000:
@@ -197,9 +196,8 @@ async def enqueue_due_reply_jobs(
                     ~select(Job.id)
                     .where(
                         Job.lane == JobLane.DELIVERY.value,
-                        Job.deduplication_key == func.concat(
-                            "reply:", sql_cast(OutboxEvent.id, String)
-                        ),
+                        Job.deduplication_key
+                        == func.concat("reply:", sql_cast(OutboxEvent.id, String)),
                     )
                     .exists(),
                 )
@@ -290,9 +288,7 @@ async def deliver_reminder_job(
                     .with_for_update()
                 )
                 if started is not None:
-                    immediate = await _finish_existing_as_unknown(
-                        session, claim, started, at=now()
-                    )
+                    immediate = await _finish_existing_as_unknown(session, claim, started, at=now())
                 else:
                     immediate = await _record_outcome(
                         session,
@@ -310,16 +306,11 @@ async def deliver_reminder_job(
                     session, intent.id, dispatch_version, destination
                 )
                 if prior is not None and prior.outcome == "started":
-                    immediate = await _finish_existing_as_unknown(
-                        session, claim, prior, at=now()
-                    )
+                    immediate = await _finish_existing_as_unknown(session, claim, prior, at=now())
                 elif prior is not None and prior.outcome in _TERMINAL_OUTCOMES:
                     immediate = _outcome_from_record(intent, prior)
                     await complete_job(session, claim)
-                elif (
-                intent.dispatch_version != dispatch_version
-                or intent.state != "scheduled"
-                ):
+                elif intent.dispatch_version != dispatch_version or intent.state != "scheduled":
                     immediate = await _record_outcome(
                         session,
                         intent,
@@ -372,7 +363,7 @@ async def deliver_reminder_job(
                                 access_period_id=access.period_id,
                             )
                             await complete_job(session, claim)
-                        elif await _destination_blocked(session, intent.owner_id, destination):
+                        elif await destination_is_blocked(session, intent.owner_id, destination):
                             immediate = await _record_outcome(
                                 session,
                                 intent,
@@ -456,9 +447,7 @@ async def deliver_reminder_job(
                             else:
                                 title_records = await SqlAlchemyAgendaReadStore(
                                     session
-                                ).list_snapshot_records(
-                                    intent.owner_id, (intent.occurrence_id,)
-                                )
+                                ).list_snapshot_records(intent.owner_id, (intent.occurrence_id,))
                                 title_record = next(
                                     (
                                         row
@@ -645,9 +634,7 @@ async def deliver_reminder_job(
             attempt_record.quiet_conflict = prepared.quiet_conflict
             attempt_record.finished_at = now().astimezone(UTC)
             result = _outcome_from_record(_intent_stub(prepared), attempt_record)
-            await _publish_outcome(
-                session, result, attempt_number=attempt_record.attempt_number
-            )
+            await _publish_outcome(session, result, attempt_number=attempt_record.attempt_number)
             if outcome is DeliveryOutcomeKind.FAILED and retry_after is not None:
                 await fail_job(
                     session,
@@ -698,9 +685,7 @@ async def deliver_reply_job(
             requested_target = _positive_int(payload.get("chat_id"))
             destination = await transport.resolve_destination(session, event.owner_id)
             access_store = SqlAlchemyAccessUsageStore(session)
-            lifecycle = await access_store.lock_account_lifecycle(
-                event.owner_id
-            )
+            lifecycle = await access_store.lock_account_lifecycle(event.owner_id)
             # The persisted identity mapping is authoritative. A copied or stale
             # payload cannot redirect another owner's text to a different chat.
             if lifecycle is AccountLifecycle.DELETED:
@@ -708,9 +693,7 @@ async def deliver_reply_job(
                     session,
                     event,
                     target_id=destination,
-                    attempt_number=await _next_reply_attempt_number(
-                        session, event.id, destination
-                    ),
+                    attempt_number=await _next_reply_attempt_number(session, event.id, destination),
                     outcome=DeliveryOutcomeKind.SKIPPED,
                     at=now(),
                     failure_code="owner_deleted",
@@ -722,9 +705,7 @@ async def deliver_reply_job(
                     session,
                     event,
                     target_id=target_id,
-                    attempt_number=await _next_reply_attempt_number(
-                        session, event.id, target_id
-                    ),
+                    attempt_number=await _next_reply_attempt_number(session, event.id, target_id),
                     outcome=(
                         DeliveryOutcomeKind.BLOCKED
                         if destination is None
@@ -774,9 +755,7 @@ async def deliver_reply_job(
                         if before_attempt_authorization is not None:
                             await before_attempt_authorization()
                         await lock_job_for_effects(session, claim)
-                        latest_lifecycle = await access_store.lock_account_lifecycle(
-                            event.owner_id
-                        )
+                        latest_lifecycle = await access_store.lock_account_lifecycle(event.owner_id)
                         if latest_lifecycle is AccountLifecycle.DELETED:
                             immediate = await _record_reply_outcome(
                                 session,
@@ -853,9 +832,7 @@ async def deliver_reply_job(
             attempt_record.provider_message_id = provider_message_id
             attempt_record.finished_at = now().astimezone(UTC)
             result = _reply_outcome_from_record(event, attempt_record)
-            await _publish_outcome(
-                session, result, attempt_number=attempt_record.attempt_number
-            )
+            await _publish_outcome(session, result, attempt_number=attempt_record.attempt_number)
             if outcome is DeliveryOutcomeKind.FAILED and retry_after is not None:
                 await fail_job(
                     session,
@@ -976,7 +953,7 @@ async def deliver_recovery_summary_job(
                         access_period_id=access.period_id,
                     )
                     await complete_job(session, claim)
-                elif await _destination_blocked(session, owner_id, destination):
+                elif await destination_is_blocked(session, owner_id, destination):
                     immediate = await _record_recovery_outcome(
                         session,
                         request,
@@ -1124,9 +1101,7 @@ async def deliver_recovery_summary_job(
             finished_attempt.failure_code = failure_code
             finished_attempt.finished_at = now().astimezone(UTC)
             result = _recovery_outcome_from_record(finished_attempt)
-            await _publish_outcome(
-                session, result, attempt_number=finished_attempt.attempt_number
-            )
+            await _publish_outcome(session, result, attempt_number=finished_attempt.attempt_number)
             if outcome is DeliveryOutcomeKind.FAILED and retry_after is not None:
                 await fail_job(
                     session,
@@ -1414,9 +1389,9 @@ async def _current_schedule(
         )
     except (AttributeError, TypeError, ValueError):
         return None
-    current: CurrentPlanSchedule | None = (
-        await SqlAlchemyReminderScheduleStore(session, identity).lock_current_schedule(change)
-    )
+    current: CurrentPlanSchedule | None = await SqlAlchemyReminderScheduleStore(
+        session, identity
+    ).lock_current_schedule(change)
     if (
         current is None
         or current.owner_id != intent.owner_id
@@ -1503,23 +1478,6 @@ async def _next_attempt_number(
     return int(highest or 0) + 1
 
 
-async def _destination_blocked(
-    session: AsyncSession, owner_id: UUID, target_id: int
-) -> bool:
-    return (
-        await session.scalar(
-            select(DeliveryAttemptRecord.id)
-            .where(
-                DeliveryAttemptRecord.owner_id == owner_id,
-                DeliveryAttemptRecord.target_id == target_id,
-                DeliveryAttemptRecord.outcome == DeliveryOutcomeKind.BLOCKED.value,
-            )
-            .limit(1)
-        )
-        is not None
-    )
-
-
 async def _record_outcome(
     session: AsyncSession,
     intent: ReminderIntentRecord,
@@ -1569,9 +1527,7 @@ async def _publish_outcome(
             occurred_at=result.occurred_at,
             payload={
                 "intent_id": str(result.intent_id) if result.intent_id else None,
-                "reply_event_id": (
-                    str(result.reply_event_id) if result.reply_event_id else None
-                ),
+                "reply_event_id": (str(result.reply_event_id) if result.reply_event_id else None),
                 "recovery_episode_key": result.recovery_episode_key,
                 "target_id": result.target_id,
                 "dispatch_version": result.dispatch_version,
@@ -1649,9 +1605,7 @@ async def _defer_if_quiet(
     if quiet_end_at is None:
         return False
     useful = event_start_at is not None and quiet_end_at < event_start_at.astimezone(UTC)
-    outcome = (
-        DeliveryOutcomeKind.DEFERRED if useful else DeliveryOutcomeKind.SKIPPED
-    )
+    outcome = DeliveryOutcomeKind.DEFERRED if useful else DeliveryOutcomeKind.SKIPPED
     await _record_outcome(
         session,
         intent,
@@ -1703,9 +1657,7 @@ async def _coalesce_if_older(
                     ReminderIntentRecord.owner_id == intent.owner_id,
                     ReminderIntentRecord.occurrence_id == intent.occurrence_id,
                     ReminderIntentRecord.state == "scheduled",
-                    func.coalesce(
-                        ReminderIntentRecord.not_before_at, ReminderIntentRecord.due_at
-                    )
+                    func.coalesce(ReminderIntentRecord.not_before_at, ReminderIntentRecord.due_at)
                     <= at.astimezone(UTC),
                 )
                 .order_by(ReminderIntentRecord.due_at, ReminderIntentRecord.id)
