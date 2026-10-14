@@ -7,6 +7,8 @@ import pytest
 from pin.contexts.billing.domain.access import (
     AccessAccount,
     AccessDenial,
+    AccessNoticeKind,
+    AccessNoticeStatus,
     AccessPeriod,
     Allowance,
     IdempotencyConflict,
@@ -17,6 +19,7 @@ from pin.contexts.billing.domain.access import (
     QuotaExceeded,
     ReservationState,
     UsageLedger,
+    authorize_access_notice,
     check_access,
 )
 
@@ -440,3 +443,64 @@ def test_voice_resize_rejects_overflow_missing_wrong_kind_and_terminal_holds() -
     expired_ledger.expire(at=expiry)
     with pytest.raises(InvalidTransition):
         expired_ledger.resize_voice("expired", 30, expiry)
+
+
+@pytest.mark.parametrize("kind", [PeriodKind.TRIAL, PeriodKind.PAID])
+def test_expiry_notice_uses_exact_window_and_live_period_end(kind: PeriodKind) -> None:
+    access_period = period(kind)
+    at_24h = access_period.ends_at - timedelta(hours=24)
+    result = authorize_access_notice(
+        access_period, AccessNoticeKind.EXPIRY_24H, at=at_24h
+    )
+    assert result.status is AccessNoticeStatus.SEND
+    assert result.remaining_seconds == 24 * 60 * 60
+
+    at_1h = access_period.ends_at - timedelta(hours=1)
+    result = authorize_access_notice(access_period, AccessNoticeKind.EXPIRY_1H, at=at_1h)
+    assert result.status is AccessNoticeStatus.SEND
+    assert result.remaining_seconds == 60 * 60
+
+    assert (
+        authorize_access_notice(
+            access_period,
+            AccessNoticeKind.EXPIRY_1H,
+            at=access_period.ends_at,
+        ).status
+        is AccessNoticeStatus.SKIP
+    )
+
+
+def test_late_expiry_notice_is_truthful_and_stale_24h_notice_is_coalesced() -> None:
+    access_period = period(PeriodKind.TRIAL)
+    late = access_period.ends_at - timedelta(minutes=30)
+
+    old_notice = authorize_access_notice(
+        access_period, AccessNoticeKind.EXPIRY_24H, at=late
+    )
+    current_notice = authorize_access_notice(
+        access_period, AccessNoticeKind.EXPIRY_1H, at=late
+    )
+
+    assert old_notice.status is AccessNoticeStatus.SKIP
+    assert current_notice.status is AccessNoticeStatus.SEND
+    assert current_notice.remaining_seconds == 30 * 60
+
+
+def test_expiry_notice_defers_quiet_hours_only_if_period_remains_active() -> None:
+    access_period = period(PeriodKind.PAID)
+    at = access_period.ends_at - timedelta(hours=1)
+    quiet_until = at + timedelta(minutes=45)
+
+    deferred = authorize_access_notice(
+        access_period, AccessNoticeKind.EXPIRY_1H, at=at, quiet_until=quiet_until
+    )
+    missed = authorize_access_notice(
+        access_period,
+        AccessNoticeKind.EXPIRY_1H,
+        at=at,
+        quiet_until=access_period.ends_at,
+    )
+
+    assert deferred.status is AccessNoticeStatus.DEFER
+    assert deferred.defer_until == quiet_until
+    assert missed.status is AccessNoticeStatus.SKIP
