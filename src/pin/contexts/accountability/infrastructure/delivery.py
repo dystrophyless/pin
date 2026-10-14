@@ -22,7 +22,7 @@ from pin.contexts.accountability.infrastructure.models import (
     CheckInCycleRecord,
     DailyReviewRecord,
 )
-from pin.contexts.notifications.quiet_hours_api import defer_until_quiet_hours_end
+from pin.contexts.notifications.api import defer_until_quiet_hours_end
 
 
 @dataclass(frozen=True, slots=True)

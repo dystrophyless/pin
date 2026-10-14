@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, time
 from zoneinfo import ZoneInfo
 
-from pin.contexts.notifications.quiet_hours_api import defer_until_quiet_hours_end
+from pin.contexts.notifications.api import defer_until_quiet_hours_end
 
 ZONE = "America/New_York"
 START = time(22)

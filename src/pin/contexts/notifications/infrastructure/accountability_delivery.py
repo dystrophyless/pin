@@ -21,6 +21,7 @@ from pin.contexts.accountability.api import (
 )
 from pin.contexts.billing.api import CheckAccess, Operation, SqlAlchemyAccessUsageStore
 from pin.contexts.notifications.application.delivery import (
+    ACCOUNTABILITY_DELIVERY_JOB_KIND,
     KnownDeliveryFailure,
     TelegramReplySend,
     UnknownDeliveryFailure,
@@ -35,8 +36,6 @@ from pin.contexts.notifications.infrastructure.models import (
 from pin.platform.contracts import EventEnvelope
 from pin.platform.events import add_outbox_event
 from pin.platform.jobs import JobClaim, JobLane, complete_job, fail_job, lock_job_for_effects
-
-ACCOUNTABILITY_DELIVERY_JOB_KIND = "accountability.deliver"
 
 
 class AccountabilityTransport(Protocol):
@@ -78,38 +77,12 @@ async def deliver_accountability_job(
             if owner_id is None:
                 await complete_job(session, claim)
                 return DeliveryOutcomeKind.SKIPPED
-            access_store = SqlAlchemyAccessUsageStore(session)
-            access = await access_store.lock_access(
-                CheckAccess(owner_id, Operation.REMINDER_DELIVERY, now())
-            )
-            if not access.allowed:
-                await mark_delivery_intent_skipped(
-                    session,
-                    intent_id=intent_id,
-                    owner_id=owner_id,
-                    reason=access.denial.value if access.denial is not None else "access_denied",
-                )
-                await complete_job(session, claim)
-                return DeliveryOutcomeKind.SKIPPED
-            profile = await profile_reader(session, owner_id)
-            if profile is None or profile.owner_id != owner_id:
-                await mark_delivery_intent_skipped(
-                    session, intent_id=intent_id, owner_id=owner_id, reason="profile_unavailable"
-                )
-                await complete_job(session, claim)
-                return DeliveryOutcomeKind.SKIPPED
-            if await destination_is_blocked(session, owner_id, profile.destination_id):
-                await mark_delivery_intent_skipped(
-                    session,
-                    intent_id=intent_id,
-                    owner_id=owner_id,
-                    reason="destination_previously_blocked",
-                )
-                await complete_job(session, claim)
-                return DeliveryOutcomeKind.BLOCKED
             prior = await session.scalar(
                 select(AccountabilityDeliveryAttemptRecord)
-                .where(AccountabilityDeliveryAttemptRecord.intent_id == intent_id)
+                .where(
+                    AccountabilityDeliveryAttemptRecord.intent_id == intent_id,
+                    AccountabilityDeliveryAttemptRecord.owner_id == owner_id,
+                )
                 .order_by(AccountabilityDeliveryAttemptRecord.attempt_number.desc())
                 .limit(1)
                 .with_for_update()
@@ -155,7 +128,35 @@ async def deliver_accountability_job(
                     )
                 await complete_job(session, claim)
                 return DeliveryOutcomeKind(prior.outcome)
-
+            access_store = SqlAlchemyAccessUsageStore(session)
+            access = await access_store.lock_access(
+                CheckAccess(owner_id, Operation.REMINDER_DELIVERY, now())
+            )
+            if not access.allowed:
+                await mark_delivery_intent_skipped(
+                    session,
+                    intent_id=intent_id,
+                    owner_id=owner_id,
+                    reason=access.denial.value if access.denial is not None else "access_denied",
+                )
+                await complete_job(session, claim)
+                return DeliveryOutcomeKind.SKIPPED
+            profile = await profile_reader(session, owner_id)
+            if profile is None or profile.owner_id != owner_id:
+                await mark_delivery_intent_skipped(
+                    session, intent_id=intent_id, owner_id=owner_id, reason="profile_unavailable"
+                )
+                await complete_job(session, claim)
+                return DeliveryOutcomeKind.SKIPPED
+            if await destination_is_blocked(session, owner_id, profile.destination_id):
+                await mark_delivery_intent_skipped(
+                    session,
+                    intent_id=intent_id,
+                    owner_id=owner_id,
+                    reason="destination_previously_blocked",
+                )
+                await complete_job(session, claim)
+                return DeliveryOutcomeKind.BLOCKED
             authorization = await authorize_accountability_send(
                 session,
                 intent_id=intent_id,

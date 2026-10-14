@@ -1,5 +1,13 @@
 """Published reminder-intent contracts and operations."""
 
+from __future__ import annotations
+
+from collections.abc import Awaitable, Callable
+from datetime import datetime, time
+from typing import TYPE_CHECKING
+from uuid import UUID
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
 from pin.contexts.notifications.application.contracts import (
     CurrentOccurrenceSchedule,
     CurrentPlanSchedule,
@@ -9,6 +17,8 @@ from pin.contexts.notifications.application.contracts import (
     ScheduleChange,
 )
 from pin.contexts.notifications.application.delivery import (
+    ACCOUNTABILITY_DELIVERY_JOB_KIND,
+    AccountabilityTransport,
     KnownDeliveryFailure,
     RecoverySummaryRequest,
     ReminderSend,
@@ -28,17 +38,71 @@ from pin.contexts.notifications.domain.reminders import (
     ReminderNotice,
     ReminderNoticeKind,
     ReminderProjection,
+    defer_until_quiet_end,
     project_reminders,
 )
-from pin.contexts.notifications.infrastructure.accountability_delivery import (
-    ACCOUNTABILITY_DELIVERY_JOB_KIND,
-    deliver_accountability_job,
-)
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+    from pin.contexts.accountability.api import (
+        AccountabilitySend,
+        CurrentOccurrenceReader,
+        ReviewProfile,
+        TodayUntimedReader,
+    )
+    from pin.platform.jobs import JobClaim
+
+
+def defer_until_quiet_hours_end(
+    value: datetime,
+    *,
+    zone_name: str,
+    quiet_start: time,
+    quiet_end: time,
+) -> datetime:
+    """Return ``value`` if it is outside quiet hours, else the next quiet end."""
+    try:
+        zone = ZoneInfo(zone_name)
+    except (ZoneInfoNotFoundError, ValueError):
+        raise ValueError("quiet_zone must be a valid IANA time-zone name") from None
+    return defer_until_quiet_end(value, zone, quiet_start, quiet_end)
+
+
+async def deliver_accountability_job(
+    sessions: async_sessionmaker[AsyncSession],
+    claim: JobClaim,
+    transport: AccountabilityTransport,
+    *,
+    profile_reader: Callable[[AsyncSession, UUID], Awaitable[ReviewProfile | None]],
+    current_occurrences_factory: Callable[[AsyncSession], CurrentOccurrenceReader],
+    today_untimed_factory: Callable[[AsyncSession], TodayUntimedReader],
+    render: Callable[[AsyncSession, AccountabilitySend, datetime], Awaitable[TelegramReplySend]],
+    now: Callable[[], datetime],
+) -> DeliveryOutcomeKind | None:
+    """Load the infrastructure worker only when composition dispatches this job."""
+    from pin.contexts.notifications.infrastructure.accountability_delivery import (
+        deliver_accountability_job as deliver,
+    )
+
+    return await deliver(
+        sessions,
+        claim,
+        transport,
+        profile_reader=profile_reader,
+        current_occurrences_factory=current_occurrences_factory,
+        today_untimed_factory=today_untimed_factory,
+        render=render,
+        now=now,
+    )
+
 
 __all__ = [
     "DeliveryAttemptOutcome",
     "ACCOUNTABILITY_DELIVERY_JOB_KIND",
+    "AccountabilityTransport",
     "DeliveryOutcomeKind",
+    "defer_until_quiet_hours_end",
     "KnownDeliveryFailure",
     "ReminderSend",
     "TelegramReplySend",
