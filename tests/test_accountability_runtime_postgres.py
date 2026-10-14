@@ -336,12 +336,25 @@ async def _claim_accountability_job(
             )
         )
         assert intent is not None
-        job = await session.scalar(
-            select(Job).where(
-                Job.owner_id == owner_id,
-                Job.kind == ACCOUNTABILITY_DELIVERY_JOB_KIND,
-                Job.deduplication_key == f"accountability:{intent.id}",
-            )
+        jobs = list(
+            (
+                await session.scalars(
+                    select(Job).where(
+                        Job.owner_id == owner_id,
+                        Job.kind == ACCOUNTABILITY_DELIVERY_JOB_KIND,
+                    )
+                )
+            ).all()
+        )
+        job = next(
+            (
+                candidate
+                for candidate in jobs
+                if candidate.status == "pending"
+                and candidate.payload.get("intent_id") == str(intent.id)
+                and candidate.payload.get("dispatch_version") == intent.dispatch_version
+            ),
+            None,
         )
         assert job is not None
         job.priority = 2_147_483_647
@@ -355,6 +368,48 @@ async def _claim_accountability_job(
     assert claim.owner_id == owner_id
     assert claim.payload.get("intent_id") == str(intent.id)
     return claim
+
+
+async def _prioritize_owner_initial_job(
+    sessions: async_sessionmaker[AsyncSession], *, owner_id: UUID
+) -> None:
+    """Keep runtime assertions focused on this scenario in the shared delivery lane."""
+    async with sessions() as session, session.begin():
+        await schedule_due_accountability(
+            session,
+            profiles=(_profile(owner_id),),
+            today_untimed=_NoTodayItems(),
+            now=NOW,
+        )
+        intent = await session.scalar(
+            select(AccountabilityIntentRecord).where(
+                AccountabilityIntentRecord.owner_id == owner_id,
+                AccountabilityIntentRecord.slot == "initial",
+            )
+        )
+        assert intent is not None
+        jobs = list(
+            (
+                await session.scalars(
+                    select(Job).where(
+                        Job.owner_id == owner_id,
+                        Job.kind == ACCOUNTABILITY_DELIVERY_JOB_KIND,
+                    )
+                )
+            ).all()
+        )
+        job = next(
+            (
+                candidate
+                for candidate in jobs
+                if candidate.status == "pending"
+                and candidate.payload.get("intent_id") == str(intent.id)
+                and candidate.payload.get("dispatch_version") == intent.dispatch_version
+            ),
+            None,
+        )
+        assert job is not None
+        job.priority = 2_147_483_647
 
 
 async def _retire_own_accountability_job(
@@ -1414,6 +1469,7 @@ def test_terminal_mutation_after_durable_attempt_start_does_not_restart_cycle(
         engine = create_engine(runtime_database)
         sessions = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
         owner_id, occurrence_id, _plan_id = await _seed(sessions)
+        await _prioritize_owner_initial_job(sessions, owner_id=owner_id)
 
         async def complete_after_start() -> None:
             async with sessions() as session, session.begin():
@@ -1491,6 +1547,7 @@ def test_accountability_callback_previews_then_confirmation_closes_cycle(
         engine = create_engine(runtime_database)
         sessions = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
         owner_id, occurrence_id, _plan_id = await _seed(sessions)
+        await _prioritize_owner_initial_job(sessions, owner_id=owner_id)
         transport = _Transport(sessions)
         try:
             assert await process_delivery_iteration(
@@ -1612,6 +1669,7 @@ def test_expired_entitlement_skips_send_and_renewal_does_not_revive_exhausted_cy
         engine = create_engine(runtime_database)
         sessions = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
         owner_id, occurrence_id, _plan_id = await _seed(sessions)
+        await _prioritize_owner_initial_job(sessions, owner_id=owner_id)
         transport = _Transport(sessions)
         try:
             async with sessions() as session, session.begin():
@@ -1797,6 +1855,7 @@ def test_reschedule_event_supersedes_due_cycle_before_attempt_start(runtime_data
         engine = create_engine(runtime_database)
         sessions = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
         owner_id, occurrence_id, _plan_id = await _seed(sessions)
+        await _prioritize_owner_initial_job(sessions, owner_id=owner_id)
         async with sessions() as session, session.begin():
             await schedule_due_accountability(
                 session,
@@ -1879,6 +1938,7 @@ def test_occurrence_cancellation_event_suppresses_due_attempt(runtime_database: 
         engine = create_engine(runtime_database)
         sessions = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
         owner_id, occurrence_id, _plan_id = await _seed(sessions)
+        await _prioritize_owner_initial_job(sessions, owner_id=owner_id)
         async with sessions() as session, session.begin():
             await schedule_due_accountability(
                 session,

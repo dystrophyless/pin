@@ -164,9 +164,23 @@ def test_private_onboarding_survives_restarts_and_activates_one_trial(
                     await session.scalar(
                         select(func.count())
                         .select_from(OutboxEvent)
-                        .where(OutboxEvent.owner_id == owner_id)
+                        .where(
+                            OutboxEvent.owner_id == owner_id,
+                            OutboxEvent.event_type == "telegram.reply.requested",
+                        )
                     )
                     == 6
+                )
+                assert (
+                    await session.scalar(
+                        select(func.count())
+                        .select_from(OutboxEvent)
+                        .where(
+                            OutboxEvent.owner_id == owner_id,
+                            OutboxEvent.event_type == "billing.access_period.activated",
+                        )
+                    )
+                    == 1
                 )
 
             # /start is read-only for a retained profile and does not reset its trial.
