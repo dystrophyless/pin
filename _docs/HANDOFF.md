@@ -13,8 +13,8 @@ This file is a compact entry point, not a backlog or copied task-status table. L
 | GitHub repository | [dystrophyless/pin](https://github.com/dystrophyless/pin), verified read-only on 2026-10-13 |
 | Issues URL | [Pin Issues](https://github.com/dystrophyless/pin/issues); 28 task issues confirmed; live issue bodies own scope, dependencies and workflow status |
 | Optional GitHub Project | Not configured; not required for this workflow |
-| Remote default branch | `main`; HEAD `34f45733601b7255f9893b2fc8d07b38dc4c16a9` verified on 2026-10-14 |
-| Local Git connection | `origin` points to `https://github.com/dystrophyless/pin.git`; `main` was pushed through `34f45733601b7255f9893b2fc8d07b38dc4c16a9` on 2026-10-14; later checkpoints remain local until published |
+| Remote default branch | `main`; pushed through `ccebe5a` on 2026-10-14 |
+| Local Git connection | `origin` points to `https://github.com/dystrophyless/pin.git`; `main` was pushed through `ccebe5a` on 2026-10-14; inspect Git for later checkpoints |
 
 Recheck remote state at session start. A `git ls-remote` check on 2026-10-14 confirmed the remote HEAD above after the authorized push. The root brief and architecture now live in `_docs/` with their updated entry points published. Do not maintain duplicate source briefs.
 
@@ -111,4 +111,5 @@ Owner override recorded 2026-10-13: implementation reviewers are not required; f
 - `29f8366` adds bounded Identity roster and transaction-bound Planning occurrence/today-untimed read ports. Direct Orchestrator rerun on the assigned PostgreSQL 18.6 cluster: 3 passed, zero skips; whole-source mypy (173 files) and architecture passed. This is foundation progress, not Issue #16 acceptance.
 - The existing owned PostgreSQL cluster was stopped; it was restarted at the same data directory without resetting databases. SQL identity and port were verified after crash recovery, before the successful read-port rerun.
 - Issue #16 outer delivery/callback composition and native failure/race checks are still in progress. Issue #17 support and bounded advice output validation are committed at `542ea03`: 63 focused tests and a fresh native PostgreSQL flow passed, with scoped Ruff/mypy. See [support progress](evidence/issue-17-support-local.md). The approved text request followed by preview and confirmation remains; an optional button preference is pending. Neither issue is accepted or closed.
-- The separate `pin-parent-accountability-support-20261014-1617a` qualification packet has scripts ready for 27 fresh guarded fixtures. It has not frozen a revision or created databases; exact-source inventory and qualification remain pending.
+- `c9a2857` commits Accountability schema, cycles/reviews, outcome consumers, private callback preview/confirmation, current-access/preference fences and outer runtime composition. `ccebe5a` adds bilingual native support scenarios. Both are pushed; neither issue is accepted. Worker-observed Accountability runtime19/core4/application1 and support2 native cases pass; the complete source passes Ruff and mypy (175 files). The architecture check identified a quiet-hours import outside the published `.api` boundary; correction and crash-recovery/lock-order regression checks are in progress.
+- The separate `pin-parent-accountability-support-20261014-1617a` qualification packet is being updated for all 28 current guarded fixtures, including the private Accountability application path. It has not frozen a revision or created databases; exact-source qualification remains pending.
