@@ -136,7 +136,7 @@ class AccountabilityIntentRecord(Base):
 class AccountabilityOutcomeReceiptRecord(Base):
     __tablename__ = "outcome_receipts"
     __table_args__ = (
-        Index("uq_accountability_outcome_owner_event", "owner_id", "event_id", unique=True),
+        UniqueConstraint("owner_id", "event_id", name="uq_accountability_outcome_owner_event"),
         {"schema": "accountability"},
     )
 
