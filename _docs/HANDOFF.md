@@ -13,8 +13,8 @@ This file is a compact entry point, not a backlog or copied task-status table. L
 | GitHub repository | [dystrophyless/pin](https://github.com/dystrophyless/pin), verified read-only on 2026-10-13 |
 | Issues URL | [Pin Issues](https://github.com/dystrophyless/pin/issues); 28 task issues confirmed; live issue bodies own scope, dependencies and workflow status |
 | Optional GitHub Project | Not configured; not required for this workflow |
-| Remote default branch | `main`; pushed through `ccebe5a` on 2026-10-14 |
-| Local Git connection | `origin` points to `https://github.com/dystrophyless/pin.git`; `main` was pushed through `ccebe5a` on 2026-10-14; inspect Git for later checkpoints |
+| Remote default branch | `main`; pushed through `a725333` on 2026-10-14 |
+| Local Git connection | `origin` points to `https://github.com/dystrophyless/pin.git`; `main` was pushed through `a725333` on 2026-10-14; inspect Git for later checkpoints |
 
 Recheck remote state at session start. A `git ls-remote` check on 2026-10-14 confirmed the remote HEAD above after the authorized push. The root brief and architecture now live in `_docs/` with their updated entry points published. Do not maintain duplicate source briefs.
 
@@ -52,7 +52,7 @@ After connection, the repository's Issues page is the entry point. Use search ex
 
 Labels are optional and must be created before these filtered searches are useful. Without them, inspect the issue body's status. See [GitHub Issues workflow](sdd/guides/github-issues-workflow.md).
 
-## Current execution checkpoint — 2026-10-14
+## Current execution checkpoint РІР‚вЂќ 2026-10-14
 
 The active user goal authorizes implementation of eligible published issues in dependency order, local commits, meaningful evidence, issue updates and closure after direct Orchestrator acceptance. GPT-6 Luna High implements features; GPT-6 Luna Low publishes verified facts. Spec/task reviews are separate from execution; **no implementation Reviewer agents** are required. No repeated per-issue acceptance approval is needed. The user explicitly authorized GitHub push on 2026-10-14. Paid provisioning, Docker and deployment remain outside the current authorization.
 
@@ -73,9 +73,9 @@ Delivery's full 50-owner local outer-loop profile measured transport-dispatch-st
 
 Capture now includes actual app-worker composition, durable draft/proof/callback flow, mixed-batch atomic confirmation, correction/restart/replay, truncation rejection and multi-page outbox. Capture alone requests up to4096 output tokens; the model-smoke default/ceiling remains512. Real preview delivery used injected interpretation, with no saved plans. Broader live model quality is not claimed. Local single migration head is `conversation_capture_0001` after `delivery_recovery_summary_0001`; qualified snapshots have zero schema drift.
 
-Mutation #15 is accepted and closed for Windows local development at `0213a5d289282c746bbb155aaeff3ee68bc39f3d`. Its accepted Billing gate checks current access for selected home-zone reinterpretation and reminder changes at preview and locked confirmation; Keep-only profile behavior is preserved. The archived qualifier itself passed all 399 tests with zero failures/errors/skips, plus Ruff, mypy152, architecture, migration lifecycle and actual RU/EN/silence recognition. See [Issue #15 evidence](evidence/issue-15-mutations-local.md). Issues #16 and #17 are now in progress with assigned executors because their remaining prerequisites are accepted and TR-01 is resolved; their task contracts remain unchanged. Preserve occurrence-only Done, count/history-preserving rescheduling, explicit-zone/keep-reinterpret previews, and the approved late-check/recovery-summary policy. SPEC-001 §11 records the owner's decisions.
+Mutation #15 is accepted and closed for Windows local development at `0213a5d289282c746bbb155aaeff3ee68bc39f3d`. Its accepted Billing gate checks current access for selected home-zone reinterpretation and reminder changes at preview and locked confirmation; Keep-only profile behavior is preserved. The archived qualifier itself passed all 399 tests with zero failures/errors/skips, plus Ruff, mypy152, architecture, migration lifecycle and actual RU/EN/silence recognition. See [Issue #15 evidence](evidence/issue-15-mutations-local.md). Issues #16 and #17 are now in progress with assigned executors because their remaining prerequisites are accepted and TR-01 is resolved; their task contracts remain unchanged. Preserve occurrence-only Done, count/history-preserving rescheduling, explicit-zone/keep-reinterpret previews, and the approved late-check/recovery-summary policy. SPEC-001 Р’В§11 records the owner's decisions.
 
-## Current checkpoint — 2026-10-14
+## Current checkpoint РІР‚вЂќ 2026-10-14
 
 Issue #15 mutation integration is committed at `e1ada7311a723161218ae8369a33c9e2afa3b71a`. Follow-up local commits add mutation runtime tests (`7da69a2`), native delivery interleavings (`4b70324`), selected-zone settings callback tests (`666ba4b`), failed model-replay hold release (`8b2a126`), and actual expired-trial policy tests (`39decb051538199d2df0c0e46610f7510bb05694`). The accepted implementation/evidence commits were pushed through 34f4573; #15 is accepted and closed, #16/#17 are in progress with assigned executors, and #18 remains accepted/closed. See [Issue 15 local evidence](evidence/issue-15-mutations-local.md).
 
@@ -108,9 +108,11 @@ Owner override recorded 2026-10-13: implementation reviewers are not required; f
 
 ### Active integration checkpoint
 
-- Issues #1–#18 are accepted/closed for Windows local development; GitHub read-back confirmed 18 closed issues. Latest acceptance: [#16](https://github.com/dystrophyless/pin/issues/16#issuecomment-6163832097) and [#17](https://github.com/dystrophyless/pin/issues/17#issuecomment-6163832993). Task-contract sections were preserved.
+- Issues #1РІР‚вЂњ#18 are accepted/closed for Windows local development; GitHub read-back confirmed 18 closed issues. Latest acceptance: [#16](https://github.com/dystrophyless/pin/issues/16#issuecomment-6163832097) and [#17](https://github.com/dystrophyless/pin/issues/17#issuecomment-6163832993). Task-contract sections were preserved.
 - Accepted implementation source `55dfb022e74483936ecf8ae820c72b0296b5a455`, tree `a578d287eaacfb1dbf48fd43b3bcb5710542f81b`: frozen packet `1617b`, 452 passed / zero failures/errors/skips in208.97s; all setup/import/Ruff/mypy174/architecture checks PASS. Complete migration lifecycle/drift and actual offline RU/EN/silence PASS; 28 manifest-owned databases cleaned with absence proof. Historical/reserved/failed fixtures remain preserved. [Accountability evidence](evidence/issue-16-accountability-local.md), [support evidence](evidence/issue-17-support-local.md).
 - The failed `1617a` run and allocation-failure speech fixture are retained. Metadata drift and reply test-clock mismatch were fixed; direct speech tests share the real recognizer as production does. On this8GiB host the owner freed memory; actual recognition and full qualification then passed. This is not an actual-host180-second latency/capacity benchmark.
-- #19 expiry/resume is in progress under GPT-6 Luna High `/root/finish_accountability`; root owns shared Notes reply authorization and Telegram composition. Publisher read back all required dependencies #6/#7/#12/#16 accepted before dispatch. No #19 acceptance is claimed. #20–#23 remain future dependent implementation.
-- #24–#28 remain blocked/deferred integration, deployment, qualification and release work. #25 metadata now reflects accepted local prerequisites and pending #24; the452-test component qualification does not establish the hosted gate. No deployment, paid provisioning or extra live OpenRouter calls are authorized. Current unresolved evidence gates remain explicit; no legal retention duration or model-quality threshold is invented.
-- Implementation and evidence through `427469d` are published to `origin/main`; inspect Git for later documentation commits and the executor's current dirty source. No implementation Reviewer is used. Revalidate worker/command handles before waiting; no qualification command is still running at this checkpoint.
+- #19 expiry/resume is in progress under GPT-6 Luna High `/root/finish_accountability`; root owns shared Notes reply authorization and Telegram composition. Publisher read back all required dependencies #6/#7/#12/#16 accepted before dispatch. No #19 acceptance is claimed. #20РІР‚вЂњ#23 remain future dependent implementation.
+- #24РІР‚вЂњ#28 remain blocked/deferred integration, deployment, qualification and release work. #25 metadata now reflects accepted local prerequisites and pending #24; the452-test component qualification does not establish the hosted gate. No deployment, paid provisioning or extra live OpenRouter calls are authorized. Current unresolved evidence gates remain explicit; no legal retention duration or model-quality threshold is invented.
+- Remote `origin/main` was verified at `a7253330c6d7172b30e71b4f17211a7be6bb988c`; local HEAD is `94273c8619c2860fdc27cd97dde6980137ab7f18` with uncommitted issue19 changes. No implementation Reviewer is used. Revalidate worker/command handles before waiting; no qualification command is still running at this checkpoint.
+
+Current qualification verdict: ee7eda5 overallFAIL (485cases,9failures); actual offlineRU/EN/silence and static/migration checks passed. Preserve C:/Users/roman/AppData/Local/Temp/pin-parent-access-ee7eda5-20261014. New fixed revision needs a separate fresh packet.
