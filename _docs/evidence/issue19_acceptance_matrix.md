@@ -41,8 +41,12 @@ Source checkpoint: commit ee7eda5. Root independently ran the lifecycle file13/1
 
 Final frozen qualification is assigned to GPT-6 Luna High /root/qualify_access_revision, packet C:/Users/roman/AppData/Local/Temp/pin-parent-access-ee7eda5-20261014. It owns temp artifacts only. No final qualification PASS, issue acceptance or closure is recorded yet. Root must compare packet/source tree, fixture inventory, all failure/error/skip counts, migration/speech facts, complete contract coverage and cleanup before acceptance. Partial earlier findings remain historical entries rather than current verdicts.
 
-## Frozen qualification failure — authoritative current verdict
+## Frozen qualification failure вЂ” authoritative current verdict
 
 Root inspected machine receipts for frozen ee7eda5b9a300db78813bf4c71421fa0423c1a74 in pin-parent-access-ee7eda5-20261014. Pytest:485 cases,476 passed,9 failed,0 errors,0 skips; exit1, overallFAIL. Eight failures are in tests/test_accountability_runtime_postgres.py; one is test_private_onboarding_survives_restarts_and_activates_one_trial. Partial13-case success does not supersede these regressions. Exact failed names and raw stack traces are retained in pytest.log and pytest.xml. Same Executor owns diagnosis/correction; no test deletions or weakened assertions are authorized.
 
 Independent receipt facts: import provenance, both premigration steps, Ruff, mypy179, architecture and migration lifecycle/drift passed. Actual offline RU/EN speech passed with silence rejection per speech-result.json. These component results do not make the overall qualification green. New revision and separate fresh packet required after corrections; preserve this failure evidence. No issue19 acceptance/closure.
+
+## Current final verdict
+
+Supersedes historical pending/failure verdicts: f8ade5d frozen qualification485PASS/zero failures/errors/skips; root acceptance for issue19 local phase recorded in issue-19-expiry-local.md. Overall MVP and later payment/host gates remain incomplete.
