@@ -12,6 +12,7 @@ from pin.adapters.telegram.reminder_delivery import TelegramReminderTransport
 from pin.bootstrap.config import ProcessRole, SettingsError, load_settings
 from pin.observability import configure_logging
 from pin.persistence import create_engine, create_session_factory, run_local_async
+from pin.platform.worker_heartbeat import worker_heartbeat
 
 logger = logging.getLogger("pin.runtime")
 
@@ -39,9 +40,10 @@ def main() -> None:
 
     async def run() -> None:
         try:
-            await run_delivery_worker(
-                sessions, TelegramReminderTransport(bot), worker_id=worker_id
-            )
+            async with worker_heartbeat(sessions, worker_id=worker_id, role="delivery"):
+                await run_delivery_worker(
+                    sessions, TelegramReminderTransport(bot), worker_id=worker_id
+                )
         finally:
             await bot.session.close()
             await engine.dispose()
@@ -55,4 +57,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

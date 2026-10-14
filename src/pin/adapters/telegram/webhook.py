@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 
 from aiogram import Bot
 from aiohttp import web
+from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
@@ -29,6 +30,7 @@ from pin.adapters.telegram.payments import (
 )
 
 MAX_WEBHOOK_BODY_BYTES = 256 * 1024
+READINESS_TIMEOUT_SECONDS = 2.0
 WEBHOOK_PATH = "/telegram/webhook"
 SECRET_HEADER = "X-Telegram-Bot-Api-Secret-Token"
 
@@ -52,6 +54,18 @@ def create_webhook_app(
     async def close_resources(_application: web.Application) -> None:
         await bot.session.close()
         await engine.dispose()
+
+    async def liveness(_request: web.Request) -> web.Response:
+        return web.json_response({"status": "alive"})
+
+    async def readiness(_request: web.Request) -> web.Response:
+        try:
+            async with asyncio.timeout(READINESS_TIMEOUT_SECONDS):
+                async with sessions() as session:
+                    await session.execute(text("SELECT 1"))
+        except (SQLAlchemyError, TimeoutError):
+            return web.json_response({"status": "not_ready", "dependency": "database"}, status=503)
+        return web.json_response({"status": "ready"})
 
     async def receive(request: web.Request) -> web.Response:
         received_at = asyncio.get_running_loop().time()
@@ -121,6 +135,8 @@ def create_webhook_app(
         return web.json_response({"ok": True})
 
     app.router.add_post(WEBHOOK_PATH, receive)
+    app.router.add_get("/healthz", liveness)
+    app.router.add_get("/readyz", readiness)
     app.on_startup.append(prepare_ingress)
     app.on_cleanup.append(close_resources)
     return app

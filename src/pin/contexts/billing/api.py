@@ -1,5 +1,16 @@
 """Published contracts for consumers of the billing context."""
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from datetime import datetime
+
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from pin.contexts.billing.infrastructure.operations import BillingOperations
+
 from pin.contexts.billing.application.contracts import (
     AcceptPaymentTerms,
     AccessLifecycleStore,
@@ -109,3 +120,10 @@ __all__ = [
     "ViewPaymentTerms",
     "authorize_access_notice",
 ]
+
+
+async def read_operational_projection(session: AsyncSession, *, at: datetime) -> BillingOperations:
+    """Return billing-owned, redacted reservation and reconciliation facts."""
+    from pin.contexts.billing.infrastructure.operations import read_billing_operations
+
+    return await read_billing_operations(session, at=at)

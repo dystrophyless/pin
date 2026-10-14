@@ -57,6 +57,7 @@ if TYPE_CHECKING:
         ReviewProfile,
         TodayUntimedReader,
     )
+    from pin.contexts.notifications.infrastructure.operations import DeliveryOperations
     from pin.platform.jobs import JobClaim
 
 
@@ -108,6 +109,13 @@ async def deliver_accountability_job(
         render=render,
         now=now,
     )
+
+
+async def read_operational_projection(session: AsyncSession) -> DeliveryOperations:
+    """Return notifications-owned send outcomes without destination or message data."""
+    from pin.contexts.notifications.infrastructure.operations import read_delivery_operations
+
+    return await read_delivery_operations(session)
 
 
 __all__ = [
