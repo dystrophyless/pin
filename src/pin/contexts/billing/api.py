@@ -1,13 +1,19 @@
 """Published contracts for consumers of the billing context."""
 
 from pin.contexts.billing.application.contracts import (
+    AcceptPaymentTerms,
     AccessLifecycleStore,
     AccessNoticeQuietPolicy,
     AccessUsageStore,
     ActivatePaidPeriod,
     CheckAccess,
     CheckAccessNotice,
+    CheckStarsCheckout,
+    CreateStarsOrder,
+    FinishStarsRefund,
     ReadSubscriptionStatus,
+    RecordStarsPayment,
+    RequestStarsRefund,
     ReserveUsage,
     ReserveUsageResult,
     ResizeVoiceUsage,
@@ -17,6 +23,7 @@ from pin.contexts.billing.application.contracts import (
     SubscriptionStatus,
     TrialActivationResult,
     TrialActivationStatus,
+    ViewPaymentTerms,
 )
 from pin.contexts.billing.domain.access import (
     AccessDecision,
@@ -36,6 +43,19 @@ from pin.contexts.billing.domain.access import (
     UsageReservation,
     authorize_access_notice,
 )
+from pin.contexts.billing.domain.payments import (
+    STARS_CURRENCY,
+    STARS_PERIOD,
+    STARS_PERIOD_SECONDS,
+    STARS_PRICE,
+    TERMS_VERSION,
+)
+from pin.contexts.billing.infrastructure.payments import (
+    CheckoutDecision,
+    PaymentInvoice,
+    PaymentRejected,
+    SqlAlchemyStarsPaymentStore,
+)
 from pin.contexts.billing.infrastructure.store import SqlAlchemyAccessUsageStore
 
 __all__ = [
@@ -48,15 +68,22 @@ __all__ = [
     "AccessNoticeQuietPolicy",
     "AccessNoticeStatus",
     "AccessUsageStore",
+    "AcceptPaymentTerms",
     "ActivatePaidPeriod",
     "Allowance",
     "CheckAccessNotice",
+    "CheckStarsCheckout",
     "CheckAccess",
+    "CreateStarsOrder",
+    "CheckoutDecision",
+    "FinishStarsRefund",
     "IdempotencyConflict",
     "InvalidTransition",
     "Operation",
     "PeriodKind",
     "PlanPolicy",
+    "PaymentInvoice",
+    "PaymentRejected",
     "QuotaExceeded",
     "ReservationState",
     "ReserveUsage",
@@ -68,8 +95,17 @@ __all__ = [
     "TrialActivationStatus",
     "UsageReservation",
     "ReadSubscriptionStatus",
+    "RecordStarsPayment",
     "RetainBillingIdentity",
     "RestoreReturningPaidAccess",
+    "RequestStarsRefund",
+    "STARS_CURRENCY",
+    "STARS_PERIOD",
+    "STARS_PERIOD_SECONDS",
+    "STARS_PRICE",
+    "SqlAlchemyStarsPaymentStore",
     "SubscriptionStatus",
+    "TERMS_VERSION",
+    "ViewPaymentTerms",
     "authorize_access_notice",
 ]

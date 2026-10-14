@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
 from logging import getLogger
 
 from aiogram import Bot
@@ -20,6 +21,13 @@ from pin.adapters.telegram.ingress import (
     persist_update,
     select_ingress_mode,
     validate_update,
+)
+from pin.adapters.telegram.payments import (
+    PRECHECKOUT_ANSWER_RESERVE_SECONDS,
+    PRECHECKOUT_DEADLINE_SECONDS,
+    PreCheckoutOutcomeUnknown,
+    answer_pre_checkout,
+    pre_checkout_query,
 )
 
 logger = getLogger("pin.telegram.polling")
@@ -62,8 +70,10 @@ async def poll_updates(
                     logger.error("telegram_poll_request_failed error=%s", type(error).__name__)
                     await sleep(1)
                     continue
+                batch_received_at = asyncio.get_running_loop().time()
                 retry_batch = False
                 for update in updates:
+                    received_at = batch_received_at
                     payload = validate_update(update, bot)
                     update_id = payload.get("update_id")
                     if (
@@ -74,7 +84,46 @@ async def poll_updates(
                         raise RuntimeError("Telegram returned an invalid update identifier")
                     next_offset = update_id + 1
                     callback_id: str | None = None
+                    is_pre_checkout = pre_checkout_query(payload) is not None
                     try:
+                        if is_pre_checkout:
+                            persist_budget = (
+                                received_at
+                                + PRECHECKOUT_DEADLINE_SECONDS
+                                - asyncio.get_running_loop().time()
+                                - PRECHECKOUT_ANSWER_RESERVE_SECONDS
+                            )
+                            if persist_budget <= 0:
+                                raise TimeoutError
+                        else:
+                            persist_budget = None
+                        async with asyncio.timeout(persist_budget):
+                            async with sessions() as session, session.begin():
+                                locked_record = await session.scalar(
+                                    select(TelegramIngressBotRecord)
+                                    .where(TelegramIngressBotRecord.bot_id == bot_id)
+                                    .with_for_update()
+                                )
+                                if locked_record is None or locked_record.mode != "polling":
+                                    raise RuntimeError("Telegram polling mode is no longer active")
+                                receipt = await persist_update(
+                                    session,
+                                    bot_id=bot_id,
+                                    payload=payload,
+                                    owner_resolver=resolver,
+                                )
+                                if receipt is not None:
+                                    callback_id = receipt.callback_query_id
+                                if callback_id is None and not is_pre_checkout:
+                                    locked_record.next_update_offset = max(
+                                        locked_record.next_update_offset or 0, next_offset
+                                    )
+                    except (SQLAlchemyError, TimeoutError):
+                        logger.error("telegram_poll_persist_failed")
+                        retry_batch = True
+                        break
+                    if callback_id is not None:
+                        await acknowledge_callback(bot, callback_id)
                         async with sessions() as session, session.begin():
                             locked_record = await session.scalar(
                                 select(TelegramIngressBotRecord)
@@ -83,24 +132,23 @@ async def poll_updates(
                             )
                             if locked_record is None or locked_record.mode != "polling":
                                 raise RuntimeError("Telegram polling mode is no longer active")
-                            receipt = await persist_update(
-                                session,
-                                bot_id=bot_id,
-                                payload=payload,
-                                owner_resolver=resolver,
+                            locked_record.next_update_offset = max(
+                                locked_record.next_update_offset or 0, next_offset
                             )
-                            if receipt is not None:
-                                callback_id = receipt.callback_query_id
-                            if callback_id is None:
-                                locked_record.next_update_offset = max(
-                                    locked_record.next_update_offset or 0, next_offset
-                                )
-                    except SQLAlchemyError:
-                        logger.error("telegram_poll_persist_failed")
-                        retry_batch = True
-                        break
-                    if callback_id is not None:
-                        await acknowledge_callback(bot, callback_id)
+                    elif is_pre_checkout:
+                        try:
+                            await answer_pre_checkout(
+                                sessions,
+                                bot,
+                                bot_id=bot_id,
+                                update=payload,
+                                now=datetime.now(UTC),
+                                received_at=received_at,
+                            )
+                        except PreCheckoutOutcomeUnknown:
+                            logger.warning("telegram_pre_checkout_answer_deferred")
+                            retry_batch = True
+                            break
                         async with sessions() as session, session.begin():
                             locked_record = await session.scalar(
                                 select(TelegramIngressBotRecord)

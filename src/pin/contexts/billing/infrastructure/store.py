@@ -117,8 +117,7 @@ class SqlAlchemyAccessUsageStore(AccessUsageStore):
             )
             by_actor = await self._session.scalar(
                 select(RetainedBillingIdentityRecord).where(
-                    RetainedBillingIdentityRecord.telegram_user_id
-                    == command.telegram_user_id
+                    RetainedBillingIdentityRecord.telegram_user_id == command.telegram_user_id
                 )
             )
             if by_actor is None or by_actor.owner_id != command.owner_id:
@@ -143,9 +142,7 @@ class SqlAlchemyAccessUsageStore(AccessUsageStore):
             raise InvalidTransition("retained billing identity conflicts with trial history")
         return retained if retained is not None else trial_owner
 
-    async def restore_returning_paid_access(
-        self, command: RestoreReturningPaidAccess
-    ) -> bool:
+    async def restore_returning_paid_access(self, command: RestoreReturningPaidAccess) -> bool:
         """Restore only active paid coverage for the matching retained Telegram actor."""
         _require_aware(command.at)
         if type(command.telegram_user_id) is not int or command.telegram_user_id <= 0:

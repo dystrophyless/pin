@@ -132,6 +132,66 @@ class RestoreReturningPaidAccess:
     at: datetime
 
 
+@dataclass(frozen=True, slots=True)
+class ViewPaymentTerms:
+    owner_id: UUID
+    at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class AcceptPaymentTerms:
+    owner_id: UUID
+    at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class CreateStarsOrder:
+    owner_id: UUID
+    telegram_user_id: int
+    invoice_payload: str
+    at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class CheckStarsCheckout:
+    owner_id: UUID
+    telegram_user_id: int
+    invoice_payload: str
+    query_id: str
+    currency: str
+    total_amount: int
+    at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class RecordStarsPayment:
+    owner_id: UUID
+    telegram_user_id: int
+    invoice_payload: str
+    telegram_charge_id: str
+    provider_charge_id: str | None
+    currency: str
+    total_amount: int
+    is_recurring: bool
+    is_first_recurring: bool
+    subscription_expiration_date: datetime | None
+    at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class RequestStarsRefund:
+    telegram_charge_id: str
+    requested_by: str
+    at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class FinishStarsRefund:
+    telegram_charge_id: str
+    status: str
+    at: datetime
+
+
 class AccessLifecycleStore(Protocol):
     async def retain_owner_for_return(self, command: RetainBillingIdentity) -> bool: ...
 

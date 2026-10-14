@@ -52,7 +52,10 @@ def main() -> None:
     async def run() -> None:
         try:
             await run_application_worker(
-                sessions, worker_id=worker_id, assistant=assistant
+                sessions,
+                worker_id=worker_id,
+                assistant=assistant,
+                payment_support_contact=settings.payment_support_contact,
             )
         finally:
             await provider.aclose()

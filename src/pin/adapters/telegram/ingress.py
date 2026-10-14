@@ -128,9 +128,7 @@ class PostgresTelegramOwnerResolver:
         if saved is None:
             raise RuntimeError("Telegram identity mapping was not visible after insert conflict")
         if retained is not None and retained != saved:
-            raise RuntimeError(
-                "Telegram identity mapping conflicts with retained billing owner"
-            )
+            raise RuntimeError("Telegram identity mapping conflicts with retained billing owner")
         await billing.restore_returning_paid_access(
             RestoreReturningPaidAccess(saved, telegram_user_id, datetime.now(UTC))
         )
