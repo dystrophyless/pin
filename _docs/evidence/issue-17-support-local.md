@@ -15,3 +15,5 @@ Direct Orchestrator checks on 2026-10-14:
 The runtime check used the working tree, including in-progress outer Accountability composition. It is not a frozen-source whole-project qualification. The source/helper integration, all regression gates, exact revision/environment evidence, and task acceptance audit remain pending in the separate 1617a packet. No live provider or Telegram calls, Docker, deployment, or release qualification were performed.
 
 The approved text request → preview → confirmation interaction is retained. The optional preference for an additional selection button has not changed this contract.
+
+Checkpoint `ccebe5a` adds native Russian and English application-path scenarios with distinct Telegram identities. The worker observed **2 passed** on fresh `pin_issue17_bilingual_20261014a`; localized advice, time clarification, editable preview, exact confirmed titles and exhausted/expired access are covered. Two final assertions were added after that native run and received lint/type checks only; their execution remains part of frozen-source qualification. No provider or Telegram network request was made.
