@@ -38,8 +38,10 @@ from pin.adapters.telegram.presentation.callbacks import (
 )
 from pin.adapters.telegram.presentation.formatting import escape_markdown_v2
 from pin.adapters.telegram.presentation.onboarding import OnboardingReply, render_onboarding
+from pin.adapters.telegram.presentation.subscription import render_subscription_status
 from pin.adapters.telegram.presentation.tokens import SqlAlchemyCallbackTokenStore
 from pin.contexts.billing.api import (
+    ReadSubscriptionStatus,
     SqlAlchemyAccessUsageStore,
     StartTrial,
     TrialActivationResult,
@@ -155,8 +157,25 @@ async def process_application_job(
                 await complete_job(session, claim)
                 return
             view = agenda_command(message_text)
-            profile = await store.get_preferences(inbox.owner_id) if view is not None else None
-            if view is not None and profile is not None:
+            words = message_text.strip().split(maxsplit=1)
+            subscription = bool(words) and words[0].split("@", 1)[0] == "/subscription"
+            profile = (
+                await store.get_preferences(inbox.owner_id)
+                if view is not None or subscription
+                else None
+            )
+            if subscription and profile is not None:
+                status = await SqlAlchemyAccessUsageStore(session).read_subscription_status(
+                    ReadSubscriptionStatus(inbox.owner_id, now.astimezone(UTC))
+                )
+                result = PrivateMessageResult(
+                    DispatchDisposition.HANDLED,
+                    OnboardingResult("unhandled", preferences=profile),
+                    render_subscription_status(
+                        status, language=profile.language, zone_name=profile.home_zone
+                    ),
+                )
+            elif view is not None and profile is not None:
                 agenda_reply = await handle_agenda_command(
                     session,
                     owner_id=inbox.owner_id,

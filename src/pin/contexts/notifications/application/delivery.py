@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Literal, Protocol
 from uuid import UUID
 
@@ -35,6 +35,29 @@ class TelegramReplySend:
     plain_text: str
     reply_markup: dict[str, object] | None = None
     parse_mode: Literal["MarkdownV2"] | None = "MarkdownV2"
+
+
+@dataclass(frozen=True, slots=True)
+class ReplyPreparation:
+    """A domain-owned dispatch decision; no external attempt has started yet."""
+
+    message: TelegramReplySend | None = None
+    deferred_until: datetime | None = None
+    reason: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.message is not None and (
+            self.deferred_until is not None or self.reason is not None
+        ):
+            raise ValueError("a prepared reply cannot also defer or skip")
+        if self.deferred_until is not None and (
+            self.deferred_until.tzinfo is None or self.deferred_until.utcoffset() is None
+        ):
+            raise ValueError("reply deferral must be timezone-aware")
+        if self.message is None and self.deferred_until is None and self.reason is None:
+            raise ValueError("a skipped reply requires a reason")
+        if self.reason is not None and (not self.reason.strip() or len(self.reason) > 80):
+            raise ValueError("reply preparation reason must contain 1 to 80 characters")
 
 
 class AccountabilityTransport(Protocol):

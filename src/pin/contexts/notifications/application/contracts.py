@@ -43,16 +43,11 @@ class CurrentOccurrenceSchedule:
             raise ValueError("occurrence_version must be positive")
         if self.state not in {"open", "completed", "cancelled"}:
             raise ValueError("unsupported occurrence state")
-        if (
-            self.approved_preferences_version is not None
-            and self.approved_preferences_version < 1
-        ):
+        if self.approved_preferences_version is not None and self.approved_preferences_version < 1:
             raise ValueError("approved_preferences_version must be positive when present")
         if self.series_id is None and self.series_version is not None:
             raise ValueError("series_version requires series_id")
-        if self.series_id is not None and (
-            self.series_version is None or self.series_version < 1
-        ):
+        if self.series_id is not None and (self.series_version is None or self.series_version < 1):
             raise ValueError("a series occurrence requires a positive series_version")
         if self.series_id is None and self.series_state is not None:
             raise ValueError("series_state requires series_id")
@@ -86,9 +81,7 @@ class CurrentPlanSchedule:
 class CurrentScheduleStore(Protocol):
     """Planning-owned, caller-UoW reader that locks current rows before writes."""
 
-    async def lock_current_schedule(
-        self, change: ScheduleChange
-    ) -> CurrentPlanSchedule | None: ...
+    async def lock_current_schedule(self, change: ScheduleChange) -> CurrentPlanSchedule | None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,6 +90,43 @@ class ReconciliationResult:
     created: int = 0
     updated: int = 0
     invalidated: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class AccessResumeReminder:
+    offset_kind: str
+    offset_amount: int
+    source: str
+    due_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class AccessResumeOccurrence:
+    owner_id: UUID
+    occurrence_id: UUID
+    occurrence_version: int
+    state: str
+    event_start_at: datetime | None
+    reminders: tuple[AccessResumeReminder, ...]
+    plan_item_id: UUID
+    plan_version: int
+    preferences_version: int
+    series_id: UUID | None = None
+    series_version: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ResumeAfterAccess:
+    owner_id: UUID
+    period_id: str
+    at: datetime
+    occurrences: tuple[AccessResumeOccurrence, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ResumeAfterAccessResult:
+    rearmed: int = 0
+    skipped_stale: int = 0
 
 
 class ReminderIntentStore(Protocol):
@@ -113,6 +143,10 @@ class ReminderIntentStore(Protocol):
     async def record_stale_change(
         self, change: ScheduleChange, *, at: datetime
     ) -> ReconciliationResult: ...
+
+
+class AccessResumeStore(Protocol):
+    async def resume_after_access(self, command: ResumeAfterAccess) -> ResumeAfterAccessResult: ...
 
 
 SCHEDULE_EVENT_TYPES = frozenset(

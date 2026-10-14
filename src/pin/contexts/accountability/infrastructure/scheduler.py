@@ -80,6 +80,7 @@ async def synchronize_occurrence(
             return cycle
         if cycle.state == CycleState.OPEN.value:
             cycle.state = CycleState.SUPERSEDED.value
+            await _clear_cycle_retry_markers(session, cycle)
     cycle = CheckInCycleRecord(
         id=uuid4(),
         owner_id=occurrence.owner_id,
@@ -279,6 +280,78 @@ async def schedule_due_accountability(
     return created
 
 
+async def resume_initials_after_access(
+    session: AsyncSession,
+    *,
+    owner_id: UUID,
+    period_id: str,
+    current_occurrences: tuple[CurrentOccurrence, ...],
+    now: datetime,
+) -> int:
+    """Requeue only never-sent initial checks still matching current Planning rows."""
+    _require_aware(now)
+    if not period_id.strip() or len(period_id) > 128:
+        raise ValueError("period_id must contain 1 to 128 characters")
+    if any(item.owner_id != owner_id for item in current_occurrences):
+        raise ValueError("current occurrence snapshot contains a foreign owner")
+    current_by_id = {item.occurrence_id: item for item in current_occurrences}
+    if not current_by_id:
+        return 0
+
+    cycles = list(
+        (
+            await session.scalars(
+                select(CheckInCycleRecord)
+                .where(
+                    CheckInCycleRecord.owner_id == owner_id,
+                    CheckInCycleRecord.occurrence_id.in_(set(current_by_id)),
+                    CheckInCycleRecord.state == CycleState.OPEN.value,
+                    CheckInCycleRecord.expected_end_at <= now.astimezone(UTC),
+                    CheckInCycleRecord.initial_confirmed_at.is_(None),
+                    CheckInCycleRecord.nudge_slot_used.is_(False),
+                )
+                .order_by(CheckInCycleRecord.expected_end_at, CheckInCycleRecord.id)
+                .limit(1000)
+                .with_for_update(skip_locked=True)
+            )
+        ).all()
+    )
+    resumed = 0
+    for cycle in cycles:
+        current = current_by_id.get(cycle.occurrence_id)
+        if (
+            current is None
+            or current.state != "open"
+            or current.occurrence_version != cycle.occurrence_version
+            or current.kind != cycle.kind
+            or current.kind not in {"appointment", "deadline"}
+        ):
+            continue
+        expected_end = current.ends_at if current.kind == "appointment" else current.deadline_at
+        if expected_end is None or expected_end.astimezone(UTC) != cycle.expected_end_at.astimezone(
+            UTC
+        ):
+            continue
+        intent = await _get_intent(session, cycle_id=cycle.id, slot=MessageSlot.INITIAL)
+        if (
+            intent is None
+            or intent.state != "skipped"
+            or intent.failure_code != "access_expired"
+            or (intent.attempt_count > 0 and not intent.retryable_after_access)
+        ):
+            continue
+        intent.state = "scheduled"
+        intent.failure_code = None
+        intent.retryable_after_access = False
+        intent.due_at = now.astimezone(UTC)
+        intent.not_before_at = None
+        intent.dispatch_version += 1
+        await _enqueue_send(session, intent, owner_id)
+        resumed += 1
+    await session.flush()
+    return resumed
+
+
 async def apply_delivery_outcome(
     session: AsyncSession,
     *,
@@ -289,9 +362,12 @@ async def apply_delivery_outcome(
     occurred_at: datetime,
     attempt_number: int,
     retrying: bool = False,
+    expected_dispatch_version: int = 1,
 ) -> bool:
     """Apply one durable Delivery outcome without restarting or reviving a cycle."""
     _require_aware(occurred_at)
+    if type(expected_dispatch_version) is not int or expected_dispatch_version < 1:
+        raise ValueError("expected dispatch version must be a positive integer")
     if attempt_number < 1:
         raise ValueError("delivery attempt number must be positive")
     if outcome not in {"confirmed", "failed", "unknown", "blocked"}:
@@ -348,14 +424,35 @@ async def apply_delivery_outcome(
     session.add(
         AccountabilityOutcomeReceiptRecord(id=uuid4(), owner_id=owner_id, event_id=event_id)
     )
-    if intent is None or intent.cycle_id != cycle_id or intent.review_id != review_id:
+    if (
+        intent is None
+        or intent.dispatch_version != expected_dispatch_version
+        or intent.cycle_id != cycle_id
+        or intent.review_id != review_id
+    ):
         await session.flush()
         return True
     newer = attempt_number > intent.last_outcome_attempt
     if newer:
         intent.last_outcome_attempt = attempt_number
-        intent.failure_code = None if outcome == "confirmed" else intent.failure_code
-        if intent.state != "confirmed":
+        retryable_initial = (
+            outcome == "failed"
+            and retrying
+            and intent.slot == MessageSlot.INITIAL.value
+            and cycle is not None
+            and cycle.state == CycleState.OPEN.value
+            and cycle.initial_confirmed_at is None
+            and not cycle.nudge_slot_used
+        )
+        intent.retryable_after_access = retryable_initial
+        late_retryable_failure = (
+            intent.state == "skipped"
+            and intent.failure_code == "access_expired"
+            and retryable_initial
+        )
+        if not late_retryable_failure:
+            intent.failure_code = None if outcome == "confirmed" else intent.failure_code
+        if intent.state != "confirmed" and not late_retryable_failure:
             if outcome == "confirmed":
                 intent.state = "confirmed"
             elif outcome == "failed":
@@ -408,7 +505,12 @@ async def apply_delivery_outcome(
 
 
 async def mark_delivery_intent_skipped(
-    session: AsyncSession, *, intent_id: UUID, owner_id: UUID, reason: str
+    session: AsyncSession,
+    *,
+    intent_id: UUID,
+    owner_id: UUID,
+    reason: str,
+    expected_dispatch_version: int | None = None,
 ) -> bool:
     """Close an intent when owner/access/delivery policy makes sending impossible."""
     intent = await session.scalar(
@@ -419,9 +521,18 @@ async def mark_delivery_intent_skipped(
         )
         .with_for_update()
     )
-    if intent is None or intent.state in {"confirmed", "unknown", "exhausted"}:
+    expected = expected_dispatch_version if expected_dispatch_version is not None else 1
+    if type(expected) is not int or expected < 1:
+        raise ValueError("expected dispatch version must be a positive integer")
+    if (
+        intent is None
+        or intent.dispatch_version != expected
+        or intent.state in {"confirmed", "unknown", "exhausted"}
+    ):
         return False
     intent.state = "skipped"
+    if reason != "access_expired":
+        intent.retryable_after_access = False
     intent.failure_code = reason[:80]
     await session.flush()
     return True
@@ -435,8 +546,11 @@ async def record_delivery_attempt_result(
     outcome: str,
     retrying: bool,
     failure_code: str | None,
+    expected_dispatch_version: int = 1,
 ) -> None:
     """Persist Delivery's current attempt state; cycle timers still consume its event."""
+    if type(expected_dispatch_version) is not int or expected_dispatch_version < 1:
+        raise ValueError("expected dispatch version must be a positive integer")
     intent = await session.scalar(
         select(AccountabilityIntentRecord)
         .where(
@@ -447,6 +561,8 @@ async def record_delivery_attempt_result(
     )
     if intent is None:
         raise RuntimeError("Accountability delivery intent disappeared before result recording")
+    if intent.dispatch_version != expected_dispatch_version:
+        return
     intent.state = (
         "confirmed"
         if outcome == "confirmed"
@@ -456,6 +572,28 @@ async def record_delivery_attempt_result(
         if outcome == "unknown"
         else "exhausted"
     )
+    retryable_initial = (
+        outcome == "failed"
+        and retrying
+        and intent.slot == MessageSlot.INITIAL.value
+        and intent.cycle_id is not None
+    )
+    if retryable_initial:
+        cycle = await session.scalar(
+            select(CheckInCycleRecord)
+            .where(
+                CheckInCycleRecord.id == intent.cycle_id,
+                CheckInCycleRecord.owner_id == owner_id,
+            )
+            .with_for_update()
+        )
+        retryable_initial = (
+            cycle is not None
+            and cycle.state == CycleState.OPEN.value
+            and cycle.initial_confirmed_at is None
+            and not cycle.nudge_slot_used
+        )
+    intent.retryable_after_access = retryable_initial
     intent.failure_code = failure_code
     await session.flush()
 
@@ -478,6 +616,27 @@ async def _close_occurrence_cycles(
     )
     for cycle in cycles:
         cycle.state = state.value
+        await _clear_cycle_retry_markers(session, cycle)
+
+
+async def _clear_cycle_retry_markers(
+    session: AsyncSession, cycle: CheckInCycleRecord
+) -> None:
+    intents = list(
+        (
+            await session.scalars(
+                select(AccountabilityIntentRecord)
+                .where(
+                    AccountabilityIntentRecord.owner_id == cycle.owner_id,
+                    AccountabilityIntentRecord.cycle_id == cycle.id,
+                    AccountabilityIntentRecord.retryable_after_access.is_(True),
+                )
+                .with_for_update()
+            )
+        ).all()
+    )
+    for intent in intents:
+        intent.retryable_after_access = False
 
 
 async def _get_intent(
@@ -533,8 +692,8 @@ async def _enqueue_send(
         session,
         lane=JobLane.DELIVERY,
         kind=DELIVERY_JOB_KIND,
-        payload={"intent_id": str(intent.id)},
-        deduplication_key=f"accountability:{intent.id}",
+        payload={"intent_id": str(intent.id), "dispatch_version": intent.dispatch_version},
+        deduplication_key=f"accountability:{intent.id}:{intent.dispatch_version}",
         owner_id=owner_id,
         max_attempts=8,
     )

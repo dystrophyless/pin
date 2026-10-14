@@ -40,10 +40,15 @@ async def authorize_accountability_send(
     current_occurrences: CurrentOccurrenceReader,
     today_untimed: TodayUntimedReader,
     now: datetime,
+    expected_dispatch_version: int | None = None,
 ) -> DeliveryAuthorization:
     """Fence a send against current owner, occurrence, date, quiet and cycle state."""
     if now.tzinfo is None or now.utcoffset() is None:
         raise ValueError("delivery clock must be timezone-aware")
+    if expected_dispatch_version is not None and (
+        type(expected_dispatch_version) is not int or expected_dispatch_version < 1
+    ):
+        raise ValueError("expected dispatch version must be a positive integer")
     candidate = await session.scalar(
         select(AccountabilityIntentRecord).where(
             AccountabilityIntentRecord.id == intent_id,
@@ -83,6 +88,8 @@ async def authorize_accountability_send(
     if (
         intent is None
         or intent.state not in {"scheduled", "failed"}
+        or intent.dispatch_version
+        != (expected_dispatch_version if expected_dispatch_version is not None else 1)
         or intent.cycle_id != candidate.cycle_id
         or intent.review_id != candidate.review_id
     ):
@@ -112,6 +119,7 @@ async def authorize_accountability_send(
         cycle = locked_cycle
         if cycle is None or cycle.state != CycleState.OPEN.value:
             intent.state = "skipped"
+            intent.retryable_after_access = False
             return DeliveryAuthorization(None, reason="cycle_closed")
         current = await current_occurrences.get_current_occurrence(
             profile.owner_id, cycle.occurrence_id, for_update=True
@@ -124,6 +132,7 @@ async def authorize_accountability_send(
             or current.kind != cycle.kind
         ):
             intent.state = "skipped"
+            intent.retryable_after_access = False
             if current is not None and current.state == "completed":
                 cycle.state = CycleState.COMPLETED.value
             elif current is not None and current.state == "cancelled":
@@ -134,6 +143,7 @@ async def authorize_accountability_send(
         if slot is MessageSlot.INITIAL:
             if current.kind == "appointment" and current.ends_at is None:
                 intent.state = "skipped"
+                intent.retryable_after_access = False
                 return DeliveryAuthorization(None, reason="appointment_end_missing")
             expected_end = current.ends_at if current.kind == "appointment" else current.deadline_at
             if expected_end is None or expected_end.astimezone(UTC) > at:
@@ -143,6 +153,7 @@ async def authorize_accountability_send(
         elif slot is MessageSlot.NUDGE:
             if cycle.initial_confirmed_at is None or cycle.nudge_due_at is None:
                 intent.state = "skipped"
+                intent.retryable_after_access = False
                 return DeliveryAuthorization(None, reason="initial_send_not_confirmed")
             if cycle.nudge_due_at.astimezone(UTC) > at:
                 return DeliveryAuthorization(
@@ -163,20 +174,24 @@ async def authorize_accountability_send(
             cycle.id,
             None,
             text,
+            intent.dispatch_version,
         )
     elif intent.review_id is not None:
         review = locked_review
         if review is None or review.state != CycleState.OPEN.value:
             intent.state = "skipped"
+            intent.retryable_after_access = False
             return DeliveryAuthorization(None, reason="review_closed")
         today = at.astimezone(ZoneInfo(profile.home_zone)).date()
         if review.review_date != today:
             review.state = CycleState.SUPERSEDED.value
             intent.state = "skipped"
+            intent.retryable_after_access = False
             return DeliveryAuthorization(None, reason="review_day_expired")
         if slot is MessageSlot.NUDGE:
             if review.initial_confirmed_at is None or review.nudge_due_at is None:
                 intent.state = "skipped"
+                intent.retryable_after_access = False
                 return DeliveryAuthorization(None, reason="initial_send_not_confirmed")
             if review.nudge_due_at.astimezone(UTC) > at:
                 return DeliveryAuthorization(
@@ -194,6 +209,7 @@ async def authorize_accountability_send(
         if not ids:
             review.state = CycleState.SUPERSEDED.value
             intent.state = "skipped"
+            intent.retryable_after_access = False
             return DeliveryAuthorization(None, reason="review_empty")
         titles = tuple(current_by_id[item].title for item in ids)
         text = _review_text(profile.language, slot, titles)
@@ -208,12 +224,15 @@ async def authorize_accountability_send(
             None,
             review.id,
             text,
+            intent.dispatch_version,
         )
     else:
         intent.state = "skipped"
+        intent.retryable_after_access = False
         return DeliveryAuthorization(None, reason="intent_subject_missing")
 
     intent.state = "sending"
+    intent.retryable_after_access = False
     intent.attempt_count += 1
     return DeliveryAuthorization(send)
 

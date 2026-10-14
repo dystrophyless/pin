@@ -69,6 +69,10 @@ async def deliver_accountability_job(
     except (KeyError, TypeError, ValueError) as error:
         raise ValueError("Accountability delivery job has an invalid intent_id") from error
 
+    generation = claim.payload.get("dispatch_version", 1)
+    if type(generation) is not int or generation < 1:
+        raise ValueError("Accountability dispatch version must be a positive integer")
+
     prepared: tuple[UUID, int, ReviewProfile, AccountabilitySend, TelegramReplySend] | None = None
     async with sessions() as session:
         async with session.begin():
@@ -82,6 +86,7 @@ async def deliver_accountability_job(
                 .where(
                     AccountabilityDeliveryAttemptRecord.intent_id == intent_id,
                     AccountabilityDeliveryAttemptRecord.owner_id == owner_id,
+                    AccountabilityDeliveryAttemptRecord.dispatch_version == generation,
                 )
                 .order_by(AccountabilityDeliveryAttemptRecord.attempt_number.desc())
                 .limit(1)
@@ -98,6 +103,7 @@ async def deliver_accountability_job(
                     outcome=DeliveryOutcomeKind.UNKNOWN.value,
                     retrying=False,
                     failure_code=prior.failure_code,
+                    expected_dispatch_version=generation,
                 )
                 await _publish_outcome(
                     session,
@@ -111,6 +117,7 @@ async def deliver_accountability_job(
                     failure_code=prior.failure_code,
                     target_id=prior.target_id,
                     access_period_id=prior.access_period_id,
+                    dispatch_version=generation,
                 )
                 await complete_job(session, claim)
                 return DeliveryOutcomeKind.UNKNOWN
@@ -125,6 +132,7 @@ async def deliver_accountability_job(
                         intent_id=intent_id,
                         owner_id=owner_id,
                         reason="destination_blocked",
+                        expected_dispatch_version=generation,
                     )
                 await complete_job(session, claim)
                 return DeliveryOutcomeKind(prior.outcome)
@@ -138,13 +146,18 @@ async def deliver_accountability_job(
                     intent_id=intent_id,
                     owner_id=owner_id,
                     reason=access.denial.value if access.denial is not None else "access_denied",
+                    expected_dispatch_version=generation,
                 )
                 await complete_job(session, claim)
                 return DeliveryOutcomeKind.SKIPPED
             profile = await profile_reader(session, owner_id)
             if profile is None or profile.owner_id != owner_id:
                 await mark_delivery_intent_skipped(
-                    session, intent_id=intent_id, owner_id=owner_id, reason="profile_unavailable"
+                    session,
+                    intent_id=intent_id,
+                    owner_id=owner_id,
+                    reason="profile_unavailable",
+                    expected_dispatch_version=generation,
                 )
                 await complete_job(session, claim)
                 return DeliveryOutcomeKind.SKIPPED
@@ -154,6 +167,7 @@ async def deliver_accountability_job(
                     intent_id=intent_id,
                     owner_id=owner_id,
                     reason="destination_previously_blocked",
+                    expected_dispatch_version=generation,
                 )
                 await complete_job(session, claim)
                 return DeliveryOutcomeKind.BLOCKED
@@ -164,6 +178,7 @@ async def deliver_accountability_job(
                 current_occurrences=current_occurrences_factory(session),
                 today_untimed=today_untimed_factory(session),
                 now=now(),
+                expected_dispatch_version=generation,
             )
             if authorization.send is None:
                 if authorization.deferred_until is not None:
@@ -198,6 +213,7 @@ async def deliver_accountability_job(
                 intent_id=intent_id,
                 target_id=profile.destination_id,
                 attempt_number=attempt_number,
+                dispatch_version=generation,
                 outcome="started",
                 access_period_id=access.period_id,
                 started_at=now().astimezone(UTC),
@@ -249,6 +265,7 @@ async def deliver_accountability_job(
                 outcome=outcome.value,
                 retrying=retrying,
                 failure_code=failure_code,
+                expected_dispatch_version=generation,
             )
             await _publish_outcome(
                 session,
@@ -262,6 +279,7 @@ async def deliver_accountability_job(
                 failure_code=failure_code,
                 target_id=stored_attempt.target_id,
                 access_period_id=stored_attempt.access_period_id,
+                dispatch_version=generation,
             )
             if retrying and retry_after is not None:
                 await fail_job(
@@ -288,6 +306,7 @@ async def _publish_outcome(
     failure_code: str | None,
     target_id: int | None,
     access_period_id: str | None,
+    dispatch_version: int,
 ) -> None:
     await add_outbox_event(
         session,
@@ -305,7 +324,7 @@ async def _publish_outcome(
                 "reply_event_id": None,
                 "recovery_episode_key": None,
                 "target_id": target_id,
-                "dispatch_version": 1,
+                "dispatch_version": dispatch_version,
                 "attempt_id": str(attempt_id),
                 "attempt_number": attempt_number,
                 "outcome": outcome.value,

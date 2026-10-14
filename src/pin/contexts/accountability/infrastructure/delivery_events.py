@@ -63,10 +63,13 @@ async def consume_delivery_outcomes(
         raw_intent = payload.get("accountability_intent_id")
         if raw_intent is not None:
             raw_attempt = payload.get("attempt_number")
+            generation = payload.get("dispatch_version", 1)
             outcome = payload.get("outcome")
             retrying = payload.get("retrying")
             if (
-                not isinstance(raw_intent, str)
+                type(generation) is not int
+                or generation < 1
+                or not isinstance(raw_intent, str)
                 or type(raw_attempt) is not int
                 or raw_attempt < 1
                 or not isinstance(outcome, str)
@@ -89,6 +92,7 @@ async def consume_delivery_outcomes(
                 occurred_at=event.occurred_at,
                 attempt_number=raw_attempt,
                 retrying=retrying,
+                expected_dispatch_version=generation,
             )
         else:
             session.add(

@@ -158,7 +158,7 @@ class AccessDecision:
 class AccessNoticeAuthorization:
     status: AccessNoticeStatus
     kind: AccessNoticeKind
-    period: AccessPeriod
+    period: AccessPeriod | None
     at: datetime
     defer_until: datetime | None = None
     remaining_seconds: int = 0
@@ -194,9 +194,7 @@ def authorize_access_notice(
     if quiet_until is not None and quiet_until > at:
         if quiet_until >= period.ends_at:
             return AccessNoticeAuthorization(AccessNoticeStatus.SKIP, kind, period, at)
-        return AccessNoticeAuthorization(
-            AccessNoticeStatus.DEFER, kind, period, at, quiet_until
-        )
+        return AccessNoticeAuthorization(AccessNoticeStatus.DEFER, kind, period, at, quiet_until)
 
     remaining_seconds = max(1, int(remaining.total_seconds()))
     return AccessNoticeAuthorization(

@@ -55,6 +55,31 @@ class PlanningScheduleSnapshot:
     occurrences: tuple[PlanningOccurrenceSchedule, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class PlanningOwnerOccurrence:
+    """One bounded owner-wide current occurrence and its persisted reminders."""
+
+    owner_id: UUID
+    plan_item_id: UUID
+    plan_version: int
+    preferences_version: int
+    occurrence: PlanningOccurrenceSchedule
+
+
+@dataclass(frozen=True, slots=True)
+class PlanningOwnerSchedulePage:
+    items: tuple[PlanningOwnerOccurrence, ...]
+    next_cursor: UUID | None
+
+
+class PlanningOwnerScheduleReader(Protocol):
+    """Bounded, caller-UoW reader for current schedules during access recovery."""
+
+    async def list_current_owner_schedules(
+        self, owner_id: UUID, *, after_occurrence_id: UUID | None, limit: int
+    ) -> PlanningOwnerSchedulePage: ...
+
+
 class PlanningScheduleSnapshotStore(Protocol):
     """Caller-UoW reader that locks the current schedule and its version fence."""
 

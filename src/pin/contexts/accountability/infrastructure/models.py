@@ -105,6 +105,7 @@ class AccountabilityIntentRecord(Base):
             name="ck_accountability_intent_state",
         ),
         CheckConstraint("attempt_count >= 0", name="ck_accountability_intent_attempts"),
+        CheckConstraint("dispatch_version >= 1", name="ck_accountability_intent_dispatch_version"),
         CheckConstraint(
             "last_outcome_attempt >= 0", name="ck_accountability_intent_outcome_attempt"
         ),
@@ -124,6 +125,8 @@ class AccountabilityIntentRecord(Base):
     not_before_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     last_outcome_attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    dispatch_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    retryable_after_access: Mapped[bool] = mapped_column(nullable=False, default=False)
     failure_code: Mapped[str | None] = mapped_column(String(80))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()

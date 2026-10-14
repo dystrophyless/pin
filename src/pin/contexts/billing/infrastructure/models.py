@@ -46,6 +46,17 @@ class TrialActivationRecord(Base):
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class RetainedBillingIdentityRecord(Base):
+    """Minimal actor-to-owner link retained for access restoration after account deletion."""
+
+    __tablename__ = "retained_return_owners"
+    __table_args__ = {"schema": "billing"}
+
+    owner_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True)
+    telegram_user_id: Mapped[int] = mapped_column(BigInteger, nullable=False, unique=True)
+    retained_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class AccessPeriodRecord(Base):
     __tablename__ = "access_periods"
     __table_args__ = (
@@ -70,6 +81,35 @@ class AccessPeriodRecord(Base):
     ends_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     ai_turn_limit: Mapped[int] = mapped_column(Integer, nullable=False)
     voice_second_limit: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class AccessExpiryNoticeRecord(Base):
+    """One scheduled warning per access period and lead window."""
+
+    __tablename__ = "access_expiry_notices"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["owner_id", "period_id"],
+            ["billing.access_periods.owner_id", "billing.access_periods.period_id"],
+            ondelete="CASCADE",
+            name="fk_billing_expiry_notice_period_owner",
+        ),
+        UniqueConstraint(
+            "owner_id", "period_id", "kind", name="uq_billing_expiry_notice_period_kind"
+        ),
+        CheckConstraint(
+            "kind IN ('expiry_24h', 'expiry_1h')", name="ck_billing_expiry_notice_kind"
+        ),
+        Index("ix_billing_expiry_notice_due", "emitted_at", "due_at"),
+        {"schema": "billing"},
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    owner_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    period_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    due_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    emitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class UsageReservationRecord(Base):

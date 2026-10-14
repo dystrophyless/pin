@@ -228,6 +228,7 @@ class AccountabilityDeliveryAttemptRecord(Base):
 
     __tablename__ = "accountability_delivery_attempts"
     __table_args__ = (
+        CheckConstraint("dispatch_version >= 1", name="ck_notifications_accountability_generation"),
         CheckConstraint("attempt_number >= 1", name="ck_notifications_accountability_attempt"),
         CheckConstraint("target_id > 0", name="ck_notifications_accountability_target"),
         CheckConstraint(
@@ -251,6 +252,7 @@ class AccountabilityDeliveryAttemptRecord(Base):
     intent_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     target_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     attempt_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    dispatch_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     outcome: Mapped[str] = mapped_column(String(12), nullable=False)
     failure_code: Mapped[str | None] = mapped_column(String(80))
     provider_message_id: Mapped[str | None] = mapped_column(String(100))
