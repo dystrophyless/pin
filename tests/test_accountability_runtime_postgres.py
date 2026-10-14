@@ -412,6 +412,43 @@ async def _prioritize_owner_initial_job(
         job.priority = 2_147_483_647
 
 
+async def _prioritize_delivery_intent_job(
+    sessions: async_sessionmaker[AsyncSession],
+    *,
+    owner_id: UUID,
+    intent_id: UUID,
+    kind: str,
+    dispatch_version: int | None = None,
+) -> None:
+    async with sessions() as session, session.begin():
+        jobs = list(
+            (
+                await session.scalars(
+                    select(Job).where(
+                        Job.owner_id == owner_id,
+                        Job.lane == JobLane.DELIVERY.value,
+                        Job.kind == kind,
+                        Job.status == "pending",
+                    )
+                )
+            ).all()
+        )
+        job = next(
+            (
+                candidate
+                for candidate in jobs
+                if candidate.payload.get("intent_id") == str(intent_id)
+                and (
+                    dispatch_version is None
+                    or candidate.payload.get("dispatch_version") == dispatch_version
+                )
+            ),
+            None,
+        )
+        assert job is not None
+        job.priority = 2_147_483_647
+
+
 async def _retire_own_accountability_job(
     sessions: async_sessionmaker[AsyncSession], *, owner_id: UUID
 ) -> None:
@@ -830,6 +867,7 @@ def test_account_block_suppresses_a_later_accountability_intent(runtime_database
         engine = create_engine(runtime_database)
         sessions = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
         owner_id, occurrence_id, _plan_id = await _seed(sessions)
+        await _prioritize_owner_initial_job(sessions, owner_id=owner_id)
         transport = _Transport(
             sessions,
             outcomes=(KnownDeliveryFailure("destination_forbidden", blocked=True),),
@@ -865,6 +903,38 @@ def test_account_block_suppresses_a_later_accountability_intent(runtime_database
                     now=NOW,
                 )
 
+            async with sessions() as session, session.begin():
+                await schedule_due_accountability(
+                    session,
+                    profiles=(_profile(owner_id),),
+                    today_untimed=_NoTodayItems(),
+                    now=NOW + timedelta(minutes=1),
+                )
+
+            async with sessions() as session:
+                next_cycle = await session.scalar(
+                    select(CheckInCycleRecord).where(
+                        CheckInCycleRecord.owner_id == owner_id,
+                        CheckInCycleRecord.occurrence_id == occurrence_id,
+                        CheckInCycleRecord.occurrence_version == 2,
+                    )
+                )
+                assert next_cycle is not None
+                next_intent = await session.scalar(
+                    select(AccountabilityIntentRecord).where(
+                        AccountabilityIntentRecord.cycle_id == next_cycle.id,
+                        AccountabilityIntentRecord.slot == "initial",
+                    )
+                )
+                assert next_intent is not None
+                next_intent_id = next_intent.id
+            await _prioritize_delivery_intent_job(
+                sessions,
+                owner_id=owner_id,
+                intent_id=next_intent_id,
+                kind=ACCOUNTABILITY_DELIVERY_JOB_KIND,
+                dispatch_version=next_intent.dispatch_version,
+            )
             assert await process_delivery_iteration(
                 sessions,
                 transport,
@@ -909,6 +979,7 @@ def test_account_block_suppresses_a_later_accountability_intent(runtime_database
                     intent for intent in intents if intent.cycle_id == cycles[1].id
                 )
                 assert second_intent.state == "skipped" and second_intent.attempt_count == 0
+            await _retire_own_accountability_job(sessions, owner_id=owner_id)
         finally:
             await engine.dispose()
 
@@ -920,6 +991,7 @@ def test_account_block_suppresses_a_generic_reminder(runtime_database: str) -> N
         engine = create_engine(runtime_database)
         sessions = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
         owner_id, occurrence_id, plan_id = await _seed(sessions)
+        await _prioritize_owner_initial_job(sessions, owner_id=owner_id)
         transport = _Transport(
             sessions,
             outcomes=(KnownDeliveryFailure("destination_forbidden", blocked=True),),
@@ -948,6 +1020,12 @@ def test_account_block_suppresses_a_generic_reminder(runtime_database: str) -> N
                     enqueue=True,
                 )
 
+            await _prioritize_delivery_intent_job(
+                sessions,
+                owner_id=owner_id,
+                intent_id=intent.id,
+                kind="notifications.deliver_reminder",
+            )
             assert await process_delivery_iteration(
                 sessions,
                 transport,
@@ -974,6 +1052,7 @@ def test_account_block_suppresses_a_generic_reminder(runtime_database: str) -> N
                 assert generic_attempt.outcome == "blocked"
                 assert generic_attempt.failure_code == "destination_previously_blocked"
                 assert len(account_attempts) == 1
+            await _retire_own_accountability_job(sessions, owner_id=owner_id)
         finally:
             await engine.dispose()
 
@@ -985,6 +1064,7 @@ def test_generic_block_suppresses_a_later_accountability_send(runtime_database: 
         engine = create_engine(runtime_database)
         sessions = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
         owner_id, occurrence_id, plan_id = await _seed(sessions)
+        await _prioritize_owner_initial_job(sessions, owner_id=owner_id)
         transport = _Transport(sessions)
         try:
             async with sessions() as session, session.begin():
@@ -1039,6 +1119,7 @@ def test_generic_block_suppresses_a_later_accountability_send(runtime_database: 
                 )
                 assert account_attempts == []
                 assert initial_intent is not None and initial_intent.state == "skipped"
+            await _retire_own_accountability_job(sessions, owner_id=owner_id)
         finally:
             await engine.dispose()
 
@@ -1553,6 +1634,33 @@ def test_accountability_callback_previews_then_confirmation_closes_cycle(
             assert await process_delivery_iteration(
                 sessions, transport, worker_id="accountability-runtime", now=lambda: NOW
             )
+            async with sessions() as session:
+                cycle = await session.scalar(
+                    select(CheckInCycleRecord).where(
+                        CheckInCycleRecord.owner_id == owner_id,
+                        CheckInCycleRecord.occurrence_id == occurrence_id,
+                    )
+                )
+                assert cycle is not None and cycle.initial_confirmed_at is not None
+                confirmed_at = cycle.initial_confirmed_at
+                initial_intent = await session.scalar(
+                    select(AccountabilityIntentRecord).where(
+                        AccountabilityIntentRecord.cycle_id == cycle.id,
+                        AccountabilityIntentRecord.slot == "initial",
+                    )
+                )
+                assert initial_intent is not None and initial_intent.state == "confirmed"
+                attempts = list(
+                    await session.scalars(
+                        select(AccountabilityDeliveryAttemptRecord).where(
+                            AccountabilityDeliveryAttemptRecord.intent_id == initial_intent.id
+                        )
+                    )
+                )
+                assert len(attempts) == 1
+                assert attempts[0].outcome == "confirmed"
+                assert attempts[0].finished_at == confirmed_at
+            assert len(transport.messages) == 1
             keyboard = transport.messages[0].reply_markup
             assert keyboard is not None
             rows = cast(list[list[dict[str, str]]], keyboard["inline_keyboard"])
@@ -1589,12 +1697,32 @@ def test_accountability_callback_previews_then_confirmation_closes_cycle(
                 occurrence = await session.get(OccurrenceRecord, occurrence_id)
                 assert occurrence is not None and occurrence.state == "completed"
 
-            assert not await process_delivery_iteration(
-                sessions,
-                transport,
-                worker_id="accountability-runtime",
-                now=lambda: NOW + timedelta(minutes=3),
-            )
+            async with sessions() as session, session.begin():
+                completed_events = list(
+                    await session.scalars(
+                        select(OutboxEvent).where(
+                            OutboxEvent.owner_id == owner_id,
+                            OutboxEvent.aggregate_id == occurrence_id,
+                            OutboxEvent.event_type == "planning.occurrence_completed",
+                        )
+                    )
+                )
+                assert len(completed_events) == 1
+                completed_event_id = completed_events[0].id
+                processed = await consume_planning_cycle_events(
+                    session,
+                    current_occurrences=PlanningAccountabilityReads(session),
+                    at=NOW + timedelta(minutes=2),
+                )
+                assert processed >= 1
+                receipt = await session.scalar(
+                    select(AccountabilityOutcomeReceiptRecord).where(
+                        AccountabilityOutcomeReceiptRecord.owner_id == owner_id,
+                        AccountabilityOutcomeReceiptRecord.event_id == completed_event_id,
+                    )
+                )
+                assert receipt is not None
+
             async with sessions() as session:
                 cycle = await session.scalar(
                     select(CheckInCycleRecord).where(
@@ -1603,8 +1731,38 @@ def test_accountability_callback_previews_then_confirmation_closes_cycle(
                     )
                 )
                 assert cycle is not None and cycle.state == "completed"
-                assert cycle.initial_confirmed_at is None
-                assert cycle.nudge_due_at is None
+                assert cycle.initial_confirmed_at == confirmed_at
+                intents = list(
+                    await session.scalars(
+                        select(AccountabilityIntentRecord).where(
+                            AccountabilityIntentRecord.cycle_id == cycle.id
+                        )
+                    )
+                )
+                assert len(intents) == 1
+                assert intents[0].slot == "initial" and intents[0].state == "confirmed"
+                attempts = list(
+                    await session.scalars(
+                        select(AccountabilityDeliveryAttemptRecord).where(
+                            AccountabilityDeliveryAttemptRecord.intent_id == intents[0].id
+                        )
+                    )
+                )
+                assert len(attempts) == 1
+                assert attempts[0].outcome == "confirmed"
+                assert attempts[0].finished_at == confirmed_at
+                pending_jobs = list(
+                    await session.scalars(
+                        select(Job).where(
+                            Job.owner_id == owner_id,
+                            Job.lane == JobLane.DELIVERY.value,
+                            Job.kind == ACCOUNTABILITY_DELIVERY_JOB_KIND,
+                            Job.status.in_(("pending", "leased")),
+                        )
+                    )
+                )
+                assert pending_jobs == []
+            assert len(transport.messages) == 1
         finally:
             await engine.dispose()
 
@@ -1707,12 +1865,13 @@ def test_expired_entitlement_skips_send_and_renewal_does_not_revive_exhausted_cy
                     )
                 )
 
-            assert not await process_delivery_iteration(
-                sessions,
-                transport,
-                worker_id="accountability-runtime",
-                now=lambda: NOW + timedelta(minutes=1),
-            )
+            async with sessions() as session, session.begin():
+                await schedule_due_accountability(
+                    session,
+                    profiles=(_profile(owner_id),),
+                    today_untimed=_NoTodayItems(),
+                    now=NOW + timedelta(minutes=1),
+                )
             async with sessions() as session:
                 cycle = await session.get(CheckInCycleRecord, cycle.id)
                 intents = list(
@@ -1737,6 +1896,18 @@ def test_expired_entitlement_skips_send_and_renewal_does_not_revive_exhausted_cy
                 assert len(intents) == 1 and intents[0].state == "skipped"
                 assert attempts == []
                 assert transport.messages == []
+                future_jobs = list(
+                    await session.scalars(
+                        select(Job).where(
+                            Job.owner_id == owner_id,
+                            Job.lane == JobLane.DELIVERY.value,
+                            Job.kind == ACCOUNTABILITY_DELIVERY_JOB_KIND,
+                            Job.status.in_(("pending", "leased")),
+                        )
+                    )
+                )
+                assert future_jobs == []
+            await _retire_own_accountability_job(sessions, owner_id=owner_id)
         finally:
             await engine.dispose()
 
