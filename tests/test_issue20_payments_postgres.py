@@ -5,17 +5,21 @@ import os
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import cast
 from uuid import uuid4
 
 import pytest
+from aiogram import Bot
+from aiohttp.test_utils import TestClient, TestServer
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine as create_sync_engine
 from sqlalchemy import func, select
 from sqlalchemy.engine import make_url
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from pin.adapters.telegram import payments as telegram_payments
+from pin.adapters.telegram import webhook as telegram_webhook
 from pin.adapters.telegram.application_worker import (
     claim_application_job,
     process_application_job,
@@ -25,6 +29,7 @@ from pin.adapters.telegram.ingress import (
     TelegramOwnerRecord,
     persist_update,
 )
+from pin.adapters.telegram.webhook import SECRET_HEADER, create_webhook_app
 from pin.contexts.billing.api import (
     AcceptPaymentTerms,
     ActivatePaidPeriod,
@@ -593,7 +598,7 @@ def test_precheckout_lock_timeout_denies_and_keeps_persisted_update(
             )
             assert approved
             assert bot.ok is False
-            assert loop.time() - started < 1.5
+            assert loop.time() - started < telegram_payments.PRECHECKOUT_DEADLINE_SECONDS
             async with payment_sessions() as verify_session:
                 retained = await verify_session.scalar(
                     select(InboxUpdate).where(
@@ -615,5 +620,138 @@ def test_precheckout_lock_timeout_denies_and_keeps_persisted_update(
                     )
                 )
                 assert paid_periods == 0
+
+    run_local_async(scenario)
+
+
+def test_webhook_persists_then_denies_checkout_when_order_lock_exceeds_budget(
+    payment_sessions: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    owner_id = uuid4()
+    telegram_user_id = 771_000_000 + owner_id.int % 100_000_000
+    bot_id = 77_021
+    update_id = 991_000 + owner_id.int % 100_000
+    query_id = f"webhook-precheckout-{owner_id}"
+    webhook_secret = "issue20-test-webhook-secret"
+
+    class FakeSession:
+        async def close(self) -> None:
+            return None
+
+    class AnswerBot:
+        def __init__(self) -> None:
+            self.answers: list[dict[str, object]] = []
+            self.session = FakeSession()
+
+        async def answer_pre_checkout_query(
+            self,
+            *,
+            pre_checkout_query_id: str,
+            ok: bool,
+            error_message: str | None,
+            request_timeout: int,
+        ) -> bool:
+            self.answers.append(
+                {
+                    "pre_checkout_query_id": pre_checkout_query_id,
+                    "ok": ok,
+                    "error_message": error_message,
+                    "request_timeout": request_timeout,
+                }
+            )
+            return True
+
+    bot = AnswerBot()
+    monkeypatch.setattr(telegram_payments, "PRECHECKOUT_DEADLINE_SECONDS", 0.6)
+    monkeypatch.setattr(telegram_payments, "PRECHECKOUT_ANSWER_RESERVE_SECONDS", 0.2)
+    monkeypatch.setattr(telegram_webhook, "PRECHECKOUT_DEADLINE_SECONDS", 0.6)
+    monkeypatch.setattr(telegram_webhook, "PRECHECKOUT_ANSWER_RESERVE_SECONDS", 0.2)
+
+    async def scenario() -> None:
+        invoice = await _prepare_order(payment_sessions, owner_id, telegram_user_id, NOW)
+        async with payment_sessions() as session, session.begin():
+            session.add(
+                TelegramOwnerRecord(
+                    bot_id=bot_id,
+                    telegram_user_id=telegram_user_id,
+                    owner_id=owner_id,
+                )
+            )
+
+        engine = cast(AsyncEngine, payment_sessions.kw["bind"])
+        client = TestClient(
+            TestServer(
+                create_webhook_app(
+                    engine=engine,
+                    sessions=payment_sessions,
+                    bot=cast(Bot, bot),
+                    bot_id=bot_id,
+                    webhook_secret=webhook_secret,
+                )
+            )
+        )
+        try:
+            await client.start_server()
+            update = {
+                "update_id": update_id,
+                "pre_checkout_query": {
+                    "id": query_id,
+                    "from": {
+                        "id": telegram_user_id,
+                        "is_bot": False,
+                        "first_name": "Test",
+                    },
+                    "invoice_payload": invoice.payload,
+                    "currency": "XTR",
+                    "total_amount": 250,
+                },
+            }
+            loop = asyncio.get_running_loop()
+            async with payment_sessions() as lock_session, lock_session.begin():
+                await lock_session.scalar(
+                    select(PaymentOrderRecord)
+                    .where(PaymentOrderRecord.owner_id == owner_id)
+                    .with_for_update()
+                )
+                started = loop.time()
+                response = await client.post(
+                    "/telegram/webhook",
+                    json=update,
+                    headers={SECRET_HEADER: webhook_secret},
+                )
+                elapsed = loop.time() - started
+                assert response.status == 200
+                assert elapsed < telegram_webhook.PRECHECKOUT_DEADLINE_SECONDS
+                assert len(bot.answers) == 1
+                answer = bot.answers[0]
+                assert answer["pre_checkout_query_id"] == query_id
+                assert answer["ok"] is False
+                assert isinstance(answer["error_message"], str) and answer["error_message"]
+                async with payment_sessions() as verify_session:
+                    persisted = await verify_session.scalar(
+                        select(InboxUpdate).where(
+                            InboxUpdate.bot_id == bot_id,
+                            InboxUpdate.update_id == update_id,
+                        )
+                    )
+                    assert persisted is not None
+                    order = await verify_session.scalar(
+                        select(PaymentOrderRecord).where(
+                            PaymentOrderRecord.owner_id == owner_id
+                        )
+                    )
+                    assert order is not None and order.pre_checkout_query_id is None
+                    paid_periods = await verify_session.scalar(
+                        select(func.count())
+                        .select_from(AccessPeriodRecord)
+                        .where(
+                            AccessPeriodRecord.owner_id == owner_id,
+                            AccessPeriodRecord.policy_kind == "paid",
+                        )
+                    )
+                    assert paid_periods == 0
+        finally:
+            await client.close()
 
     run_local_async(scenario)

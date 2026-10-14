@@ -17,6 +17,7 @@ from sqlalchemy import create_engine as create_sync_engine
 from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.engine import make_url
 
+from pin.adapters.telegram import delivery_worker as delivery_worker_module
 from pin.adapters.telegram.application_worker import process_application_job
 from pin.adapters.telegram.delivery_worker import process_delivery_iteration
 from pin.adapters.telegram.ingress import TelegramOwnerRecord
@@ -1021,6 +1022,40 @@ def test_reclaimed_reminder_lease_cannot_send_or_finalize_replacement_attempt(
                 ).all()
             )
             assert len(attempts) == 1 and attempts[0].outcome == "unknown"
+
+    run_local_async(scenario)
+
+
+def test_ready_delivery_runs_due_sweep_after_dispatch_without_skipping_it(
+    delivery_sessions, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def scenario() -> None:
+        at = NOW + timedelta(hours=2)
+        await _seed_reminder_case(delivery_sessions, at=at, enqueue=False)
+        async with delivery_sessions() as session, session.begin():
+            assert await enqueue_due_reminder_jobs(session, now=at) == 1
+
+        transport = _ReminderTransport()
+        original_schedule = delivery_worker_module._schedule_due_work
+        sweep_after_dispatch = False
+
+        async def observe_schedule(session, observed_transport, *, at):
+            nonlocal sweep_after_dispatch
+            assert observed_transport is transport
+            assert len(transport.started_at) == 1
+            sweep_after_dispatch = True
+            await original_schedule(session, observed_transport, at=at)
+
+        monkeypatch.setattr(delivery_worker_module, "_schedule_due_work", observe_schedule)
+        processed = await process_delivery_iteration(
+            delivery_sessions,
+            transport,
+            worker_id="issue20-maintenance-fairness",
+            now=lambda: at,
+        )
+        assert processed
+        assert len(transport.sent) == 1
+        assert sweep_after_dispatch
 
     run_local_async(scenario)
 
