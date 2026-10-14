@@ -122,7 +122,7 @@ def project_reminders(
             )
             continue
 
-        deferred = _next_quiet_end(candidate.due_at, zone, quiet_start, quiet_end)
+        deferred = defer_until_quiet_end(candidate.due_at, zone, quiet_start, quiet_end)
         if deferred <= now.astimezone(UTC) or deferred >= event_start_at.astimezone(UTC):
             all_omitted.append(
                 OmittedReminder(
@@ -170,6 +170,19 @@ def _is_quiet(value: datetime, zone: ZoneInfo, start: time, end: time) -> bool:
     return local_time >= start or local_time < end
 
 
+def defer_until_quiet_end(value: datetime, zone: ZoneInfo, start: time, end: time) -> datetime:
+    """Return the input instant outside quiet hours, or their next valid end."""
+    _require_aware(value, "value")
+    if start.tzinfo is not None or end.tzinfo is not None:
+        raise ValueError("quiet-hour bounds must be local wall-clock times")
+    if start == end:
+        raise ValueError("quiet-hour bounds must differ")
+    instant = value.astimezone(UTC)
+    if not _is_quiet(instant, zone, start, end):
+        return instant
+    return _next_quiet_end(instant, zone, start, end)
+
+
 def _next_quiet_end(value: datetime, zone: ZoneInfo, start: time, end: time) -> datetime:
     local = value.astimezone(zone)
     local_time = local.time().replace(tzinfo=None)
@@ -178,9 +191,26 @@ def _next_quiet_end(value: datetime, zone: ZoneInfo, start: time, end: time) -> 
         end_date = local.date()
     else:
         end_date = local.date() + timedelta(days=1)
-    # Attaching ZoneInfo follows the same forward-gap interpretation used for
-    # recurring local schedules: the wall time moves forward by the DST gap.
-    return datetime.combine(end_date, end).replace(tzinfo=zone).astimezone(UTC)
+    for day_offset in range(2):
+        wall_end = datetime.combine(end_date + timedelta(days=day_offset), end)
+        candidates: set[datetime] = set()
+        for fold in (0, 1):
+            candidate = wall_end.replace(tzinfo=zone, fold=fold).astimezone(UTC)
+            if candidate.astimezone(zone).replace(tzinfo=None) == wall_end:
+                candidates.add(candidate)
+
+        future_candidates = tuple(candidate for candidate in candidates if candidate > value)
+        if future_candidates:
+            # Keep the whole repeated wall-clock interval quiet through the second fold.
+            return max(future_candidates)
+
+        if not candidates:
+            # Fold 0 preserves the existing forward-gap interpretation for nonexistent
+            # local quiet ends (for example, 02:30 becoming 03:30 at spring-forward).
+            gap_candidate = wall_end.replace(tzinfo=zone, fold=0).astimezone(UTC)
+            if gap_candidate > value:
+                return gap_candidate
+    raise ValueError("could not resolve a future quiet-hour end")
 
 
 def _require_aware(value: datetime, name: str) -> None:

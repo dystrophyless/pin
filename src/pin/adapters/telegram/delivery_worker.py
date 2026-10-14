@@ -6,10 +6,22 @@ import asyncio
 import logging
 from collections.abc import Callable
 from datetime import UTC, datetime
+from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from pin.adapters.telegram.accountability_composition import (
+    PlanningAccountabilityReads,
+    read_review_profile,
+    render_accountability_message,
+    schedule_accountability_iteration,
+)
+from pin.contexts.accountability.api import ReviewProfile
 from pin.contexts.identity.infrastructure.store import SqlAlchemyIdentityStore
+from pin.contexts.notifications.infrastructure.accountability_delivery import (
+    ACCOUNTABILITY_DELIVERY_JOB_KIND,
+    deliver_accountability_job,
+)
 from pin.contexts.notifications.infrastructure.delivery_worker import (
     DELIVERY_JOB_KIND,
     DELIVERY_LEASE,
@@ -37,6 +49,7 @@ async def process_delivery_iteration(
 ) -> bool:
     async with sessions() as session, session.begin():
         at = now()
+        await schedule_accountability_iteration(session, transport, at=at)
         await enqueue_due_reminder_jobs(session, now=at)
         await enqueue_due_reply_jobs(session, now=at)
         claim = await claim_job(
@@ -51,11 +64,26 @@ async def process_delivery_iteration(
         DELIVERY_JOB_KIND,
         DELIVERY_REPLY_JOB_KIND,
         DELIVERY_RECOVERY_SUMMARY_JOB_KIND,
+        ACCOUNTABILITY_DELIVERY_JOB_KIND,
     }:
         async with sessions() as session, session.begin():
             await fail_job(session, claim, error="unsupported_delivery_kind")
         return True
-    if claim.kind == DELIVERY_RECOVERY_SUMMARY_JOB_KIND:
+    if claim.kind == ACCOUNTABILITY_DELIVERY_JOB_KIND:
+        async def profile_reader(session: AsyncSession, owner_id: UUID) -> ReviewProfile | None:
+            return await read_review_profile(session, owner_id, transport)
+
+        await deliver_accountability_job(
+            sessions,
+            claim,
+            transport,
+            profile_reader=profile_reader,
+            current_occurrences_factory=PlanningAccountabilityReads,
+            today_untimed_factory=PlanningAccountabilityReads,
+            render=render_accountability_message,
+            now=now,
+        )
+    elif claim.kind == DELIVERY_RECOVERY_SUMMARY_JOB_KIND:
         await deliver_recovery_summary_job(
             sessions,
             claim,

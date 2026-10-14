@@ -30,9 +30,14 @@ from pin.contexts.notifications.domain.reminders import (
     ReminderProjection,
     project_reminders,
 )
+from pin.contexts.notifications.infrastructure.accountability_delivery import (
+    ACCOUNTABILITY_DELIVERY_JOB_KIND,
+    deliver_accountability_job,
+)
 
 __all__ = [
     "DeliveryAttemptOutcome",
+    "ACCOUNTABILITY_DELIVERY_JOB_KIND",
     "DeliveryOutcomeKind",
     "KnownDeliveryFailure",
     "ReminderSend",
@@ -54,4 +59,5 @@ __all__ = [
     "project_reminders",
     "reconcile_schedule_change",
     "render_recovery_summary",
+    "deliver_accountability_job",
 ]

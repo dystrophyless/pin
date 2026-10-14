@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
-from dataclasses import replace as dataclass_replace
 from datetime import UTC, datetime, timedelta
 from typing import Protocol
 from uuid import UUID, uuid4
@@ -13,6 +12,11 @@ from zoneinfo import ZoneInfo
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from pin.adapters.telegram.accountability import (
+    ACCOUNTABILITY_CALLBACK_PREFIX,
+    process_accountability_action,
+)
+from pin.adapters.telegram.accountability_composition import PlanningAccountabilityReads
 from pin.adapters.telegram.agenda import agenda_command
 from pin.adapters.telegram.ingress import PostgresTelegramOwnerResolver, private_actor
 from pin.adapters.telegram.mutation_runtime import (
@@ -38,20 +42,18 @@ from pin.adapters.telegram.presentation.capture import (
     render_capture_response,
 )
 from pin.adapters.telegram.presentation.tokens import SqlAlchemyCallbackTokenStore
+from pin.adapters.telegram.support import with_owned_plans
 from pin.contexts.billing.api import SqlAlchemyAccessUsageStore
 from pin.contexts.conversation.application.dto import (
     ActionProposal,
     ConversationContext,
     ModelOutcome,
     ModelSuccess,
-    PlanSnapshot,
     PreferenceSnapshot,
     Reply,
-    TargetSnapshot,
 )
 from pin.contexts.conversation.application.service import (
     BoundedPlanningAssistant,
-    bounded_target_snapshot,
 )
 from pin.contexts.conversation.capture_api import (
     CaptureTurnReply,
@@ -284,50 +286,7 @@ async def _process_capture_job(
             else:
                 interpretation = interpretation_or_reply
                 owned_targets = await get_owner_mutation_targets(session, owner_id=owner_id, at=at)
-                targets = [
-                    TargetSnapshot(
-                        id=item.occurrence_id,
-                        version=item.occurrence_version,
-                        kind="occurrence",
-                        title=item.title[:240],
-                    )
-                    for item in owned_targets
-                ]
-                series_seen: set[UUID] = set()
-                for item in owned_targets:
-                    if item.series_id is not None and item.series_id not in series_seen:
-                        assert item.series_version is not None
-                        targets.append(
-                            TargetSnapshot(
-                                id=item.series_id,
-                                version=item.series_version,
-                                kind="series",
-                                title=item.title[:240],
-                            )
-                        )
-                        series_seen.add(item.series_id)
-                interpretation = dataclass_replace(
-                    interpretation,
-                    context=bounded_target_snapshot(
-                        interpretation.context.model_copy(
-                            update={
-                                "targets": tuple(targets),
-                                "plans": tuple(
-                                    PlanSnapshot(
-                                        id=item.occurrence_id,
-                                        version=item.occurrence_version,
-                                        title=item.title[:240],
-                                        due_at=item.schedule.anchor_at,
-                                        timezone=item.schedule.event_zone,
-                                        ends_at=item.schedule.ends_at,
-                                        status="open",
-                                    )
-                                    for item in owned_targets
-                                ),
-                            }
-                        )
-                    ),
-                )
+                interpretation = with_owned_plans(interpretation, owned_targets)
 
     if callback_inbound is not None:
         return await _process_capture_callback_job(
@@ -580,7 +539,21 @@ async def _process_capture_callback_job(
                 await complete_job(session, claim)
                 return True
             mutation_message = None
-            if is_mutation_callback(current.callback_data):
+            if current.callback_data and current.callback_data.startswith(
+                ACCOUNTABILITY_CALLBACK_PREFIX
+            ):
+                mutation_message = await process_accountability_action(
+                    session,
+                    owner_id=_inbound_owner(current),
+                    data=current.callback_data,
+                    language=language,
+                    now=now,
+                    today_untimed=PlanningAccountabilityReads(session),
+                )
+                if mutation_message is None:
+                    raise InvalidCallbackToken("unknown accountability action")
+                reply = _mutation_reply(mutation_message)
+            elif is_mutation_callback(current.callback_data):
                 assert current.callback_data is not None
                 mutation_message = await process_mutation_callback(
                     session,
@@ -801,7 +774,14 @@ def _is_capture_callback(value: str | None) -> bool:
     return (
         is_mutation_callback(value)
         or value is not None
-        and value.startswith((CAPTURE_CONFIRM_PREFIX, CAPTURE_CANCEL_PREFIX, CAPTURE_CHOICE_PREFIX))
+        and value.startswith(
+            (
+                CAPTURE_CONFIRM_PREFIX,
+                CAPTURE_CANCEL_PREFIX,
+                CAPTURE_CHOICE_PREFIX,
+                ACCOUNTABILITY_CALLBACK_PREFIX,
+            )
+        )
     )
 
 
