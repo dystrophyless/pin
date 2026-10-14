@@ -29,6 +29,17 @@ class Operation(StrEnum):
     REMINDER_DELIVERY = "reminder_delivery"
 
 
+class AccessNoticeKind(StrEnum):
+    EXPIRY_24H = "expiry_24h"
+    EXPIRY_1H = "expiry_1h"
+
+
+class AccessNoticeStatus(StrEnum):
+    SEND = "send"
+    DEFER = "defer"
+    SKIP = "skip"
+
+
 class AccessDenial(StrEnum):
     ACCOUNT_DELETED = "account_deleted"
     ACCESS_EXPIRED = "access_expired"
@@ -141,6 +152,60 @@ class AccessDecision:
     denial: AccessDenial | None
     period_id: str | None
     period_ends_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class AccessNoticeAuthorization:
+    status: AccessNoticeStatus
+    kind: AccessNoticeKind
+    period: AccessPeriod
+    at: datetime
+    defer_until: datetime | None = None
+    remaining_seconds: int = 0
+
+
+def authorize_access_notice(
+    period: AccessPeriod,
+    kind: AccessNoticeKind,
+    *,
+    at: datetime,
+    quiet_until: datetime | None = None,
+) -> AccessNoticeAuthorization:
+    """Authorize a queued expiry warning against live coverage and quiet hours."""
+    _require_aware(at, "at")
+    if quiet_until is not None:
+        _require_aware(quiet_until, "quiet_until")
+
+    if at < period.starts_at:
+        return AccessNoticeAuthorization(
+            AccessNoticeStatus.DEFER, kind, period, at, period.starts_at
+        )
+    if at >= period.ends_at:
+        return AccessNoticeAuthorization(AccessNoticeStatus.SKIP, kind, period, at)
+
+    until_due = period.ends_at - timedelta(hours=24 if kind is AccessNoticeKind.EXPIRY_24H else 1)
+    if at < until_due:
+        return AccessNoticeAuthorization(AccessNoticeStatus.DEFER, kind, period, at, until_due)
+
+    remaining = period.ends_at - at
+    if kind is AccessNoticeKind.EXPIRY_24H and remaining <= timedelta(hours=1):
+        return AccessNoticeAuthorization(AccessNoticeStatus.SKIP, kind, period, at)
+
+    if quiet_until is not None and quiet_until > at:
+        if quiet_until >= period.ends_at:
+            return AccessNoticeAuthorization(AccessNoticeStatus.SKIP, kind, period, at)
+        return AccessNoticeAuthorization(
+            AccessNoticeStatus.DEFER, kind, period, at, quiet_until
+        )
+
+    remaining_seconds = max(1, int(remaining.total_seconds()))
+    return AccessNoticeAuthorization(
+        AccessNoticeStatus.SEND,
+        kind,
+        period,
+        at,
+        remaining_seconds=remaining_seconds,
+    )
 
 
 _ACTIVE_ACCESS = frozenset(
