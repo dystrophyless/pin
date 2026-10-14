@@ -118,15 +118,17 @@ def _assistant(
     )
 
 
-async def _seed_owner(sessions: async_sessionmaker[AsyncSession]) -> UUID:
+async def _seed_owner(
+    sessions: async_sessionmaker[AsyncSession], *, bot_id: int, user_id: int, language: str
+) -> UUID:
     async with sessions() as session, session.begin():
         owner_id = await PostgresTelegramOwnerResolver().resolve(
-            session, bot_id=BOT_ID, telegram_user_id=USER_ID
+            session, bot_id=bot_id, telegram_user_id=user_id
         )
         session.add(
             PreferencesRecord(
                 owner_id=owner_id,
-                language="en",
+                language=language,
                 home_zone="Asia/Almaty",
                 reminder_calendar_days=1,
                 reminder_elapsed_hours=1,
@@ -166,7 +168,11 @@ async def _seed_owner(sessions: async_sessionmaker[AsyncSession]) -> UUID:
                 id=plan_id,
                 owner_id=owner_id,
                 kind="appointment",
-                title="Prepare quarterly review",
+                title=(
+                    "Подготовить квартальный обзор"
+                    if language == "ru"
+                    else "Prepare quarterly review"
+                ),
                 version=1,
                 created_at=NOW,
             )
@@ -199,14 +205,19 @@ async def _seed_owner(sessions: async_sessionmaker[AsyncSession]) -> UUID:
 
 
 async def _send_text(
-    sessions: async_sessionmaker[AsyncSession], *, owner_id: UUID, text: str
+    sessions: async_sessionmaker[AsyncSession],
+    *,
+    owner_id: UUID,
+    text: str,
+    bot_id: int = BOT_ID,
+    user_id: int = USER_ID,
 ) -> UUID:
     update_id = uuid4().int % 9_000_000_000_000_000
     payload: dict[str, object] = {
         "update_id": update_id,
         "message": {
-            "from": {"id": USER_ID, "is_bot": False, "first_name": "Test"},
-            "chat": {"id": USER_ID, "type": "private"},
+            "from": {"id": user_id, "is_bot": False, "first_name": "Test"},
+            "chat": {"id": user_id, "type": "private"},
             "date": int(NOW.timestamp()),
             "text": text,
         },
@@ -214,14 +225,14 @@ async def _send_text(
     async with sessions() as session, session.begin():
         receipt = await persist_update(
             session,
-            bot_id=BOT_ID,
+            bot_id=bot_id,
             payload=payload,
             owner_resolver=PostgresTelegramOwnerResolver(),
         )
         assert receipt is not None and receipt.accepted
         inbox = await session.scalar(
             select(InboxUpdate).where(
-                InboxUpdate.bot_id == BOT_ID,
+                InboxUpdate.bot_id == bot_id,
                 InboxUpdate.update_id == update_id,
             )
         )
@@ -242,29 +253,34 @@ async def _send_text(
 
 
 async def _send_callback(
-    sessions: async_sessionmaker[AsyncSession], *, owner_id: UUID, callback_data: str
+    sessions: async_sessionmaker[AsyncSession],
+    *,
+    owner_id: UUID,
+    callback_data: str,
+    bot_id: int = BOT_ID,
+    user_id: int = USER_ID,
 ) -> None:
     update_id = uuid4().int % 9_000_000_000_000_000
     payload: dict[str, object] = {
         "update_id": update_id,
         "callback_query": {
             "id": f"callback-{uuid4().hex}",
-            "from": {"id": USER_ID, "is_bot": False, "first_name": "Test"},
-            "message": {"message_id": 1, "chat": {"id": USER_ID, "type": "private"}},
+            "from": {"id": user_id, "is_bot": False, "first_name": "Test"},
+            "message": {"message_id": 1, "chat": {"id": user_id, "type": "private"}},
             "data": callback_data,
         },
     }
     async with sessions() as session, session.begin():
         receipt = await persist_update(
             session,
-            bot_id=BOT_ID,
+            bot_id=bot_id,
             payload=payload,
             owner_resolver=PostgresTelegramOwnerResolver(),
         )
         assert receipt is not None and receipt.accepted
         inbox = await session.scalar(
             select(InboxUpdate).where(
-                InboxUpdate.bot_id == BOT_ID,
+                InboxUpdate.bot_id == bot_id,
                 InboxUpdate.update_id == update_id,
             )
         )
@@ -289,9 +305,7 @@ async def _process_next(
     return claim
 
 
-async def _reply(
-    sessions: async_sessionmaker[AsyncSession], claim: JobClaim
-) -> dict[str, object]:
+async def _reply(sessions: async_sessionmaker[AsyncSession], claim: JobClaim) -> dict[str, object]:
     async with sessions() as session:
         event = await session.scalar(
             select(OutboxEvent).where(
@@ -314,94 +328,150 @@ def _confirm_data(payload: dict[str, object]) -> str:
     raise AssertionError("preview did not publish an opaque confirm callback")
 
 
+@pytest.mark.parametrize(
+    ("language", "bot_id", "user_id"),
+    [("en", BOT_ID, USER_ID), ("ru", BOT_ID + 1, USER_ID + 1)],
+    ids=["english", "russian"],
+)
 def test_owned_advice_selected_steps_clarification_preview_and_confirm(
-    support_database: str,
+    support_database: str, language: str, bot_id: int, user_id: int
 ) -> None:
     async def scenario() -> None:
         engine = create_async_engine(support_database)
         sessions = create_session_factory(engine)
         try:
-            owner_id = await _seed_owner(sessions)
+            owner_id = await _seed_owner(
+                sessions, bot_id=bot_id, user_id=user_id, language=language
+            )
+            if language == "ru":
+                base_title = "Подготовить квартальный обзор"
+                first_title, first_reason = "Собрать заметки к встрече", "Скоро состоится обзор."
+                second_title, second_reason = (
+                    "Составить повестку",
+                    "Заметки помогут сделать её конкретной.",
+                )
+                advice_summary = "Начните с предстоящего обзора."
+                advice_input = "Что мне делать дальше?"
+                selection_input = "Добавь шаги 1 и 2"
+                clarification_text = "Я выбрал оба шага. На какую дату их поставить?"
+                date_input = "В пятницу, 16 октября, в 9 и 10"
+                conflict_input = "Поставь оба выбранных шага на 9 утра"
+                conflict_text = "Время шагов совпадает. Какой из них перенести?"
+                exhausted_input = "Что делать со следующим планом?"
+                expired_input = "Добавь ещё один предложенный шаг"
+            else:
+                base_title = "Prepare quarterly review"
+                first_title, first_reason = (
+                    "Gather meeting notes",
+                    "The saved review is approaching.",
+                )
+                second_title, second_reason = "Draft the agenda", "The notes will make it concrete."
+                advice_summary = "Start with the upcoming review."
+                advice_input = "What should I do next?"
+                selection_input = "Add steps 1 and 2"
+                clarification_text = "I have the two selected steps. What date should I use?"
+                date_input = "Friday October 16 at 9 and 10"
+                conflict_input = "Put both selected steps at 9 am"
+                conflict_text = "Those selected times overlap. Which task should move?"
+                exhausted_input = "What should I do with the next plan?"
+                expired_input = "Add another suggested step"
             before: int
             async with sessions() as session:
-                before = await session.scalar(
-                    select(func.count()).select_from(PlanItemRecord).where(
-                        PlanItemRecord.owner_id == owner_id
+                before = (
+                    await session.scalar(
+                        select(func.count())
+                        .select_from(PlanItemRecord)
+                        .where(PlanItemRecord.owner_id == owner_id)
                     )
-                ) or 0
+                    or 0
+                )
             assert before == 1
 
             advice_transport = _Transport(
                 _completion(
                     {
                         "kind": "advice",
-                        "language": "en",
-                        "summary": "Start with the upcoming review.",
+                        "language": language,
+                        "summary": advice_summary,
                         "steps": [
                             {
-                                "title": "Gather meeting notes",
-                                "reason": "The saved review is approaching.",
+                                "title": first_title,
+                                "reason": first_reason,
                             },
                             {
-                                "title": "Draft the agenda",
-                                "reason": "The notes will make it concrete.",
+                                "title": second_title,
+                                "reason": second_reason,
                             },
                         ],
                     },
-                    "issue17-advice",
+                    f"issue17-{language}-advice",
                 )
             )
             await _send_text(
-                sessions, owner_id=owner_id, text="What should I do next?"
+                sessions, owner_id=owner_id, text=advice_input, bot_id=bot_id, user_id=user_id
             )
             advice_claim = await _process_next(sessions, _assistant(sessions, advice_transport))
             advice_payload = await _reply(sessions, advice_claim)
-            assert "Gather meeting notes" in str(advice_payload["plain_text"])
+            assert first_title in str(advice_payload["plain_text"])
+            assert advice_summary in str(advice_payload["plain_text"])
             serialized_context = str(advice_transport.payloads[0]["messages"])
-            assert "Prepare quarterly review" in serialized_context
+            assert base_title in serialized_context
             assert "2026-10-16" in serialized_context
-            assert "free time" not in str(advice_payload["plain_text"]).casefold()
+            ungrounded_time_claim = "свобод" if language == "ru" else "free time"
+            assert ungrounded_time_claim not in str(advice_payload["plain_text"]).casefold()
             async with sessions() as session:
-                after_advice = await session.scalar(
-                    select(func.count()).select_from(PlanItemRecord).where(
-                        PlanItemRecord.owner_id == owner_id
+                after_advice = (
+                    await session.scalar(
+                        select(func.count())
+                        .select_from(PlanItemRecord)
+                        .where(PlanItemRecord.owner_id == owner_id)
                     )
-                ) or 0
+                    or 0
+                )
                 saved_draft = await session.scalar(
                     select(CaptureDraftRecord).where(CaptureDraftRecord.owner_id == owner_id)
                 )
                 assert saved_draft is not None and saved_draft.state == "collecting"
                 assert saved_draft.preview is None
                 assert saved_draft.normalized_actions in (None, [])
-                assert "What should I do next?" in str(saved_draft.messages)
+                assert advice_input in str(saved_draft.messages)
+                preferences = await session.scalar(
+                    select(PreferencesRecord).where(PreferencesRecord.owner_id == owner_id)
+                )
+                assert preferences is not None and preferences.language == language
             assert after_advice == before
 
             clarification_transport = _Transport(
                 _completion(
                     {
                         "kind": "reply",
-                        "language": "en",
-                        "text": "I have the two selected steps. What date should I use?",
+                        "language": language,
+                        "text": clarification_text,
                     },
-                    "issue17-clarification",
+                    f"issue17-{language}-clarification",
                 )
             )
-            await _send_text(sessions, owner_id=owner_id, text="Add steps 1 and 2")
+            await _send_text(
+                sessions, owner_id=owner_id, text=selection_input, bot_id=bot_id, user_id=user_id
+            )
             clarification_claim = await _process_next(
                 sessions, _assistant(sessions, clarification_transport)
             )
             clarification_payload = await _reply(sessions, clarification_claim)
-            assert "What date should I use?" in str(clarification_payload["plain_text"])
+            assert clarification_text in str(clarification_payload["plain_text"])
             prior_history = str(clarification_transport.payloads[0]["messages"])
-            assert "1. Gather meeting notes" in prior_history
-            assert "2. Draft the agenda" in prior_history
-            assert "Add steps 1 and 2" in prior_history
+            assert f"1. {first_title}" in prior_history
+            assert f"2. {second_title}" in prior_history
+            assert selection_input in prior_history
             async with sessions() as session:
-                after_clarification = await session.scalar(
-                    select(func.count()).select_from(PlanItemRecord).where(
-                        PlanItemRecord.owner_id == owner_id
+                after_clarification = (
+                    await session.scalar(
+                        select(func.count())
+                        .select_from(PlanItemRecord)
+                        .where(PlanItemRecord.owner_id == owner_id)
                     )
-                ) or 0
+                    or 0
+                )
                 draft = await session.scalar(
                     select(CaptureDraftRecord).where(CaptureDraftRecord.owner_id == owner_id)
                 )
@@ -413,15 +483,15 @@ def test_owned_advice_selected_steps_clarification_preview_and_confirm(
                     {
                         "kind": "proposal_batch",
                         "schema_version": 1,
-                        "language": "en",
+                        "language": language,
                         "actions": [
                             {
                                 "kind": "proposal",
-                                "language": "en",
+                                "language": language,
                                 "operation": "propose_create_plan",
                                 "fields": {
-                                    "title": "Gather meeting notes",
-                                    "description": "For the quarterly review",
+                                    "title": first_title,
+                                    "description": advice_summary,
                                     "schedule": {
                                         "kind": "task",
                                         "local_date": "2026-10-16",
@@ -434,11 +504,11 @@ def test_owned_advice_selected_steps_clarification_preview_and_confirm(
                             },
                             {
                                 "kind": "proposal",
-                                "language": "en",
+                                "language": language,
                                 "operation": "propose_create_plan",
                                 "fields": {
-                                    "title": "Draft the agenda",
-                                    "description": "For the quarterly review",
+                                    "title": second_title,
+                                    "description": advice_summary,
                                     "schedule": {
                                         "kind": "task",
                                         "local_date": "2026-10-16",
@@ -451,36 +521,49 @@ def test_owned_advice_selected_steps_clarification_preview_and_confirm(
                             },
                         ],
                     },
-                    "issue17-selected",
+                    f"issue17-{language}-selected",
                 )
             )
-            await _send_text(sessions, owner_id=owner_id, text="Friday October 16 at 9 and 10")
+            await _send_text(
+                sessions, owner_id=owner_id, text=date_input, bot_id=bot_id, user_id=user_id
+            )
             preview_claim = await _process_next(sessions, _assistant(sessions, proposal_transport))
             preview_payload = await _reply(sessions, preview_claim)
-            assert "Plan preview" in str(preview_payload["plain_text"])
+            assert first_title in str(preview_payload["plain_text"])
             confirm_data = _confirm_data(preview_payload)
             assert len(confirm_data.encode("utf-8")) <= 64
             preview_history = str(proposal_transport.payloads[0]["messages"])
-            assert "1. Gather meeting notes" in preview_history
-            assert "Add steps 1 and 2" in preview_history
+            assert f"1. {first_title}" in preview_history
+            assert selection_input in preview_history
+            assert date_input in preview_history
             async with sessions() as session:
-                before_confirmation = await session.scalar(
-                    select(func.count()).select_from(PlanItemRecord).where(
-                        PlanItemRecord.owner_id == owner_id
+                before_confirmation = (
+                    await session.scalar(
+                        select(func.count())
+                        .select_from(PlanItemRecord)
+                        .where(PlanItemRecord.owner_id == owner_id)
                     )
-                ) or 0
+                    or 0
+                )
                 draft = await session.scalar(
                     select(CaptureDraftRecord).where(CaptureDraftRecord.owner_id == owner_id)
                 )
                 assert draft is not None and draft.state == "ready" and draft.preview is not None
-                assert "Gather meeting notes" in str(preview_payload["plain_text"])
-                assert "Draft the agenda" in str(preview_payload["plain_text"])
+                assert first_title in str(preview_payload["plain_text"])
+                assert second_title in str(preview_payload["plain_text"])
             assert before_confirmation == before
 
-            await _send_callback(sessions, owner_id=owner_id, callback_data=confirm_data)
+            await _send_callback(
+                sessions,
+                owner_id=owner_id,
+                callback_data=confirm_data,
+                bot_id=bot_id,
+                user_id=user_id,
+            )
             confirmation_claim = await _process_next(sessions, assistant=None)
             confirmation_payload = await _reply(sessions, confirmation_claim)
-            assert "saved" in str(confirmation_payload["plain_text"]).casefold()
+            saved_label = "сохран" if language == "ru" else "saved"
+            assert saved_label in str(confirmation_payload["plain_text"]).casefold()
             async with sessions() as session:
                 plans = list(
                     (
@@ -492,11 +575,9 @@ def test_owned_advice_selected_steps_clarification_preview_and_confirm(
                     ).all()
                 )
                 assert len(plans) == before + 2
-                assert [plan.title for plan in plans] == [
-                    "Draft the agenda",
-                    "Gather meeting notes",
-                    "Prepare quarterly review",
-                ]
+                assert [plan.title for plan in plans] == sorted(
+                    [base_title, first_title, second_title]
+                )
                 calls = list(
                     (
                         await session.scalars(
@@ -535,66 +616,81 @@ def test_owned_advice_selected_steps_clarification_preview_and_confirm(
                 _completion(
                     {
                         "kind": "reply",
-                        "language": "en",
-                        "text": "Those selected times overlap. Which task should move?",
+                        "language": language,
+                        "text": conflict_text,
                     },
-                    "issue17-conflict",
+                    f"issue17-{language}-conflict",
                 )
             )
             await _send_text(
-                sessions, owner_id=owner_id, text="Put both selected steps at 9 am"
+                sessions,
+                owner_id=owner_id,
+                text=conflict_input,
+                bot_id=bot_id,
+                user_id=user_id,
             )
-            conflict_claim = await _process_next(
-                sessions, _assistant(sessions, conflict_transport)
-            )
+            conflict_claim = await _process_next(sessions, _assistant(sessions, conflict_transport))
             conflict_payload = await _reply(sessions, conflict_claim)
-            assert "Which task should move?" in str(conflict_payload["plain_text"])
-            assert "created" not in str(conflict_payload["plain_text"]).casefold()
+            assert conflict_text in str(conflict_payload["plain_text"])
+            created_label = "создан" if language == "ru" else "created"
+            assert created_label not in str(conflict_payload["plain_text"]).casefold()
             assert len(conflict_transport.payloads) == 1
             async with sessions() as session:
-                after_conflict = await session.scalar(
-                    select(func.count()).select_from(PlanItemRecord).where(
-                        PlanItemRecord.owner_id == owner_id
+                after_conflict = (
+                    await session.scalar(
+                        select(func.count())
+                        .select_from(PlanItemRecord)
+                        .where(PlanItemRecord.owner_id == owner_id)
                     )
-                ) or 0
+                    or 0
+                )
             assert after_conflict == before + 2
 
             exhausted_transport = _Transport()
             await _send_text(
-                sessions, owner_id=owner_id, text="What should I do with the next plan?"
+                sessions,
+                owner_id=owner_id,
+                text=exhausted_input,
+                bot_id=bot_id,
+                user_id=user_id,
             )
             exhausted_claim = await _process_next(
                 sessions, _assistant(sessions, exhausted_transport)
             )
             exhausted_payload = await _reply(sessions, exhausted_claim)
             assert exhausted_transport.payloads == []
-            assert "not available" in str(exhausted_payload["plain_text"]).casefold()
+            unavailable_label = "недоступ" if language == "ru" else "not available"
+            assert unavailable_label in str(exhausted_payload["plain_text"]).casefold()
 
             async with sessions() as session, session.begin():
                 period = await session.scalar(
-                    select(AccessPeriodRecord).where(
-                        AccessPeriodRecord.owner_id == owner_id
-                    )
+                    select(AccessPeriodRecord).where(AccessPeriodRecord.owner_id == owner_id)
                 )
                 assert period is not None
                 period.ends_at = NOW - timedelta(seconds=1)
             expired_transport = _Transport()
             await _send_text(
-                sessions, owner_id=owner_id, text="Add another suggested step"
+                sessions,
+                owner_id=owner_id,
+                text=expired_input,
+                bot_id=bot_id,
+                user_id=user_id,
             )
             expired_claim = await _process_next(sessions, _assistant(sessions, expired_transport))
             expired_payload = await _reply(sessions, expired_claim)
             assert expired_transport.payloads == []
-            assert "not available" in str(expired_payload["plain_text"]).casefold()
+            assert unavailable_label in str(expired_payload["plain_text"]).casefold()
             async with sessions() as session:
-                final_count = await session.scalar(
-                    select(func.count()).select_from(PlanItemRecord).where(
-                        PlanItemRecord.owner_id == owner_id
+                final_count = (
+                    await session.scalar(
+                        select(func.count())
+                        .select_from(PlanItemRecord)
+                        .where(PlanItemRecord.owner_id == owner_id)
                     )
-                ) or 0
+                    or 0
+                )
                 assert final_count == before + 2
         finally:
             await engine.dispose()
 
     run_local_async(scenario)
-
