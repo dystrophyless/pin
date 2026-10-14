@@ -379,10 +379,20 @@ def _button(reply: dict[str, object], *, label_contains: str | None = None) -> s
 async def _confirm_mutation(
     sessions: async_sessionmaker[AsyncSession], *, fixture: _Fixture, action: str, at: datetime
 ) -> dict[str, object]:
-    menu = await _dispatch_update(sessions, fixture=fixture, at=at, text=f"/{action}")
-    target_preview = await _dispatch_update(
-        sessions, fixture=fixture, at=at, callback=_button(menu)
-    )
+    command = f"/{action} {fixture.occurrence_id}" if action == "cancel" else f"/{action}"
+    menu = await _dispatch_update(sessions, fixture=fixture, at=at, text=command)
+    if action == "cancel":
+        # Paid-user bare /cancel belongs to Billing; naming the occurrence
+        # makes this task mutation unambiguous and still requires confirmation.
+        preview = menu
+        assert preview.get("reply_markup") is not None
+        async with sessions() as session:
+            occurrence = await session.get(OccurrenceRecord, fixture.occurrence_id)
+            assert occurrence is not None and (occurrence.state, occurrence.version) == ("open", 1)
+    else:
+        target_preview = await _dispatch_update(
+            sessions, fixture=fixture, at=at, callback=_button(menu)
+        )
     if action == "reschedule":
         assert target_preview.get("reply_markup") is None
         preview = await _dispatch_update(
@@ -391,7 +401,7 @@ async def _confirm_mutation(
             at=at,
             text=RESCHEDULED_START.strftime("%Y-%m-%d %H:%M"),
         )
-    else:
+    elif action != "cancel":
         preview = target_preview
     return await _dispatch_update(sessions, fixture=fixture, at=at, callback=_button(preview))
 

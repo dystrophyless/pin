@@ -224,6 +224,7 @@ async def process_application_job(
                 else None
             )
             cancel_onboarding = active_draft is not None and active_draft.step != "complete"
+            # Bare /cancel belongs to Billing; a named occurrence is a task mutation.
             payment_reply = (
                 await _handle_payment_command(
                     session,
@@ -234,7 +235,11 @@ async def process_application_job(
                     payment_support_contact=payment_support_contact,
                     language=command_profile.language if command_profile else "en",
                 )
-                if isinstance(message_text, str) and not cancel_onboarding
+                if (
+                    isinstance(message_text, str)
+                    and not cancel_onboarding
+                    and (command.casefold() != "/cancel" or len(words) == 1)
+                )
                 else None
             )
             profile = command_profile if view is not None or subscription else None
