@@ -49,6 +49,25 @@ logger = logging.getLogger("pin.telegram.delivery_worker")
 POLL_SECONDS = 0.5
 
 
+async def _schedule_due_work(
+    session: AsyncSession, transport: ReminderTransport, *, at: datetime
+) -> None:
+    await schedule_access_notices(session, transport, at=at)
+    await schedule_accountability_iteration(session, transport, at=at)
+    await enqueue_due_reminder_jobs(session, now=at)
+    await enqueue_due_reply_jobs(session, now=at)
+
+
+async def _run_due_work(
+    sessions: async_sessionmaker[AsyncSession],
+    transport: ReminderTransport,
+    *,
+    at: datetime,
+) -> None:
+    async with sessions() as session, session.begin():
+        await _schedule_due_work(session, transport, at=at)
+
+
 async def process_delivery_iteration(
     sessions: async_sessionmaker[AsyncSession],
     transport: ReminderTransport,
@@ -56,13 +75,10 @@ async def process_delivery_iteration(
     worker_id: str,
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> bool:
+    maintenance_ran = False
     async with sessions() as session, session.begin():
         at = now()
         await consume_access_activations(session, at=at)
-        await schedule_access_notices(session, transport, at=at)
-        await schedule_accountability_iteration(session, transport, at=at)
-        await enqueue_due_reminder_jobs(session, now=at)
-        await enqueue_due_reply_jobs(session, now=at)
         payments = SqlAlchemyStarsPaymentStore(session)
         await payments.recover_uncertain_provider_calls(at=at)
         cancellation = await payments.claim_cancellation(at=at)
@@ -80,6 +96,15 @@ async def process_delivery_iteration(
                 worker_id=worker_id,
                 lease_for=DELIVERY_LEASE,
             )
+            if claim is None:
+                await _schedule_due_work(session, transport, at=at)
+                maintenance_ran = True
+                claim = await claim_job(
+                    session,
+                    lane=JobLane.DELIVERY,
+                    worker_id=worker_id,
+                    lease_for=DELIVERY_LEASE,
+                )
     payment_transport = cast(TelegramReminderTransport, transport)
     if cancellation is not None:
         try:
@@ -100,6 +125,7 @@ async def process_delivery_iteration(
                 at=now(),
                 error_code=error_code,
             )
+        await _run_due_work(sessions, transport, at=now())
         return True
     if invoice is not None:
         try:
@@ -121,6 +147,7 @@ async def process_delivery_iteration(
                 message_id=message_id,
                 error_code=error_code,
             )
+        await _run_due_work(sessions, transport, at=now())
         return True
     if claim is None:
         return False
@@ -132,6 +159,8 @@ async def process_delivery_iteration(
     }:
         async with sessions() as session, session.begin():
             await fail_job(session, claim, error="unsupported_delivery_kind")
+        if not maintenance_ran:
+            await _run_due_work(sessions, transport, at=now())
         return True
     if claim.kind == ACCOUNTABILITY_DELIVERY_JOB_KIND:
 
@@ -168,6 +197,8 @@ async def process_delivery_iteration(
             identity_store_factory=SqlAlchemyIdentityStore,
             now=now,
         )
+    if not maintenance_ran:
+        await _run_due_work(sessions, transport, at=now())
     return True
 
 

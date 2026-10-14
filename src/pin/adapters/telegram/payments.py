@@ -12,6 +12,7 @@ from uuid import UUID
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest
+from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -81,6 +82,13 @@ async def answer_pre_checkout(
             try:
                 async with asyncio.timeout(decision_budget):
                     async with sessions() as session, session.begin():
+                        # Keep lock waits inside a quarter of the decision budget; the
+                        # remainder covers rollback and the reserved Bot API answer.
+                        lock_timeout = f"{max(1, floor(decision_budget * 250))}ms"
+                        await session.execute(
+                            text("SELECT set_config('lock_timeout', :lock_timeout, true)"),
+                            {"lock_timeout": lock_timeout},
+                        )
                         owner_id: UUID = await PostgresTelegramOwnerResolver().resolve(
                             session, bot_id=bot_id, telegram_user_id=user_id
                         )
