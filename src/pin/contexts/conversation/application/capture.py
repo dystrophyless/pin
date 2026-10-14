@@ -12,9 +12,11 @@ from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
 from pin.contexts.billing.api import AccessUsageStore
+from pin.contexts.conversation.application.advice import render_advice
 from pin.contexts.conversation.application.contracts import CaptureProofPart, CaptureStore
 from pin.contexts.conversation.application.dto import (
     ActionProposal,
+    Advice,
     AppointmentSchedule,
     ConversationContext,
     DeadlineSchedule,
@@ -196,14 +198,15 @@ async def finish_interpretation(
 
     result = outcome.result
     if not isinstance(result, (ActionProposal, ProposalBatch)):
+        reply = render_advice(result) if isinstance(result, Advice) else result.text
         collecting = finish_collecting(
             draft,
             request_key=interpretation.request_key,
-            reply=result.text,
+            reply=reply,
             at=at,
         )
         await store.persist_draft(collecting, expected_version=expected_version)
-        response = _reply_payload(result.text, state="collecting")
+        response = _reply_payload(reply, state="collecting")
         await store.complete_input(
             owner_id=draft.owner_id,
             input_key=interpretation.request_key,
