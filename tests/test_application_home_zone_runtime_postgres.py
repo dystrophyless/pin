@@ -4,7 +4,7 @@ import asyncio
 import hashlib
 import os
 import sys
-from datetime import UTC, date, datetime, time
+from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from typing import cast
 from uuid import UUID, uuid4
@@ -13,7 +13,7 @@ from zoneinfo import ZoneInfo
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from pin.adapters.telegram.application_worker import (
@@ -22,6 +22,7 @@ from pin.adapters.telegram.application_worker import (
 )
 from pin.adapters.telegram.ingress import PostgresTelegramOwnerResolver, persist_update
 from pin.adapters.telegram.presentation.tokens import TelegramCallbackTokenRecord
+from pin.contexts.billing.infrastructure.models import AccessAccountRecord, AccessPeriodRecord
 from pin.contexts.conversation.infrastructure.models import ProviderCallRecord
 from pin.contexts.identity.infrastructure.models import OnboardingRecord, PreferencesRecord
 from pin.contexts.notifications.infrastructure.models import ReminderIntentRecord
@@ -85,13 +86,30 @@ def home_zone_runtime_database_url() -> str:
 
 
 async def _seed_owner(
-    sessions: async_sessionmaker[AsyncSession], *, bot_id: int, user_id: int
+    sessions: async_sessionmaker[AsyncSession],
+    *,
+    bot_id: int,
+    user_id: int,
+    access_ends_at: datetime = datetime(2100, 1, 1, tzinfo=UTC),
 ) -> UUID:
     async with sessions() as session, session.begin():
         mapped_owner = await PostgresTelegramOwnerResolver().resolve(
             session, bot_id=bot_id, telegram_user_id=user_id
         )
         owner_id = mapped_owner
+        session.add(AccessAccountRecord(owner_id=owner_id))
+        session.add(
+            AccessPeriodRecord(
+                owner_id=owner_id,
+                period_id=f"home-zone-runtime-{owner_id}",
+                policy_kind="paid",
+                policy_version="test-v1",
+                starts_at=datetime(2020, 1, 1, tzinfo=UTC),
+                ends_at=access_ends_at,
+                ai_turn_limit=1000,
+                voice_second_limit=3600,
+            )
+        )
         session.add(
             PreferencesRecord(
                 owner_id=owner_id,
@@ -754,6 +772,207 @@ def test_settings_reinterprets_selected_series_and_preserves_unselected_schedule
                     )
                     is None
                 )
+        finally:
+            await engine.dispose()
+
+    run_local_async(scenario)
+
+
+def test_settings_reinterpretation_fails_honestly_when_access_is_expired(
+    home_zone_runtime_database_url: str,
+) -> None:
+    async def select_preview(
+        sessions: async_sessionmaker[AsyncSession],
+        *,
+        bot_id: int,
+        user_id: int,
+        title: str,
+        at: datetime,
+    ) -> dict[str, object]:
+        review = await _prepare_zone_change(sessions, bot_id=bot_id, user_id=user_id, at=at)
+        _, scope_menu = await _dispatch(
+            sessions,
+            bot_id=bot_id,
+            user_id=user_id,
+            at=at,
+            callback=_callback_for(review, "Choose plans"),
+        )
+        _, selected_menu = await _dispatch(
+            sessions,
+            bot_id=bot_id,
+            user_id=user_id,
+            at=at,
+            callback=_callback_containing(scope_menu, title),
+        )
+        assert "Selected: 1 occurrence(s)" in str(selected_menu["plain_text"])
+        _, preview = await _dispatch(
+            sessions,
+            bot_id=bot_id,
+            user_id=user_id,
+            at=at,
+            callback=_callback_for(selected_menu, "Preview selected"),
+        )
+        return preview
+
+    async def scenario() -> None:
+        engine = create_async_engine(home_zone_runtime_database_url)
+        sessions = create_session_factory(engine)
+        at = datetime(2026, 10, 14, 9, tzinfo=UTC)
+        suffix = uuid4().int % 1_000_000_000
+        try:
+            expired_bot, expired_user = 6_500_000_000 + suffix, 7_500_000_000 + suffix
+            expired_owner = await _seed_owner(
+                sessions,
+                bot_id=expired_bot,
+                user_id=expired_user,
+                access_ends_at=at - timedelta(minutes=1),
+            )
+            async with sessions() as session, session.begin():
+                _, expired_occurrence = await _seed_task(
+                    session,
+                    owner_id=expired_owner,
+                    title="Expired access occurrence",
+                    at=at,
+                    day=date(2026, 10, 20),
+                    zone="UTC",
+                )
+
+            denied_preview = await select_preview(
+                sessions,
+                bot_id=expired_bot,
+                user_id=expired_user,
+                title="Expired access occurrence",
+                at=at,
+            )
+            assert "changed or expired" in str(denied_preview["plain_text"])
+            async with sessions() as session:
+                profile = await session.get(PreferencesRecord, expired_owner)
+                occurrence = await session.get(OccurrenceRecord, expired_occurrence)
+                previews = (
+                    await session.scalars(
+                        select(HomeZoneChangePreviewRecord).where(
+                            HomeZoneChangePreviewRecord.owner_id == expired_owner
+                        )
+                    )
+                ).all()
+                planning_events = await session.scalar(
+                    select(func.count())
+                    .select_from(OutboxEvent)
+                    .where(
+                        OutboxEvent.owner_id == expired_owner,
+                        OutboxEvent.event_type.like("planning.%"),
+                    )
+                )
+                assert profile is not None and (profile.home_zone, profile.version) == ("UTC", 1)
+                assert occurrence is not None and (occurrence.event_zone, occurrence.version) == (
+                    "UTC",
+                    1,
+                )
+                assert occurrence.local_date == date(2026, 10, 20)
+                # Settings may already have saved Keep-only previews while the
+                # user chose a zone and scope. The denied reinterpret choice
+                # must not persist a preview that includes this target.
+                assert all(
+                    str(expired_occurrence)
+                    not in record.payload.get("reinterpret_occurrence_ids", [])
+                    and not record.payload.get("reinterpret_series_ids", [])
+                    and not record.payload.get("reminder_overrides", {})
+                    for record in previews
+                )
+                assert planning_events == 0
+
+            expiring_bot, expiring_user = 6_600_000_000 + suffix, 7_600_000_000 + suffix
+            expiring_owner = await _seed_owner(
+                sessions,
+                bot_id=expiring_bot,
+                user_id=expiring_user,
+                access_ends_at=at + timedelta(minutes=1),
+            )
+            async with sessions() as session, session.begin():
+                _, expiring_occurrence = await _seed_task(
+                    session,
+                    owner_id=expiring_owner,
+                    title="Expiring confirmation occurrence",
+                    at=at,
+                    day=date(2026, 10, 21),
+                    zone="UTC",
+                )
+
+            live_preview = await select_preview(
+                sessions,
+                bot_id=expiring_bot,
+                user_id=expiring_user,
+                title="Expiring confirmation occurrence",
+                at=at,
+            )
+            if "Confirm zone change" not in {
+                button.get("text")
+                for row in cast(
+                    list[list[dict[str, object]]],
+                    cast(dict[str, object], live_preview["reply_markup"])["inline_keyboard"],
+                )
+                for button in row
+            }:
+                # A legacy occurrence can lack an approved reminder projection.
+                # The owner explicitly chooses the reviewed reminder settings
+                # before the complete zone preview becomes confirmable.
+                _, live_preview = await _dispatch(
+                    sessions,
+                    bot_id=expiring_bot,
+                    user_id=expiring_user,
+                    at=at,
+                    callback=_callback_for(
+                        live_preview, "Use reviewed reminders for these items"
+                    ),
+                )
+            confirm_callback = _callback_for(live_preview, "Confirm zone change")
+            async with sessions() as session:
+                saved_preview = await session.scalar(
+                    select(HomeZoneChangePreviewRecord).where(
+                        HomeZoneChangePreviewRecord.owner_id == expiring_owner
+                    )
+                )
+                assert saved_preview is not None and saved_preview.state == "pending"
+
+            late_confirmation = at + timedelta(minutes=2)
+            _, denied_confirmation = await _dispatch(
+                sessions,
+                bot_id=expiring_bot,
+                user_id=expiring_user,
+                at=late_confirmation,
+                callback=confirm_callback,
+            )
+            assert "changed or expired" in str(denied_confirmation["plain_text"])
+            async with sessions() as session:
+                profile = await session.get(PreferencesRecord, expiring_owner)
+                occurrence = await session.get(OccurrenceRecord, expiring_occurrence)
+                saved_preview = await session.get(HomeZoneChangePreviewRecord, saved_preview.id)
+                planning_events = await session.scalar(
+                    select(func.count())
+                    .select_from(OutboxEvent)
+                    .where(
+                        OutboxEvent.owner_id == expiring_owner,
+                        OutboxEvent.event_type.like("planning.%"),
+                    )
+                )
+                handoffs = await session.scalar(
+                    select(func.count())
+                    .select_from(OutboxEvent)
+                    .where(
+                        OutboxEvent.owner_id == expiring_owner,
+                        OutboxEvent.event_type == "identity.home_zone_change.requested",
+                    )
+                )
+                assert profile is not None and (profile.home_zone, profile.version) == ("UTC", 1)
+                assert occurrence is not None and (
+                    occurrence.event_zone,
+                    occurrence.local_date,
+                    occurrence.local_time,
+                    occurrence.version,
+                    occurrence.reminder_preferences_version,
+                ) == ("UTC", date(2026, 10, 21), time(12), 1, 1)
+                assert saved_preview is not None and saved_preview.state == "pending"
+                assert planning_events == 0 and handoffs == 0
         finally:
             await engine.dispose()
 

@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from pin.adapters.telegram.presentation.callbacks import CallbackBinding
 from pin.adapters.telegram.presentation.formatting import escape_markdown_v2
 from pin.adapters.telegram.presentation.onboarding import OnboardingButton, OnboardingReply
+from pin.contexts.billing.api import SqlAlchemyAccessUsageStore
 from pin.contexts.identity.api import (
     HomeZoneChangeHandoff,
     IdentityStore,
@@ -234,6 +235,7 @@ async def handle_home_zone_action(
             authenticated_owner_id=owner_id,
             store=SqlAlchemyHomeZoneChangeStore(session),
             identity=identity,
+            billing=SqlAlchemyAccessUsageStore(session),
             verifier=verifier,
             clock=_Clock(now),
         )
@@ -346,6 +348,7 @@ async def _make_preview(
         ),
         store=SqlAlchemyHomeZoneChangeStore(session),
         identity=SqlAlchemyIdentityStore(session),
+        billing=SqlAlchemyAccessUsageStore(session),
         clock=_Clock(now),
     )
 

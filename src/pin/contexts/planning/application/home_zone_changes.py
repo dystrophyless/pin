@@ -9,6 +9,7 @@ from hashlib import sha256
 from typing import Protocol
 from uuid import UUID, uuid4
 
+from pin.contexts.billing.api import AccessUsageStore, CheckAccess, Operation
 from pin.contexts.identity.api import IdentityStore, Preferences
 from pin.contexts.planning.application.home_zone_contracts import (
     HomeZoneChangeStore,
@@ -101,6 +102,7 @@ async def preview_home_zone_change(
     *,
     store: HomeZoneChangeStore,
     identity: IdentityStore,
+    billing: AccessUsageStore,
     clock: HomeZoneChangeClock,
 ) -> HomeZoneChangePreview:
     """Persist a complete owner-fenced future projection without changing plans."""
@@ -112,6 +114,16 @@ async def preview_home_zone_change(
         raise HomeZoneChangeRejected("profile changed before the home-zone preview")
     if request.preferences.version != current.version + 1:
         raise ValueError("candidate preference version must advance the current profile once")
+    if _requires_reschedule_access(
+        request.reinterpret_occurrence_ids,
+        request.reinterpret_series_ids,
+        dict(request.reminder_overrides),
+    ):
+        access = await billing.check_access(
+            CheckAccess(request.owner_id, Operation.RESCHEDULE_PLAN, now)
+        )
+        if not access.allowed:
+            raise HomeZoneChangeRejected("active access is required to change saved schedules")
     projection = await store.project(
         owner_id=request.owner_id,
         at=now,
@@ -171,6 +183,7 @@ async def confirm_home_zone_change(
     authenticated_owner_id: UUID,
     store: HomeZoneChangeStore,
     identity: IdentityStore,
+    billing: AccessUsageStore,
     verifier: HomeZoneChangeVerifier,
     clock: HomeZoneChangeClock,
 ) -> dict[str, object]:
@@ -202,6 +215,16 @@ async def confirm_home_zone_change(
         reminder_overrides=reminder_overrides,
         lock=True,
     )
+    if _requires_reschedule_access(
+        reinterpret_occurrence_ids,
+        reinterpret_series_ids,
+        reminder_overrides,
+    ):
+        access = await billing.lock_access(
+            CheckAccess(authenticated_owner_id, Operation.RESCHEDULE_PLAN, now)
+        )
+        if not access.allowed:
+            raise HomeZoneChangeRejected("active access is required to change saved schedules")
     expected_digest = _digest(
         {
             "preview_id": str(preview.id),
@@ -248,6 +271,15 @@ async def confirm_home_zone_change(
         "projection_sha256": expected_digest,
         "result": result,
     }
+
+
+def _requires_reschedule_access(
+    reinterpret_occurrence_ids: tuple[UUID, ...],
+    reinterpret_series_ids: tuple[UUID, ...],
+    reminder_overrides: dict[UUID, tuple[ReminderOffset, ...]],
+) -> bool:
+    """Only explicit schedule changes need the active Planning entitlement."""
+    return bool(reinterpret_occurrence_ids or reinterpret_series_ids or reminder_overrides)
 
 
 def _valid_grant(
