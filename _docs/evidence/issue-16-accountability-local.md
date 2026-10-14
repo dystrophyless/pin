@@ -20,3 +20,13 @@ These checks used the mutable development checkout and injected transport/clock.
 An accidental second run on already populated `...14x` produced **10 failures / 11 passes** from cross-run shared-queue interference. That database and evidence are preserved; the fresh first-run result is not a repeatability claim. The final qualification uses a new isolated fixture for this test file and retains all raw results.
 
 The cluster is `127.0.0.1:51017`, user `pin_test`, data directory `C:/Users/roman/AppData/Local/Temp/pin-issue2-eeadfd1-20261013`. Historical model receipts and prior fixtures remain untouched. No live Telegram/model requests, Docker, deployment or real-host qualification were performed. Real grouped-review evidence remains an explicit core-gate requirement.
+
+## Frozen-source diagnostic run
+
+Packet `C:/Users/roman/AppData/Local/Temp/pin-parent-accountability-support-20261014-1617a` froze source `1c1b87484001217bb505cf3a8a73e94e9f74907a`, tree `6b5d865c1efdeaffd61984bd88c6c7c06103909b`. All 28 fresh guarded fixtures were created. The initial creation preflight failed before any database write because it counted `.venv` files; the packet guard was corrected to compare the exact committed file inventory, and that failure receipt is preserved.
+
+Migration upgrade/current passed, but the first drift check failed: ORM described the outcome owner/event uniqueness as an index while the migration created a unique constraint. Source correction `c8ef0bd` aligns ORM metadata with the migration; the frozen source remains untouched. The remaining lifecycle steps were not claimed as passed.
+
+Diagnostic full suite: **448 passed, 4 failed, zero skips**, 197.02 seconds. Failures were one generic reply deletion-boundary fixture and three real local Whisper/voice-continuation cases. Native Accountability and bilingual support cases passed within this complete run. The reply fixture mixed a fixed 07:00 clock with later PostgreSQL outbox creation time; speech records show decoding succeeded and recognition failed before model continuation. Fixes are assigned to separate Luna High executors. Full Ruff, no-incremental mypy174 and architecture passed; overall qualification is **FAIL**. Raw logs/JUnit and all fixture records are retained while diagnosis continues.
+
+Packet `1617b` is prepared with new fixture names and corrected packet safety guards. It has not frozen a source or created databases. Final qualification, offline speech and manifest-bound cleanup remain required before issue acceptance.
