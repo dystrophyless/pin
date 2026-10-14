@@ -532,13 +532,40 @@ def test_payment_query_uses_unordered_high_priority_lane_while_speech_is_leased(
         engine = create_engine(ingress_database)
         sessions = create_session_factory(engine)
         bot_id, user_id = _bot_id(), 420_007
-        bot = Bot(BOT_TOKEN)
+
+        class FakeSession:
+            async def close(self) -> None:
+                return None
+
+        class RejectingPreCheckoutBot:
+            answers: list[dict[str, object]] = []
+            session = FakeSession()
+
+            async def answer_pre_checkout_query(
+                self,
+                *,
+                pre_checkout_query_id: str,
+                ok: bool,
+                error_message: str | None,
+                request_timeout: int,
+            ) -> bool:
+                self.answers.append(
+                    {
+                        "pre_checkout_query_id": pre_checkout_query_id,
+                        "ok": ok,
+                        "error_message": error_message,
+                        "request_timeout": request_timeout,
+                    }
+                )
+                return True
+
+        bot = RejectingPreCheckoutBot()
         client = TestClient(
             TestServer(
                 create_webhook_app(
                     engine=engine,
                     sessions=sessions,
-                    bot=bot,
+                    bot=cast(Bot, bot),
                     bot_id=bot_id,
                     webhook_secret=WEBHOOK_SECRET,
                 )
@@ -571,6 +598,13 @@ def test_payment_query_uses_unordered_high_priority_lane_while_speech_is_leased(
                     "/telegram/webhook", json=payload, headers={SECRET_HEADER: WEBHOOK_SECRET}
                 )
                 assert response.status == 200
+            assert len(bot.answers) == 1
+            answer = bot.answers[0]
+            assert answer["pre_checkout_query_id"] == "query-1"
+            assert answer["ok"] is False
+            assert answer["error_message"] == (
+                "This payment order is invalid. Open /subscription to start again."
+            )
             async with sessions() as session, session.begin():
                 speech_claim = await claim_job(
                     session,
@@ -739,11 +773,12 @@ def test_polling_callback_ack_failure_cannot_hold_later_payment_update_or_offset
                 },
             }
         )
+        payment_query_id = f"checkout-{uuid4().hex}"
         payment = Update.model_validate(
             {
                 "update_id": payment_update_id,
                 "pre_checkout_query": {
-                    "id": f"checkout-{uuid4().hex}",
+                    "id": payment_query_id,
                     "from": {"id": user_id, "is_bot": False, "first_name": "Test"},
                     "currency": "XTR",
                     "total_amount": 1,
@@ -756,17 +791,23 @@ def test_polling_callback_ack_failure_cannot_hold_later_payment_update_or_offset
         class FailingAckBot:
             offsets: list[int] = []
             request_timeouts: list[int | None] = []
+            precheckout_answers: list[dict[str, object]] = []
             supplied = False
+            get_updates_calls = 0
 
             async def get_updates(
                 self, *, offset: int, timeout: int, allowed_updates: list[str]
             ) -> list[Update]:
+                self.get_updates_calls += 1
                 self.offsets.append(offset)
                 if not self.supplied:
                     self.supplied = True
                     return [callback, payment]
                 if offset == payment_update_id + 1:
                     stop.set()
+                if self.get_updates_calls >= 3:
+                    stop.set()
+                await asyncio.sleep(0)
                 return []
 
             async def answer_callback_query(
@@ -779,6 +820,25 @@ def test_polling_callback_ack_failure_cannot_hold_later_payment_update_or_offset
                     raise TelegramBadRequest(method=method, message="query is too old")
                 raise TelegramNetworkError(method=method, message="request timed out")
 
+            async def answer_pre_checkout_query(
+                self,
+                *,
+                pre_checkout_query_id: str,
+                ok: bool,
+                error_message: str | None,
+                request_timeout: int,
+            ) -> bool:
+                self.precheckout_answers.append(
+                    {
+                        "pre_checkout_query_id": pre_checkout_query_id,
+                        "ok": ok,
+                        "error_message": error_message,
+                        "request_timeout": request_timeout,
+                        "response": True,
+                    }
+                )
+                return True
+
         bot = FailingAckBot()
         try:
             await poll_updates(
@@ -789,7 +849,17 @@ def test_polling_callback_ack_failure_cannot_hold_later_payment_update_or_offset
                 stop=stop,
             )
             assert bot.offsets == [0, payment_update_id + 1]
+            assert bot.get_updates_calls == 2
             assert bot.request_timeouts == [2]
+            assert len(bot.precheckout_answers) == 1
+            answer = bot.precheckout_answers[0]
+            assert answer["pre_checkout_query_id"] == payment_query_id
+            assert answer["ok"] is False
+            assert answer["error_message"] == (
+                "This payment order is invalid. Open /subscription to start again."
+            )
+            assert isinstance(answer["request_timeout"], int)
+            assert answer["response"] is True
             async with sessions() as session:
                 inboxes = list(
                     (
