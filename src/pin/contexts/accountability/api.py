@@ -33,6 +33,7 @@ from pin.contexts.accountability.infrastructure.scheduler import (
     apply_delivery_outcome,
     mark_delivery_intent_skipped,
     record_delivery_attempt_result,
+    resume_initials_after_access,
     schedule_due_accountability,
     synchronize_occurrence,
 )
@@ -65,6 +66,7 @@ __all__ = [
     "review_due_at",
     "review_items_for_today",
     "record_delivery_attempt_result",
+    "resume_initials_after_access",
     "schedule_due_accountability",
     "synchronize_occurrence",
 ]

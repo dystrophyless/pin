@@ -19,6 +19,8 @@ from pin.contexts.notifications.api import (
 from pin.contexts.planning.application.schedule_snapshot import (
     PersistedReminderSchedule,
     PlanningOccurrenceSchedule,
+    PlanningOwnerOccurrence,
+    PlanningOwnerSchedulePage,
     PlanningScheduleChange,
     PlanningScheduleSnapshot,
     PlanningScheduleSnapshotStore,
@@ -61,6 +63,118 @@ class SqlAlchemyPlanningScheduleSnapshotStore(PlanningScheduleSnapshotStore):
     def __init__(self, session: AsyncSession, identity: IdentityStore) -> None:
         self._session = session
         self._identity = identity
+
+    async def list_current_owner_schedules(
+        self,
+        owner_id: UUID,
+        *,
+        after_occurrence_id: UUID | None,
+        limit: int,
+    ) -> PlanningOwnerSchedulePage:
+        """Read one bounded page without taking a roster-wide lock wave."""
+        if not 1 <= limit <= 250:
+            raise ValueError("schedule page limit must be between 1 and 250")
+        statement = (
+            select(OccurrenceRecord, PlanItemRecord)
+            .join(
+                PlanItemRecord,
+                (PlanItemRecord.id == OccurrenceRecord.plan_item_id)
+                & (PlanItemRecord.owner_id == OccurrenceRecord.owner_id),
+            )
+            .where(
+                OccurrenceRecord.owner_id == owner_id,
+                OccurrenceRecord.state == "open",
+            )
+            .order_by(OccurrenceRecord.id)
+            .limit(limit + 1)
+        )
+        if after_occurrence_id is not None:
+            statement = statement.where(OccurrenceRecord.id > after_occurrence_id)
+        rows = list((await self._session.execute(statement)).all())
+        has_more = len(rows) > limit
+        rows = rows[:limit]
+        occurrence_ids = [occurrence.id for occurrence, _ in rows]
+        if not occurrence_ids:
+            return PlanningOwnerSchedulePage((), None)
+
+        links = list(
+            (
+                await self._session.scalars(
+                    select(SeriesOccurrenceRecord).where(
+                        SeriesOccurrenceRecord.owner_id == owner_id,
+                        SeriesOccurrenceRecord.occurrence_id.in_(occurrence_ids),
+                    )
+                )
+            ).all()
+        )
+        series_ids = {link.series_id for link in links}
+        series_rows = (
+            list(
+                (
+                    await self._session.scalars(
+                        select(SeriesRecord).where(
+                            SeriesRecord.owner_id == owner_id,
+                            SeriesRecord.id.in_(series_ids),
+                        )
+                    )
+                ).all()
+            )
+            if series_ids
+            else []
+        )
+        links_by_occurrence = {link.occurrence_id: link for link in links}
+        series_by_id = {series.id: series for series in series_rows}
+        reminder_rows = list(
+            (
+                await self._session.scalars(
+                    select(ReminderRuleRecord)
+                    .where(
+                        ReminderRuleRecord.owner_id == owner_id,
+                        ReminderRuleRecord.occurrence_id.in_(occurrence_ids),
+                    )
+                    .order_by(ReminderRuleRecord.occurrence_id, ReminderRuleRecord.due_at)
+                )
+            ).all()
+        )
+        reminders_by_occurrence: dict[UUID, list[PersistedReminderSchedule]] = {}
+        for reminder in reminder_rows:
+            reminders_by_occurrence.setdefault(reminder.occurrence_id, []).append(
+                PersistedReminderSchedule(
+                    ReminderOffset(
+                        OffsetKind(reminder.offset_kind),
+                        reminder.offset_amount,
+                        reminder.source,
+                    ),
+                    reminder.due_at,
+                )
+            )
+
+        items = []
+        for occurrence, plan in rows:
+            link = links_by_occurrence.get(occurrence.id)
+            series = series_by_id.get(link.series_id) if link is not None else None
+            current = PlanningOccurrenceSchedule(
+                occurrence_id=occurrence.id,
+                occurrence_version=occurrence.version,
+                state=occurrence.state,
+                approved_preferences_version=occurrence.reminder_preferences_version,
+                schedule=_resolved_schedule(occurrence),
+                reminders=tuple(reminders_by_occurrence.get(occurrence.id, ())),
+                series_id=series.id if series is not None else None,
+                series_version=series.version if series is not None else None,
+                series_state=series.state if series is not None else None,
+            )
+            items.append(
+                PlanningOwnerOccurrence(
+                    owner_id=owner_id,
+                    plan_item_id=plan.id,
+                    plan_version=plan.version,
+                    preferences_version=max(1, occurrence.reminder_preferences_version or 1),
+                    occurrence=current,
+                )
+            )
+        next_cursor = rows[-1][0].id if has_more else None
+        return PlanningOwnerSchedulePage(tuple(items), next_cursor)
 
     async def lock_schedule(
         self, change: PlanningScheduleChange
@@ -194,7 +308,7 @@ class SqlAlchemyPlanningScheduleSnapshotStore(PlanningScheduleSnapshotStore):
                         SeriesOccurrenceRecord.owner_id == change.owner_id,
                         SeriesOccurrenceRecord.occurrence_id == change.aggregate_id,
                     )
-                )
+                ),
             )
         return None
 

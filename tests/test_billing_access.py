@@ -449,9 +449,7 @@ def test_voice_resize_rejects_overflow_missing_wrong_kind_and_terminal_holds() -
 def test_expiry_notice_uses_exact_window_and_live_period_end(kind: PeriodKind) -> None:
     access_period = period(kind)
     at_24h = access_period.ends_at - timedelta(hours=24)
-    result = authorize_access_notice(
-        access_period, AccessNoticeKind.EXPIRY_24H, at=at_24h
-    )
+    result = authorize_access_notice(access_period, AccessNoticeKind.EXPIRY_24H, at=at_24h)
     assert result.status is AccessNoticeStatus.SEND
     assert result.remaining_seconds == 24 * 60 * 60
 
@@ -474,12 +472,8 @@ def test_late_expiry_notice_is_truthful_and_stale_24h_notice_is_coalesced() -> N
     access_period = period(PeriodKind.TRIAL)
     late = access_period.ends_at - timedelta(minutes=30)
 
-    old_notice = authorize_access_notice(
-        access_period, AccessNoticeKind.EXPIRY_24H, at=late
-    )
-    current_notice = authorize_access_notice(
-        access_period, AccessNoticeKind.EXPIRY_1H, at=late
-    )
+    old_notice = authorize_access_notice(access_period, AccessNoticeKind.EXPIRY_24H, at=late)
+    current_notice = authorize_access_notice(access_period, AccessNoticeKind.EXPIRY_1H, at=late)
 
     assert old_notice.status is AccessNoticeStatus.SKIP
     assert current_notice.status is AccessNoticeStatus.SEND

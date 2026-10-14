@@ -10,6 +10,8 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from pin.adapters.telegram.access_notices import prepare_access_notice, schedule_access_notices
+from pin.adapters.telegram.access_resume import consume_access_activations
 from pin.adapters.telegram.accountability_composition import (
     PlanningAccountabilityReads,
     read_review_profile,
@@ -49,6 +51,8 @@ async def process_delivery_iteration(
 ) -> bool:
     async with sessions() as session, session.begin():
         at = now()
+        await consume_access_activations(session, at=at)
+        await schedule_access_notices(session, transport, at=at)
         await schedule_accountability_iteration(session, transport, at=at)
         await enqueue_due_reminder_jobs(session, now=at)
         await enqueue_due_reply_jobs(session, now=at)
@@ -92,7 +96,9 @@ async def process_delivery_iteration(
             now=now,
         )
     elif claim.kind == DELIVERY_REPLY_JOB_KIND:
-        await deliver_reply_job(sessions, claim, transport, now=now)
+        await deliver_reply_job(
+            sessions, claim, transport, now=now, prepare_reply=prepare_access_notice
+        )
     else:
         await deliver_reminder_job(
             sessions,

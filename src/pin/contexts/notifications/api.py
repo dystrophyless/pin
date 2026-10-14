@@ -8,12 +8,18 @@ from typing import TYPE_CHECKING
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from pin.contexts.notifications.application.access_resume import resumable_access_occurrences
 from pin.contexts.notifications.application.contracts import (
+    AccessResumeOccurrence,
+    AccessResumeReminder,
+    AccessResumeStore,
     CurrentOccurrenceSchedule,
     CurrentPlanSchedule,
     CurrentScheduleStore,
     ReconciliationResult,
     ReminderIntentStore,
+    ResumeAfterAccess,
+    ResumeAfterAccessResult,
     ScheduleChange,
 )
 from pin.contexts.notifications.application.delivery import (
@@ -69,6 +75,13 @@ def defer_until_quiet_hours_end(
     return defer_until_quiet_end(value, zone, quiet_start, quiet_end)
 
 
+async def resume_after_access(
+    command: ResumeAfterAccess, *, store: AccessResumeStore
+) -> ResumeAfterAccessResult:
+    """Rearm only still-current unsent reminder intents after access returns."""
+    return await store.resume_after_access(command)
+
+
 async def deliver_accountability_job(
     sessions: async_sessionmaker[AsyncSession],
     claim: JobClaim,
@@ -98,6 +111,9 @@ async def deliver_accountability_job(
 
 
 __all__ = [
+    "AccessResumeOccurrence",
+    "AccessResumeReminder",
+    "AccessResumeStore",
     "DeliveryAttemptOutcome",
     "ACCOUNTABILITY_DELIVERY_JOB_KIND",
     "AccountabilityTransport",
@@ -119,9 +135,13 @@ __all__ = [
     "ReconciliationResult",
     "RecoverySummaryItem",
     "RecoverySummaryRequest",
+    "ResumeAfterAccess",
+    "ResumeAfterAccessResult",
     "ScheduleChange",
     "project_reminders",
     "reconcile_schedule_change",
+    "resumable_access_occurrences",
+    "resume_after_access",
     "render_recovery_summary",
     "deliver_accountability_job",
 ]

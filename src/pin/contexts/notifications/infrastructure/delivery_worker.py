@@ -29,6 +29,7 @@ from pin.contexts.notifications.application.delivery import (
     KnownDeliveryFailure,
     RecoverySummaryRequest,
     ReminderSend,
+    ReplyPreparation,
     TelegramReplySend,
     UnknownDeliveryFailure,
 )
@@ -68,6 +69,10 @@ DELIVERY_REPLY_JOB_KIND = "notifications.deliver_reply"
 DELIVERY_RECOVERY_SUMMARY_JOB_KIND = "notifications.deliver_recovery_summary"
 DELIVERY_JOB_MAX_ATTEMPTS = 8
 DELIVERY_LEASE = timedelta(minutes=2)
+
+ReplyPreparationGuard = Callable[
+    [AsyncSession, EventEnvelope, TelegramReplySend, datetime], Awaitable[ReplyPreparation]
+]
 _TERMINAL_OUTCOMES = frozenset(
     {
         DeliveryOutcomeKind.CONFIRMED.value,
@@ -654,8 +659,9 @@ async def deliver_reply_job(
     *,
     now: Callable[[], datetime],
     before_attempt_authorization: Callable[[], Awaitable[None]] | None = None,
+    prepare_reply: ReplyPreparationGuard | None = None,
 ) -> DeliveryAttemptOutcome | None:
-    """Send a durable private reply without plan/access eligibility gates."""
+    """Send a durable private reply, preparing marked domain notices at dispatch."""
     if claim.lane is not JobLane.DELIVERY or claim.kind != DELIVERY_REPLY_JOB_KIND:
         raise ValueError("claim is not a Telegram reply delivery job")
     try:
@@ -770,29 +776,39 @@ async def deliver_reply_job(
                             )
                             await complete_job(session, claim)
                         else:
-                            attempt_number = await _next_reply_attempt_number(
-                                session, event.id, destination
-                            )
-                            attempt = DeliveryAttemptRecord(
-                                id=uuid4(),
-                                owner_id=event.owner_id,
-                                reply_event_id=event.id,
-                                target_id=destination,
-                                dispatch_version=1,
-                                attempt_number=attempt_number,
-                                outcome="started",
-                                started_at=now().astimezone(UTC),
-                            )
-                            session.add(attempt)
-                            await session.flush()
-                            prepared = _PreparedReply(
-                                attempt.id,
-                                event.id,
-                                event.owner_id,
-                                destination,
-                                attempt_number,
+                            message, immediate = await _prepare_reply_message(
+                                session,
+                                claim,
+                                event,
+                                envelope,
                                 TelegramReplySend(destination, markdown, plain_text, markup),
+                                prepare_reply=prepare_reply,
+                                now=now,
                             )
+                            if message is not None:
+                                attempt_number = await _next_reply_attempt_number(
+                                    session, event.id, destination
+                                )
+                                attempt = DeliveryAttemptRecord(
+                                    id=uuid4(),
+                                    owner_id=event.owner_id,
+                                    reply_event_id=event.id,
+                                    target_id=destination,
+                                    dispatch_version=1,
+                                    attempt_number=attempt_number,
+                                    outcome="started",
+                                    started_at=now().astimezone(UTC),
+                                )
+                                session.add(attempt)
+                                await session.flush()
+                                prepared = _PreparedReply(
+                                    attempt.id,
+                                    event.id,
+                                    event.owner_id,
+                                    destination,
+                                    attempt_number,
+                                    message,
+                                )
 
     if prepared is None:
         return immediate
@@ -843,6 +859,63 @@ async def deliver_reply_job(
             else:
                 await complete_job(session, claim)
     return result
+
+
+async def _prepare_reply_message(
+    session: AsyncSession,
+    claim: JobClaim,
+    event: OutboxEvent,
+    envelope: EventEnvelope,
+    fallback: TelegramReplySend,
+    *,
+    prepare_reply: ReplyPreparationGuard | None,
+    now: Callable[[], datetime],
+) -> tuple[TelegramReplySend | None, DeliveryAttemptOutcome | None]:
+    required = envelope.payload.get("requires_preparation", False)
+    if not isinstance(required, bool):
+        decision = ReplyPreparation(reason="reply_preparation_invalid")
+    elif required and prepare_reply is None:
+        decision = ReplyPreparation(reason="reply_preparation_unavailable")
+    elif prepare_reply is None:
+        decision = ReplyPreparation(message=fallback)
+    else:
+        decision = await prepare_reply(session, envelope, fallback, now())
+
+    # The callback performs only transactional reads/writes; fence all its effects
+    # and the subsequent attempt-start after it returns.
+    await lock_job_for_effects(session, claim)
+    if decision.deferred_until is not None:
+        await fail_job(
+            session,
+            claim,
+            error=decision.reason or "reply_deferred",
+            retry_after=max(timedelta(seconds=1), decision.deferred_until - now().astimezone(UTC)),
+        )
+        return None, None
+    if decision.message is not None:
+        message = decision.message
+        if (
+            message.destination_id == fallback.destination_id
+            and isinstance(message.markdown, str)
+            and message.markdown.strip()
+            and isinstance(message.plain_text, str)
+            and message.plain_text.strip()
+            and (message.reply_markup is None or isinstance(message.reply_markup, dict))
+            and message.parse_mode in {None, "MarkdownV2"}
+        ):
+            return message, None
+        decision = ReplyPreparation(reason="reply_preparation_invalid")
+    outcome = await _record_reply_outcome(
+        session,
+        event,
+        target_id=fallback.destination_id,
+        attempt_number=await _next_reply_attempt_number(session, event.id, fallback.destination_id),
+        outcome=DeliveryOutcomeKind.SKIPPED,
+        at=now(),
+        failure_code=decision.reason,
+    )
+    await complete_job(session, claim)
+    return None, outcome
 
 
 async def deliver_recovery_summary_job(

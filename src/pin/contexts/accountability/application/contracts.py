@@ -77,6 +77,7 @@ class AccountabilitySend:
     cycle_id: UUID | None
     review_id: UUID | None
     plain_text: str
+    dispatch_version: int = 1
 
 
 class ReviewProfileReader(Protocol):

@@ -2,26 +2,36 @@
 
 from __future__ import annotations
 
-from datetime import datetime
-from uuid import UUID
+from datetime import UTC, datetime, timedelta
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 from sqlalchemy import case, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from pin.contexts.billing.application.contracts import (
+    AccessNoticeQuietPolicy,
     AccessUsageStore,
+    ActivatePaidPeriod,
     CheckAccess,
+    CheckAccessNotice,
+    ReadSubscriptionStatus,
     ReserveUsage,
     ReserveUsageResult,
     ResizeVoiceUsage,
+    RestoreReturningPaidAccess,
+    RetainBillingIdentity,
     StartTrial,
+    SubscriptionStatus,
     TrialActivationResult,
     TrialActivationStatus,
 )
 from pin.contexts.billing.domain.access import (
     AccessAccount,
     AccessDecision,
+    AccessNoticeAuthorization,
+    AccessNoticeKind,
+    AccessNoticeStatus,
     AccessPeriod,
     AccountLifecycle,
     Allowance,
@@ -32,16 +42,21 @@ from pin.contexts.billing.domain.access import (
     ReservationState,
     UsageLedger,
     UsageReservation,
+    authorize_access_notice,
 )
 from pin.contexts.billing.domain.access import (
     check_access as decide_access,
 )
 from pin.contexts.billing.infrastructure.models import (
     AccessAccountRecord,
+    AccessExpiryNoticeRecord,
     AccessPeriodRecord,
+    RetainedBillingIdentityRecord,
     TrialActivationRecord,
     UsageReservationRecord,
 )
+from pin.platform.contracts import EventEnvelope
+from pin.platform.events import add_outbox_event
 
 
 class SqlAlchemyAccessUsageStore(AccessUsageStore):
@@ -49,6 +64,121 @@ class SqlAlchemyAccessUsageStore(AccessUsageStore):
 
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
+
+    async def retain_owner_for_return(self, command: RetainBillingIdentity) -> bool:
+        """Retain only the actor link needed to restore already-earned access."""
+        _require_aware(command.at)
+        if type(command.telegram_user_id) is not int or command.telegram_user_id <= 0:
+            raise ValueError("telegram_user_id must be a positive integer")
+
+        account = await self._session.scalar(
+            select(AccessAccountRecord)
+            .where(AccessAccountRecord.owner_id == command.owner_id)
+            .with_for_update()
+        )
+        if account is None:
+            return False
+
+        prior_trial = await self._session.get(TrialActivationRecord, command.owner_id)
+        paid_period = await self._session.scalar(
+            select(AccessPeriodRecord.period_id)
+            .where(
+                AccessPeriodRecord.owner_id == command.owner_id,
+                AccessPeriodRecord.policy_kind == PeriodKind.PAID.value,
+                AccessPeriodRecord.starts_at <= command.at,
+                AccessPeriodRecord.ends_at > command.at,
+            )
+            .limit(1)
+        )
+        if prior_trial is None and paid_period is None:
+            return False
+        if prior_trial is not None and prior_trial.telegram_user_id != command.telegram_user_id:
+            raise InvalidTransition("owner does not match the retained trial identity")
+
+        by_owner = await self._session.get(RetainedBillingIdentityRecord, command.owner_id)
+        by_actor = await self._session.scalar(
+            select(RetainedBillingIdentityRecord).where(
+                RetainedBillingIdentityRecord.telegram_user_id == command.telegram_user_id
+            )
+        )
+        if by_owner is not None and by_owner.telegram_user_id != command.telegram_user_id:
+            raise InvalidTransition("owner already retains a different Telegram identity")
+        if by_actor is not None and by_actor.owner_id != command.owner_id:
+            raise InvalidTransition("Telegram identity already retains another owner")
+        if by_owner is None:
+            await self._session.execute(
+                pg_insert(RetainedBillingIdentityRecord)
+                .values(
+                    owner_id=command.owner_id,
+                    telegram_user_id=command.telegram_user_id,
+                    retained_at=command.at,
+                )
+                .on_conflict_do_nothing()
+            )
+            by_actor = await self._session.scalar(
+                select(RetainedBillingIdentityRecord).where(
+                    RetainedBillingIdentityRecord.telegram_user_id
+                    == command.telegram_user_id
+                )
+            )
+            if by_actor is None or by_actor.owner_id != command.owner_id:
+                raise InvalidTransition("Telegram identity already retains another owner")
+        return True
+
+    async def resolve_returning_owner(self, telegram_user_id: int) -> UUID | None:
+        """Resolve a minimal retained actor link before ingress allocates a new owner."""
+        if type(telegram_user_id) is not int or telegram_user_id <= 0:
+            raise ValueError("telegram_user_id must be a positive integer")
+        retained = await self._session.scalar(
+            select(RetainedBillingIdentityRecord.owner_id).where(
+                RetainedBillingIdentityRecord.telegram_user_id == telegram_user_id
+            )
+        )
+        trial_owner = await self._session.scalar(
+            select(TrialActivationRecord.owner_id).where(
+                TrialActivationRecord.telegram_user_id == telegram_user_id
+            )
+        )
+        if retained is not None and trial_owner is not None and retained != trial_owner:
+            raise InvalidTransition("retained billing identity conflicts with trial history")
+        return retained if retained is not None else trial_owner
+
+    async def restore_returning_paid_access(
+        self, command: RestoreReturningPaidAccess
+    ) -> bool:
+        """Restore only active paid coverage for the matching retained Telegram actor."""
+        _require_aware(command.at)
+        if type(command.telegram_user_id) is not int or command.telegram_user_id <= 0:
+            raise ValueError("telegram_user_id must be a positive integer")
+        retained_owner = await self._session.scalar(
+            select(RetainedBillingIdentityRecord.owner_id).where(
+                RetainedBillingIdentityRecord.telegram_user_id == command.telegram_user_id
+            )
+        )
+        if retained_owner != command.owner_id:
+            return False
+        account = await self._session.scalar(
+            select(AccessAccountRecord)
+            .where(AccessAccountRecord.owner_id == command.owner_id)
+            .with_for_update()
+        )
+        if account is None or account.deleted_at is None:
+            return False
+        paid = await self._session.scalar(
+            select(AccessPeriodRecord.period_id)
+            .where(
+                AccessPeriodRecord.owner_id == command.owner_id,
+                AccessPeriodRecord.policy_kind == PeriodKind.PAID.value,
+                AccessPeriodRecord.starts_at <= command.at,
+                AccessPeriodRecord.ends_at > command.at,
+            )
+            .limit(1)
+            .with_for_update()
+        )
+        if paid is None:
+            return False
+        account.deleted_at = None
+        return True
 
     async def activate_trial(self, command: StartTrial) -> TrialActivationResult:
         if type(command.telegram_user_id) is not int or command.telegram_user_id <= 0:
@@ -153,8 +283,313 @@ class SqlAlchemyAccessUsageStore(AccessUsageStore):
                 activated_at=command.at,
             )
         )
+        await self._publish_period_activated(
+            command.owner_id,
+            period_id=period_id,
+            kind=PeriodKind.TRIAL,
+            at=command.at,
+        )
         return TrialActivationResult(
             TrialActivationStatus.ACTIVATED, period_id, command.at, ends_at
+        )
+
+    async def activate_paid_period(self, command: ActivatePaidPeriod) -> bool:
+        """Persist a provider-confirmed period once; the caller validates payment."""
+        _require_aware(command.starts_at)
+        _require_aware(command.ends_at)
+        policy = PlanPolicy.paid()
+        period = AccessPeriod(
+            command.period_id,
+            policy,
+            command.starts_at,
+            command.ends_at,
+        )
+        if period.ends_at - period.starts_at != policy.duration:
+            raise ValueError("paid access period must match the configured 30-day policy")
+
+        await self._session.execute(
+            pg_insert(AccessAccountRecord)
+            .values(owner_id=command.owner_id)
+            .on_conflict_do_nothing(index_elements=[AccessAccountRecord.owner_id])
+        )
+        account = await self._session.scalar(
+            select(AccessAccountRecord)
+            .where(AccessAccountRecord.owner_id == command.owner_id)
+            .with_for_update()
+        )
+        if account is None or account.deleted_at is not None:
+            raise InvalidTransition("paid coverage cannot be added to a deleted account")
+
+        existing = await self._session.scalar(
+            select(AccessPeriodRecord)
+            .where(
+                AccessPeriodRecord.owner_id == command.owner_id,
+                AccessPeriodRecord.period_id == command.period_id,
+            )
+            .with_for_update()
+        )
+        if existing is not None:
+            if (
+                existing.policy_kind != PeriodKind.PAID.value
+                or existing.starts_at != period.starts_at
+                or existing.ends_at != period.ends_at
+                or existing.policy_version != policy.version
+            ):
+                raise InvalidTransition("paid period identifier was reused with different facts")
+            return False
+
+        overlap = await self._session.scalar(
+            select(AccessPeriodRecord.period_id).where(
+                AccessPeriodRecord.owner_id == command.owner_id,
+                AccessPeriodRecord.policy_kind == PeriodKind.PAID.value,
+                AccessPeriodRecord.starts_at < period.ends_at,
+                AccessPeriodRecord.ends_at > period.starts_at,
+            )
+        )
+        if overlap is not None:
+            raise InvalidTransition("paid access periods cannot overlap")
+
+        self._session.add(
+            AccessPeriodRecord(
+                owner_id=command.owner_id,
+                period_id=period.period_id,
+                policy_kind=PeriodKind.PAID.value,
+                policy_version=policy.version,
+                starts_at=period.starts_at,
+                ends_at=period.ends_at,
+                ai_turn_limit=policy.allowance.ai_turns,
+                voice_second_limit=policy.allowance.voice_seconds,
+            )
+        )
+        await self._publish_period_activated(
+            command.owner_id,
+            period_id=period.period_id,
+            kind=PeriodKind.PAID,
+            at=period.starts_at,
+        )
+        return True
+
+    async def read_subscription_status(self, query: ReadSubscriptionStatus) -> SubscriptionStatus:
+        _require_aware(query.at)
+        lifecycle = await self._account_lifecycle(query.owner_id, lock=False)
+        period_rows = list(
+            (
+                await self._session.scalars(
+                    select(AccessPeriodRecord)
+                    .where(AccessPeriodRecord.owner_id == query.owner_id)
+                    .order_by(AccessPeriodRecord.starts_at.desc(), AccessPeriodRecord.period_id)
+                    .execution_options(populate_existing=True)
+                )
+            ).all()
+        )
+        active_rows = await self._active_periods(query.owner_id, query.at, lock=False)
+        selected = (
+            active_rows[0]
+            if active_rows
+            else next(
+                (row for row in period_rows if row.starts_at > query.at.astimezone(UTC)),
+                period_rows[0] if period_rows else None,
+            )
+        )
+        trial_used = (await self._session.get(TrialActivationRecord, query.owner_id)) is not None
+        if selected is None:
+            return SubscriptionStatus(
+                query.owner_id,
+                lifecycle,
+                None,
+                None,
+                None,
+                None,
+                False,
+                trial_used,
+                None,
+                None,
+                None,
+                None,
+            )
+
+        ledger, _ = await self._ledger(selected, lock=False)
+        ledger.expire(at=query.at)
+        usage = ledger.snapshot()
+        period = _period_from_record(selected)
+        is_active = lifecycle is AccountLifecycle.PRESENT and period.is_active(query.at)
+        return SubscriptionStatus(
+            owner_id=query.owner_id,
+            account_lifecycle=lifecycle,
+            period_id=period.period_id,
+            period_kind=period.policy.kind,
+            starts_at=period.starts_at,
+            ends_at=period.ends_at,
+            active=is_active,
+            trial_used=trial_used,
+            ai_turn_limit=period.policy.allowance.ai_turns,
+            ai_turns_remaining=usage.remaining_ai_turns,
+            voice_seconds_limit=period.policy.allowance.voice_seconds,
+            voice_seconds_remaining=usage.remaining_voice_seconds,
+        )
+
+    async def enqueue_due_access_notices(self, *, at: datetime, limit: int = 100) -> int:
+        """Append at most one current-period warning per owner in this caller's UoW."""
+        _require_aware(at)
+        if not 1 <= limit <= 1000:
+            raise ValueError("limit must be between 1 and 1000")
+        at_utc = at.astimezone(UTC)
+        candidates = tuple(
+            (
+                await self._session.scalars(
+                    select(AccessPeriodRecord.owner_id)
+                    .where(
+                        AccessPeriodRecord.starts_at <= at_utc,
+                        AccessPeriodRecord.ends_at > at_utc,
+                        AccessPeriodRecord.ends_at <= at_utc + timedelta(hours=24),
+                    )
+                    .distinct()
+                    .order_by(AccessPeriodRecord.owner_id)
+                    .limit(limit)
+                )
+            ).all()
+        )
+        created = 0
+        for owner_id in candidates:
+            account = await self._session.scalar(
+                select(AccessAccountRecord)
+                .where(AccessAccountRecord.owner_id == owner_id)
+                .execution_options(populate_existing=True)
+                .with_for_update(skip_locked=True)
+            )
+            if account is None or account.deleted_at is not None:
+                continue
+            active = await self._active_periods(owner_id, at_utc, lock=True)
+            if not active:
+                continue
+            period_row = active[0]
+            period = _period_from_record(period_row)
+            remaining = period.ends_at - at_utc
+            if remaining <= timedelta(0) or remaining > timedelta(hours=24):
+                continue
+            kind = (
+                AccessNoticeKind.EXPIRY_1H
+                if remaining <= timedelta(hours=1)
+                else AccessNoticeKind.EXPIRY_24H
+            )
+            existing = await self._session.scalar(
+                select(AccessExpiryNoticeRecord)
+                .where(
+                    AccessExpiryNoticeRecord.owner_id == owner_id,
+                    AccessExpiryNoticeRecord.period_id == period.period_id,
+                    AccessExpiryNoticeRecord.kind == kind.value,
+                )
+                .with_for_update()
+            )
+            if existing is not None:
+                continue
+            notice = AccessExpiryNoticeRecord(
+                owner_id=owner_id,
+                period_id=period.period_id,
+                kind=kind.value,
+                due_at=period.ends_at
+                - timedelta(hours=24 if kind is AccessNoticeKind.EXPIRY_24H else 1),
+                emitted_at=at_utc,
+            )
+            self._session.add(notice)
+            await self._session.flush()
+            await add_outbox_event(
+                self._session,
+                EventEnvelope(
+                    id=uuid5(
+                        NAMESPACE_URL,
+                        f"pin.billing.access-notice:{owner_id}:{period.period_id}:{kind.value}",
+                    ),
+                    event_type="billing.access_notice.due",
+                    schema_version=1,
+                    aggregate_id=notice.id,
+                    aggregate_version=1,
+                    owner_id=owner_id,
+                    occurred_at=at_utc,
+                    payload={
+                        "notice_id": str(notice.id),
+                        "period_id": period.period_id,
+                    },
+                ),
+            )
+            created += 1
+        return created
+
+    async def authorize_access_notice(
+        self,
+        command: CheckAccessNotice,
+        *,
+        quiet_policy: AccessNoticeQuietPolicy,
+    ) -> AccessNoticeAuthorization:
+        _require_aware(command.at)
+        if not command.period_id.strip() or len(command.period_id) > 128:
+            raise ValueError("period_id must contain 1 to 128 characters")
+        account = await self._session.scalar(
+            select(AccessAccountRecord)
+            .where(AccessAccountRecord.owner_id == command.owner_id)
+            .execution_options(populate_existing=True)
+            .with_for_update()
+        )
+        current_periods = await self._active_periods(command.owner_id, command.at, lock=True)
+        notice = await self._session.scalar(
+            select(AccessExpiryNoticeRecord)
+            .where(
+                AccessExpiryNoticeRecord.id == command.notice_id,
+                AccessExpiryNoticeRecord.owner_id == command.owner_id,
+                AccessExpiryNoticeRecord.period_id == command.period_id,
+            )
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        if notice is None:
+            return _skipped_access_notice(AccessNoticeKind.EXPIRY_24H, command.at)
+        try:
+            notice_kind = AccessNoticeKind(notice.kind)
+        except ValueError as error:
+            raise InvalidTransition("stored expiry notice kind is invalid") from error
+        if (
+            account is None
+            or account.deleted_at is not None
+            or notice is None
+            or notice.emitted_at is None
+        ):
+            return _skipped_access_notice(notice_kind, command.at)
+
+        if not current_periods:
+            return _skipped_access_notice(notice_kind, command.at)
+        current = _period_from_record(current_periods[0])
+        if current.period_id != command.period_id:
+            return _skipped_access_notice(notice_kind, command.at)
+
+        quiet_until = await quiet_policy.quiet_until(command.owner_id, command.at)
+        return authorize_access_notice(
+            current,
+            notice_kind,
+            at=command.at,
+            quiet_until=quiet_until,
+        )
+
+    async def _publish_period_activated(
+        self,
+        owner_id: UUID,
+        *,
+        period_id: str,
+        kind: PeriodKind,
+        at: datetime,
+    ) -> None:
+        aggregate_id = uuid5(NAMESPACE_URL, f"pin.billing.period:{owner_id}:{period_id}")
+        await add_outbox_event(
+            self._session,
+            EventEnvelope(
+                id=uuid5(NAMESPACE_URL, f"pin.billing.period.activated:{owner_id}:{period_id}"),
+                event_type="billing.access_period.activated",
+                schema_version=1,
+                aggregate_id=aggregate_id,
+                aggregate_version=1,
+                owner_id=owner_id,
+                occurred_at=at.astimezone(UTC),
+                payload={"period_id": period_id, "period_kind": kind.value},
+            ),
         )
 
     async def check_access(self, query: CheckAccess) -> AccessDecision:
@@ -527,6 +962,15 @@ def _period_from_record(record: AccessPeriodRecord) -> AccessPeriod:
         starts_at=record.starts_at,
         ends_at=record.ends_at,
     )
+
+
+def _skipped_access_notice(kind: AccessNoticeKind, at: datetime) -> AccessNoticeAuthorization:
+    return AccessNoticeAuthorization(AccessNoticeStatus.SKIP, kind, None, at)
+
+
+def _require_aware(value: datetime) -> None:
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError("datetime must be timezone-aware")
 
 
 def _reservation_from_record(record: UsageReservationRecord) -> UsageReservation:

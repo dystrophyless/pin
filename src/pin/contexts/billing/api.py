@@ -1,18 +1,29 @@
 """Published contracts for consumers of the billing context."""
 
 from pin.contexts.billing.application.contracts import (
+    AccessLifecycleStore,
+    AccessNoticeQuietPolicy,
     AccessUsageStore,
+    ActivatePaidPeriod,
     CheckAccess,
+    CheckAccessNotice,
+    ReadSubscriptionStatus,
     ReserveUsage,
     ReserveUsageResult,
     ResizeVoiceUsage,
+    RestoreReturningPaidAccess,
+    RetainBillingIdentity,
     StartTrial,
+    SubscriptionStatus,
     TrialActivationResult,
     TrialActivationStatus,
 )
 from pin.contexts.billing.domain.access import (
     AccessDecision,
     AccessDenial,
+    AccessNoticeAuthorization,
+    AccessNoticeKind,
+    AccessNoticeStatus,
     AccountLifecycle,
     Allowance,
     IdempotencyConflict,
@@ -23,15 +34,23 @@ from pin.contexts.billing.domain.access import (
     QuotaExceeded,
     ReservationState,
     UsageReservation,
+    authorize_access_notice,
 )
 from pin.contexts.billing.infrastructure.store import SqlAlchemyAccessUsageStore
 
 __all__ = [
+    "AccessLifecycleStore",
     "AccountLifecycle",
     "AccessDecision",
     "AccessDenial",
+    "AccessNoticeAuthorization",
+    "AccessNoticeKind",
+    "AccessNoticeQuietPolicy",
+    "AccessNoticeStatus",
     "AccessUsageStore",
+    "ActivatePaidPeriod",
     "Allowance",
+    "CheckAccessNotice",
     "CheckAccess",
     "IdempotencyConflict",
     "InvalidTransition",
@@ -48,4 +67,9 @@ __all__ = [
     "TrialActivationResult",
     "TrialActivationStatus",
     "UsageReservation",
+    "ReadSubscriptionStatus",
+    "RetainBillingIdentity",
+    "RestoreReturningPaidAccess",
+    "SubscriptionStatus",
+    "authorize_access_notice",
 ]

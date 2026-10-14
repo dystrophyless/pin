@@ -10,8 +10,10 @@ from uuid import UUID
 
 from pin.contexts.billing.domain.access import (
     AccessDecision,
+    AccessNoticeAuthorization,
     AccountLifecycle,
     Operation,
+    PeriodKind,
     UsageReservation,
 )
 
@@ -70,7 +72,90 @@ class TrialActivationResult:
     ends_at: datetime | None
 
 
-class AccessUsageStore(Protocol):
+@dataclass(frozen=True, slots=True)
+class ActivatePaidPeriod:
+    """Record provider-confirmed paid coverage; receipt validation belongs to the caller."""
+
+    owner_id: UUID
+    period_id: str
+    starts_at: datetime
+    ends_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class CheckAccessNotice:
+    owner_id: UUID
+    notice_id: UUID
+    period_id: str
+    at: datetime
+
+
+class AccessNoticeQuietPolicy(Protocol):
+    """Read and lock current quiet preferences after Billing's period locks."""
+
+    async def quiet_until(self, owner_id: UUID, at: datetime) -> datetime | None: ...
+
+
+@dataclass(frozen=True, slots=True)
+class SubscriptionStatus:
+    owner_id: UUID
+    account_lifecycle: AccountLifecycle
+    period_id: str | None
+    period_kind: PeriodKind | None
+    starts_at: datetime | None
+    ends_at: datetime | None
+    active: bool
+    trial_used: bool
+    ai_turn_limit: int | None
+    ai_turns_remaining: int | None
+    voice_seconds_limit: int | None
+    voice_seconds_remaining: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class ReadSubscriptionStatus:
+    owner_id: UUID
+    at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class RetainBillingIdentity:
+    owner_id: UUID
+    telegram_user_id: int
+    at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class RestoreReturningPaidAccess:
+    owner_id: UUID
+    telegram_user_id: int
+    at: datetime
+
+
+class AccessLifecycleStore(Protocol):
+    async def retain_owner_for_return(self, command: RetainBillingIdentity) -> bool: ...
+
+    async def resolve_returning_owner(self, telegram_user_id: int) -> UUID | None: ...
+
+    async def restore_returning_paid_access(self, command: RestoreReturningPaidAccess) -> bool: ...
+
+    async def activate_paid_period(self, command: ActivatePaidPeriod) -> bool: ...
+
+    async def enqueue_due_access_notices(self, *, at: datetime, limit: int = 100) -> int: ...
+
+    async def authorize_access_notice(
+        self,
+        command: CheckAccessNotice,
+        *,
+        quiet_policy: AccessNoticeQuietPolicy,
+    ) -> AccessNoticeAuthorization: ...
+
+    async def read_subscription_status(
+        self, query: ReadSubscriptionStatus
+    ) -> SubscriptionStatus: ...
+
+
+class AccessUsageStore(AccessLifecycleStore, Protocol):
     """Atomic owner/access/quota boundary implemented by billing infrastructure."""
 
     async def check_access(self, query: CheckAccess) -> AccessDecision:

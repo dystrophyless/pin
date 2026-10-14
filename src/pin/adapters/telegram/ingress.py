@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from logging import getLogger
 from typing import Any, Protocol, cast, get_args
 from uuid import UUID, uuid4
@@ -18,6 +18,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column
 
+from pin.contexts.billing.api import RestoreReturningPaidAccess, SqlAlchemyAccessUsageStore
 from pin.persistence.models import Base
 from pin.platform.jobs import InboxResult, JobLane, receive_update
 
@@ -84,7 +85,26 @@ class PostgresTelegramOwnerResolver:
         """Create a server-generated opaque owner ID once for this bot/user pair."""
         if bot_id < 1 or telegram_user_id < 1:
             raise ValueError("Telegram identity must use positive IDs")
-        owner_id = uuid4()
+        existing = await session.scalar(
+            select(TelegramOwnerRecord.owner_id).where(
+                TelegramOwnerRecord.bot_id == bot_id,
+                TelegramOwnerRecord.telegram_user_id == telegram_user_id,
+            )
+        )
+        if existing is not None:
+            billing = SqlAlchemyAccessUsageStore(session)
+            retained = await billing.resolve_returning_owner(telegram_user_id)
+            if retained is not None and retained != existing:
+                raise RuntimeError(
+                    "Telegram identity mapping conflicts with retained billing owner"
+                )
+            await billing.restore_returning_paid_access(
+                RestoreReturningPaidAccess(existing, telegram_user_id, datetime.now(UTC))
+            )
+            return existing
+        billing = SqlAlchemyAccessUsageStore(session)
+        retained = await billing.resolve_returning_owner(telegram_user_id)
+        owner_id = retained or uuid4()
         inserted = await session.execute(
             insert(TelegramOwnerRecord)
             .values(bot_id=bot_id, telegram_user_id=telegram_user_id, owner_id=owner_id)
@@ -95,6 +115,9 @@ class PostgresTelegramOwnerResolver:
         )
         resolved = inserted.scalar_one_or_none()
         if resolved is not None:
+            await billing.restore_returning_paid_access(
+                RestoreReturningPaidAccess(resolved, telegram_user_id, datetime.now(UTC))
+            )
             return resolved
         saved = await session.scalar(
             select(TelegramOwnerRecord.owner_id).where(
@@ -104,6 +127,13 @@ class PostgresTelegramOwnerResolver:
         )
         if saved is None:
             raise RuntimeError("Telegram identity mapping was not visible after insert conflict")
+        if retained is not None and retained != saved:
+            raise RuntimeError(
+                "Telegram identity mapping conflicts with retained billing owner"
+            )
+        await billing.restore_returning_paid_access(
+            RestoreReturningPaidAccess(saved, telegram_user_id, datetime.now(UTC))
+        )
         return saved
 
 
