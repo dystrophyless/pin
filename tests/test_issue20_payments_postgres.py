@@ -16,6 +16,10 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from pin.adapters.telegram import payments as telegram_payments
+from pin.adapters.telegram.application_worker import (
+    claim_application_job,
+    process_application_job,
+)
 from pin.adapters.telegram.ingress import (
     PostgresTelegramOwnerResolver,
     TelegramOwnerRecord,
@@ -41,6 +45,8 @@ from pin.contexts.billing.infrastructure.models import (
     PaymentOrderRecord,
     PaymentReceiptRecord,
 )
+from pin.contexts.identity.domain.preferences import Preferences
+from pin.contexts.identity.infrastructure.store import SqlAlchemyIdentityStore
 from pin.persistence import run_local_async
 from pin.persistence.db import create_engine, create_session_factory
 from pin.platform.models import InboxUpdate
@@ -139,6 +145,121 @@ async def _prepare_order(
             order_row.invoice_message_id = 1
         return invoice
 
+
+
+def test_paid_cancel_routes_through_persisted_worker_and_whitespace_is_inert(
+    payment_sessions: async_sessionmaker[AsyncSession],
+) -> None:
+    owner_id = uuid4()
+    telegram_user_id = 730_000_000 + owner_id.int % 100_000_000
+    bot_id = 987_654 + owner_id.int % 1_000_000
+    worker_id = f"issue20-cancel-{uuid4().hex[:12]}"
+
+    async def persist_and_process(update_id: int, text: str) -> None:
+        async with payment_sessions() as session, session.begin():
+            receipt = await persist_update(
+                session,
+                bot_id=bot_id,
+                payload={
+                    "update_id": update_id,
+                    "message": {
+                        "message_id": update_id,
+                        "date": int(NOW.timestamp()),
+                        "chat": {"id": telegram_user_id, "type": "private"},
+                        "from": {"id": telegram_user_id, "is_bot": False},
+                        "text": text,
+                    },
+                },
+                owner_resolver=PostgresTelegramOwnerResolver(),
+            )
+            assert receipt is not None and receipt.accepted
+            mapping = await session.scalar(
+                select(TelegramOwnerRecord.owner_id).where(
+                    TelegramOwnerRecord.bot_id == bot_id,
+                    TelegramOwnerRecord.telegram_user_id == telegram_user_id,
+                )
+            )
+            assert mapping == owner_id
+        claim = await claim_application_job(payment_sessions, worker_id=worker_id)
+        assert claim is not None and claim.owner_id == owner_id
+        await process_application_job(payment_sessions, claim, now=NOW, assistant=None)
+
+    async def scenario() -> None:
+        invoice = await _prepare_order(payment_sessions, owner_id, telegram_user_id, NOW)
+        async with payment_sessions() as session, session.begin():
+            checkout = await SqlAlchemyStarsPaymentStore(session).check_checkout(
+                CheckStarsCheckout(
+                    owner_id,
+                    telegram_user_id,
+                    invoice.payload,
+                    f"route-checkout-{uuid4().hex}",
+                    "XTR",
+                    250,
+                    NOW,
+                )
+            )
+            assert checkout.ok
+            accepted = await SqlAlchemyStarsPaymentStore(session).record_payment(
+                _payment(
+                    owner_id,
+                    telegram_user_id,
+                    invoice.payload,
+                    f"route-cancel-{uuid4().hex}",
+                    at=NOW,
+                    end=NOW + timedelta(days=30),
+                    first=True,
+                )
+            )
+            assert accepted
+            saved = await SqlAlchemyIdentityStore(session).save_preferences(
+                owner_id=owner_id,
+                expected_version=None,
+                preferences=Preferences(language="en", home_zone="UTC"),
+            )
+            assert saved is not None
+
+        await persist_and_process(1, "/cancel")
+        async with payment_sessions() as session:
+            order = await session.get(PaymentOrderRecord, invoice.order_id)
+            assert order is not None and order.cancel_status == "queued"
+            paid_periods_before = await session.scalar(
+                select(func.count())
+                .select_from(AccessPeriodRecord)
+                .where(
+                    AccessPeriodRecord.owner_id == owner_id,
+                    AccessPeriodRecord.policy_kind == "paid",
+                )
+            )
+            assert paid_periods_before == 1
+
+        await persist_and_process(2, "   \t  ")
+        async with payment_sessions() as session:
+            order = await session.get(PaymentOrderRecord, invoice.order_id)
+            assert order is not None and order.cancel_status == "queued"
+            assert order.cancel_requested_at == NOW
+            paid_periods_after = await session.scalar(
+                select(func.count())
+                .select_from(AccessPeriodRecord)
+                .where(
+                    AccessPeriodRecord.owner_id == owner_id,
+                    AccessPeriodRecord.policy_kind == "paid",
+                )
+            )
+            assert paid_periods_after == paid_periods_before
+
+        # Consume only this fixture's queued request locally so later tests cannot
+        # mistake it for their provider-work item. No provider is contacted.
+        async with payment_sessions() as session, session.begin():
+            payments = SqlAlchemyStarsPaymentStore(session)
+            cancellation = await payments.claim_cancellation(at=NOW)
+            assert cancellation is not None and cancellation.order_id == invoice.order_id
+            assert await payments.finish_cancellation(
+                order_id=invoice.order_id,
+                status="failed",
+                at=NOW + timedelta(seconds=1),
+            )
+
+    run_local_async(scenario)
 
 def test_payment_receipt_replay_refund_and_cancel_preserve_independent_coverage(
     payment_sessions: async_sessionmaker[AsyncSession],

@@ -43,7 +43,7 @@ from pin.adapters.telegram.presentation.capture import (
 )
 from pin.adapters.telegram.presentation.tokens import SqlAlchemyCallbackTokenStore
 from pin.adapters.telegram.support import with_owned_plans
-from pin.contexts.billing.api import SqlAlchemyAccessUsageStore
+from pin.contexts.billing.api import ReadSubscriptionStatus, SqlAlchemyAccessUsageStore
 from pin.contexts.conversation.application.dto import (
     ActionProposal,
     ConversationContext,
@@ -219,6 +219,19 @@ async def _process_capture_job(
             and preferences is not None
             and not onboarding_active
         ):
+            words = inbound.text.strip().split(maxsplit=1)
+            if (
+                len(words) == 1
+                and words[0].split("@", 1)[0].casefold() == "/cancel"
+            ):
+                subscription = await SqlAlchemyAccessUsageStore(session).read_subscription_status(
+                    ReadSubscriptionStatus(owner_id, at)
+                )
+                if (
+                    subscription.active
+                    and getattr(subscription.period_kind, "value", None) == "paid"
+                ):
+                    return False
             await lock_job_for_effects(session, claim)
             mutation_message = await process_mutation_command(
                 session, owner_id=owner_id, text=inbound.text, language=language, now=at
