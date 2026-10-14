@@ -19,6 +19,7 @@ from pin.contexts.conversation.infrastructure.usage import (
 )
 from pin.observability import configure_logging
 from pin.persistence import create_engine, create_session_factory, run_local_async
+from pin.platform.worker_heartbeat import worker_heartbeat
 
 logger = logging.getLogger("pin.runtime")
 
@@ -51,12 +52,13 @@ def main() -> None:
 
     async def run() -> None:
         try:
-            await run_application_worker(
-                sessions,
-                worker_id=worker_id,
-                assistant=assistant,
-                payment_support_contact=settings.payment_support_contact,
-            )
+            async with worker_heartbeat(sessions, worker_id=worker_id, role="application"):
+                await run_application_worker(
+                    sessions,
+                    worker_id=worker_id,
+                    assistant=assistant,
+                    payment_support_contact=settings.payment_support_contact,
+                )
         finally:
             await provider.aclose()
             await engine.dispose()

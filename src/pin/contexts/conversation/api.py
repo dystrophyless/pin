@@ -1,5 +1,12 @@
 """Published conversation interpretation contract for other contexts."""
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from pin.contexts.conversation.infrastructure.operations import ProviderOperations
+
 from pin.contexts.conversation.application.contracts import PlanningAssistant
 from pin.contexts.conversation.application.dto import (
     ActionProposal,
@@ -55,3 +62,12 @@ __all__ = [
     "prepare_interpretation",
     "restore_ready_preview",
 ]
+
+
+async def read_operational_projection(
+    session: "AsyncSession",
+) -> "ProviderOperations":
+    """Return conversation-owned provider usage facts without prompt or turn data."""
+    from pin.contexts.conversation.infrastructure.operations import read_provider_operations
+
+    return await read_provider_operations(session)

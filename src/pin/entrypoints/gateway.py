@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import os
+import socket
 import sys
 
 from aiogram import Bot
@@ -13,6 +15,7 @@ from pin.adapters.telegram.webhook import create_webhook_app
 from pin.bootstrap.config import ProcessRole, SettingsError, load_settings
 from pin.observability import configure_logging
 from pin.persistence import create_engine, create_session_factory, run_local_async
+from pin.platform.worker_heartbeat import worker_heartbeat
 
 logger = logging.getLogger("pin.runtime")
 
@@ -43,17 +46,19 @@ def main() -> None:
     engine = create_engine(database_url)
     sessions = create_session_factory(engine)
     bot_id = int(token.get_secret_value().partition(":")[0])
+    worker_id = f"gateway-{socket.gethostname()}-{os.getpid()}"
 
     if settings.telegram_ingress_mode == "polling":
 
         async def run_poller() -> None:
             try:
-                await poll_updates(
-                    engine=engine,
-                    sessions=sessions,
-                    bot=bot,
-                    bot_id=bot_id,
-                )
+                async with worker_heartbeat(sessions, worker_id=worker_id, role="gateway"):
+                    await poll_updates(
+                        engine=engine,
+                        sessions=sessions,
+                        bot=bot,
+                        bot_id=bot_id,
+                    )
             finally:
                 await bot.session.close()
                 await engine.dispose()

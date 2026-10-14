@@ -87,6 +87,26 @@ class Job(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class WorkerHeartbeat(Base):
+    """Latest liveness record for one worker process; payloads never enter this table."""
+
+    __tablename__ = "worker_heartbeats"
+    __table_args__ = (
+        Index("ix_platform_worker_heartbeats_role_seen", "role", "last_seen_at"),
+        CheckConstraint(
+            "role IN ('application', 'delivery', 'speech', 'gateway')",
+            name="ck_platform_worker_heartbeat_role",
+        ),
+        {"schema": "platform"},
+    )
+
+    worker_id: Mapped[str] = mapped_column(String(120), primary_key=True)
+    role: Mapped[str] = mapped_column(String(16), nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    stopped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class ConversationCursor(Base):
     __tablename__ = "conversation_cursors"
     __table_args__ = {"schema": "platform"}
