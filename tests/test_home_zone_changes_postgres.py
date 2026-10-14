@@ -11,23 +11,31 @@ from uuid import UUID, uuid4
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from pin.contexts.billing.api import SqlAlchemyAccessUsageStore
+from pin.contexts.billing.infrastructure.models import AccessAccountRecord, AccessPeriodRecord
 from pin.contexts.identity.api import Preferences
 from pin.contexts.identity.infrastructure.models import PreferencesRecord
 from pin.contexts.identity.infrastructure.store import SqlAlchemyIdentityStore
 from pin.contexts.planning.application.home_zone_changes import (
     HomeZoneChangeGrant,
     HomeZoneChangeProof,
+    HomeZoneChangeRejected,
     HomeZoneChangeRequest,
     confirm_home_zone_change,
     preview_home_zone_change,
 )
 from pin.contexts.planning.domain.plans import (
+    OffsetKind,
     OneOffPlanDraft,
     PlanKind,
+    ReminderOffset,
     resolve_schedule,
+)
+from pin.contexts.planning.infrastructure.home_zone_change_models import (
+    HomeZoneChangePreviewRecord,
 )
 from pin.contexts.planning.infrastructure.home_zone_change_store import (
     SqlAlchemyHomeZoneChangeStore,
@@ -116,7 +124,25 @@ class _Verifier:
         )
 
 
-async def _seed_profile(session: AsyncSession, owner_id: UUID) -> None:
+async def _seed_profile(
+    session: AsyncSession,
+    owner_id: UUID,
+    *,
+    access_ends_at: datetime = datetime(2100, 1, 1, tzinfo=UTC),
+) -> None:
+    session.add(AccessAccountRecord(owner_id=owner_id))
+    session.add(
+        AccessPeriodRecord(
+            owner_id=owner_id,
+            period_id=f"zone-test-{owner_id}",
+            policy_kind="paid",
+            policy_version="test-v1",
+            starts_at=datetime(2020, 1, 1, tzinfo=UTC),
+            ends_at=access_ends_at,
+            ai_turn_limit=1000,
+            voice_second_limit=3600,
+        )
+    )
     session.add(
         PreferencesRecord(
             owner_id=owner_id,
@@ -444,6 +470,7 @@ def test_zone_preview_keep_and_explicit_reinterpret_are_atomic(home_zone_session
                     HomeZoneChangeRequest(owner, 1, candidate, (selected,)),
                     store=SqlAlchemyHomeZoneChangeStore(session),
                     identity=identity,
+                    billing=SqlAlchemyAccessUsageStore(session),
                     clock=_Clock(at),
                 )
                 assert len(preview.projection.payload["occurrences"]) == 2
@@ -459,6 +486,7 @@ def test_zone_preview_keep_and_explicit_reinterpret_are_atomic(home_zone_session
                     authenticated_owner_id=owner,
                     store=SqlAlchemyHomeZoneChangeStore(session),
                     identity=SqlAlchemyIdentityStore(session),
+                    billing=SqlAlchemyAccessUsageStore(session),
                     verifier=verifier,
                     clock=_Clock(at),
                 )
@@ -491,6 +519,150 @@ def test_zone_preview_keep_and_explicit_reinterpret_are_atomic(home_zone_session
     run_local_async(scenario)
 
 
+@pytest.mark.parametrize("target_kind", ["occurrence", "series", "reminder_override"])
+def test_expired_access_denies_explicit_reinterpret_before_preview(
+    home_zone_sessions, target_kind: str
+) -> None:
+    at = datetime(2027, 1, 1, 10, tzinfo=UTC)
+
+    async def scenario() -> None:
+        owner = uuid4()
+        async with home_zone_sessions() as session, session.begin():
+            await _seed_profile(session, owner, access_ends_at=at - timedelta(minutes=1))
+            if target_kind in {"occurrence", "reminder_override"}:
+                target_id = await _seed_occurrence(
+                    session,
+                    owner_id=owner,
+                    at=at,
+                    local_day=date(2027, 1, 5),
+                    zone="UTC",
+                )
+                occurrence_id = target_id
+                series_id = None
+            else:
+                series_id, occurrence_id, _ = await _seed_series(
+                    session, owner_id=owner, at=at
+                )
+                target_id = series_id
+
+        candidate = Preferences("en", "America/New_York", version=2)
+        async with home_zone_sessions() as session:
+            with pytest.raises(HomeZoneChangeRejected, match="active access"):
+                async with session.begin():
+                    await preview_home_zone_change(
+                        HomeZoneChangeRequest(
+                            owner,
+                            1,
+                            candidate,
+                            reinterpret_occurrence_ids=(
+                                (target_id,) if target_kind == "occurrence" else ()
+                            ),
+                            reinterpret_series_ids=(
+                                (target_id,) if target_kind == "series" else ()
+                            ),
+                            reminder_overrides=(
+                                ((
+                                    occurrence_id,
+                                    (ReminderOffset(OffsetKind.ELAPSED_SECONDS, 1800, "explicit"),),
+                                ),)
+                                if target_kind == "reminder_override"
+                                else ()
+                            ),
+                        ),
+                        store=SqlAlchemyHomeZoneChangeStore(session),
+                        identity=SqlAlchemyIdentityStore(session),
+                        billing=SqlAlchemyAccessUsageStore(session),
+                        clock=_Clock(at),
+                    )
+
+        async with home_zone_sessions() as session:
+            profile = await session.get(PreferencesRecord, owner)
+            occurrence = await session.get(OccurrenceRecord, occurrence_id)
+            previews = await session.scalar(
+                select(func.count())
+                .select_from(HomeZoneChangePreviewRecord)
+                .where(HomeZoneChangePreviewRecord.owner_id == owner)
+            )
+            assert profile is not None and profile.home_zone == "UTC" and profile.version == 1
+            assert occurrence is not None and occurrence.event_zone == "UTC"
+            assert occurrence.version == 1 and occurrence.reminder_preferences_version == 1
+            assert previews == 0
+            if series_id is not None:
+                series = await session.get(SeriesRecord, series_id)
+                assert series is not None and series.version == 1
+
+    run_local_async(scenario)
+
+
+def test_access_expiry_between_preview_and_confirmation_rolls_back_zone_change(
+    home_zone_sessions,
+) -> None:
+    at = datetime(2027, 1, 1, 10, tzinfo=UTC)
+
+    async def scenario() -> None:
+        owner = uuid4()
+        async with home_zone_sessions() as session, session.begin():
+            await _seed_profile(session, owner, access_ends_at=at + timedelta(hours=1))
+            occurrence_id = await _seed_occurrence(
+                session,
+                owner_id=owner,
+                at=at,
+                local_day=date(2027, 1, 5),
+                zone="UTC",
+            )
+
+        async with home_zone_sessions() as session, session.begin():
+            preview = await preview_home_zone_change(
+                HomeZoneChangeRequest(
+                    owner,
+                    1,
+                    Preferences("en", "America/New_York", version=2),
+                    reinterpret_occurrence_ids=(occurrence_id,),
+                ),
+                store=SqlAlchemyHomeZoneChangeStore(session),
+                identity=SqlAlchemyIdentityStore(session),
+                billing=SqlAlchemyAccessUsageStore(session),
+                clock=_Clock(at),
+            )
+
+        verifier = _Verifier(at + timedelta(days=1))
+        confirm_at = at + timedelta(hours=2)
+        async with home_zone_sessions() as session:
+            with pytest.raises(HomeZoneChangeRejected, match="active access"):
+                async with session.begin():
+                    await confirm_home_zone_change(
+                        HomeZoneChangeProof(preview.preview_id, preview.preview_version, "late"),
+                        authenticated_owner_id=owner,
+                        store=SqlAlchemyHomeZoneChangeStore(session),
+                        identity=SqlAlchemyIdentityStore(session),
+                        billing=SqlAlchemyAccessUsageStore(session),
+                        verifier=verifier,
+                        clock=_Clock(confirm_at),
+                    )
+
+        async with home_zone_sessions() as session:
+            profile = await session.get(PreferencesRecord, owner)
+            occurrence = await session.get(OccurrenceRecord, occurrence_id)
+            saved_preview = await session.get(HomeZoneChangePreviewRecord, preview.preview_id)
+            business_events = await session.scalar(
+                select(func.count())
+                .select_from(OutboxEvent)
+                .where(
+                    OutboxEvent.owner_id == owner,
+                    OutboxEvent.event_type.like("planning.%"),
+                )
+            )
+            assert profile is not None and profile.home_zone == "UTC" and profile.version == 1
+            assert occurrence is not None
+            assert occurrence.event_zone == "UTC" and occurrence.version == 1
+            assert occurrence.reminder_preferences_version == 1
+            assert saved_preview is not None and saved_preview.state == "pending"
+            assert business_events == 0
+        assert verifier.calls == 0
+
+    run_local_async(scenario)
+
+
 def test_profile_and_plans_rollback_together_when_identity_save_rejects(home_zone_sessions) -> None:
     at = datetime(2027, 1, 1, 10, tzinfo=UTC)
 
@@ -509,6 +681,7 @@ def test_profile_and_plans_rollback_together_when_identity_save_rejects(home_zon
                     HomeZoneChangeRequest(owner, 1, candidate),
                     store=SqlAlchemyHomeZoneChangeStore(session),
                     identity=SqlAlchemyIdentityStore(session),
+                    billing=SqlAlchemyAccessUsageStore(session),
                     clock=_Clock(at),
                 )
 
@@ -532,6 +705,7 @@ def test_profile_and_plans_rollback_together_when_identity_save_rejects(home_zon
                             authenticated_owner_id=owner,
                             store=SqlAlchemyHomeZoneChangeStore(session),
                             identity=_RejectingIdentity(SqlAlchemyIdentityStore(session)),
+                            billing=SqlAlchemyAccessUsageStore(session),
                             verifier=_Verifier(at + timedelta(hours=1)),
                             clock=_Clock(at),
                         )
@@ -579,6 +753,7 @@ def test_selected_series_reanchors_no_history_and_invalidates_by_series_version(
                     ),
                     store=SqlAlchemyHomeZoneChangeStore(session),
                     identity=SqlAlchemyIdentityStore(session),
+                    billing=SqlAlchemyAccessUsageStore(session),
                     clock=_Clock(at),
                 )
                 series_preview = preview.projection.payload["series"][0]
@@ -598,6 +773,7 @@ def test_selected_series_reanchors_no_history_and_invalidates_by_series_version(
                     authenticated_owner_id=owner,
                     store=SqlAlchemyHomeZoneChangeStore(session),
                     identity=SqlAlchemyIdentityStore(session),
+                    billing=SqlAlchemyAccessUsageStore(session),
                     verifier=_Verifier(at + timedelta(hours=1)),
                     clock=_Clock(at),
                 )
@@ -656,6 +832,7 @@ def test_stale_target_and_foreign_owner_cannot_apply_a_saved_preview(home_zone_s
                     HomeZoneChangeRequest(owner, 1, Preferences("en", "Asia/Tokyo", version=2)),
                     store=SqlAlchemyHomeZoneChangeStore(session),
                     identity=SqlAlchemyIdentityStore(session),
+                    billing=SqlAlchemyAccessUsageStore(session),
                     clock=_Clock(at),
                 )
         async with home_zone_sessions() as session:
@@ -672,6 +849,7 @@ def test_stale_target_and_foreign_owner_cannot_apply_a_saved_preview(home_zone_s
                             authenticated_owner_id=owner,
                             store=SqlAlchemyHomeZoneChangeStore(session),
                             identity=SqlAlchemyIdentityStore(session),
+                            billing=SqlAlchemyAccessUsageStore(session),
                             verifier=_Verifier(at + timedelta(hours=1)),
                             clock=_Clock(at),
                         )
@@ -684,6 +862,7 @@ def test_stale_target_and_foreign_owner_cannot_apply_a_saved_preview(home_zone_s
                             authenticated_owner_id=other_owner,
                             store=SqlAlchemyHomeZoneChangeStore(session),
                             identity=SqlAlchemyIdentityStore(session),
+                            billing=SqlAlchemyAccessUsageStore(session),
                             verifier=_Verifier(at + timedelta(hours=1)),
                             clock=_Clock(at),
                         )
@@ -716,6 +895,7 @@ def test_global_keep_allows_empty_selection_and_preserves_schedules(home_zone_se
                     HomeZoneChangeRequest(owner, 1, candidate),
                     store=SqlAlchemyHomeZoneChangeStore(session),
                     identity=SqlAlchemyIdentityStore(session),
+                    billing=SqlAlchemyAccessUsageStore(session),
                     clock=_Clock(at),
                 )
                 assert preview.projection.payload["reinterpret_occurrence_ids"] == []
@@ -729,6 +909,7 @@ def test_global_keep_allows_empty_selection_and_preserves_schedules(home_zone_se
                     authenticated_owner_id=owner,
                     store=SqlAlchemyHomeZoneChangeStore(session),
                     identity=SqlAlchemyIdentityStore(session),
+                    billing=SqlAlchemyAccessUsageStore(session),
                     verifier=_Verifier(at + timedelta(hours=1)),
                     clock=_Clock(at),
                 )
@@ -769,6 +950,7 @@ def test_reinterpret_rejects_nonexistent_daylight_saving_wall_time(home_zone_ses
                         ),
                         store=SqlAlchemyHomeZoneChangeStore(session),
                         identity=SqlAlchemyIdentityStore(session),
+                        billing=SqlAlchemyAccessUsageStore(session),
                         clock=_Clock(at),
                     )
         async with home_zone_sessions() as session:
@@ -828,6 +1010,7 @@ def test_date_only_keep_and_explicit_reinterpret_preserve_dates_and_no_times(
                     HomeZoneChangeRequest(owner, 1, candidate, (selected,)),
                     store=SqlAlchemyHomeZoneChangeStore(session),
                     identity=SqlAlchemyIdentityStore(session),
+                    billing=SqlAlchemyAccessUsageStore(session),
                     clock=_Clock(at),
                 )
                 projected = {
@@ -852,6 +1035,7 @@ def test_date_only_keep_and_explicit_reinterpret_preserve_dates_and_no_times(
                     authenticated_owner_id=owner,
                     store=SqlAlchemyHomeZoneChangeStore(session),
                     identity=SqlAlchemyIdentityStore(session),
+                    billing=SqlAlchemyAccessUsageStore(session),
                     verifier=_Verifier(at + timedelta(hours=1)),
                     clock=_Clock(at),
                 )
@@ -945,6 +1129,7 @@ def test_future_date_only_series_can_be_explicitly_reinterpreted_without_history
                     HomeZoneChangeRequest(owner, 1, candidate, reinterpret_series_ids=(series_id,)),
                     store=SqlAlchemyHomeZoneChangeStore(session),
                     identity=SqlAlchemyIdentityStore(session),
+                    billing=SqlAlchemyAccessUsageStore(session),
                     clock=_Clock(at),
                 )
                 value = preview.projection.payload["series"][0]
@@ -962,6 +1147,7 @@ def test_future_date_only_series_can_be_explicitly_reinterpreted_without_history
                     authenticated_owner_id=owner,
                     store=SqlAlchemyHomeZoneChangeStore(session),
                     identity=SqlAlchemyIdentityStore(session),
+                    billing=SqlAlchemyAccessUsageStore(session),
                     verifier=_Verifier(at + timedelta(hours=1)),
                     clock=_Clock(at),
                 )
@@ -1002,6 +1188,7 @@ def test_stopped_series_with_future_open_occurrence_is_requalified_without_resum
                     HomeZoneChangeRequest(owner, 1, candidate),
                     store=SqlAlchemyHomeZoneChangeStore(session),
                     identity=SqlAlchemyIdentityStore(session),
+                    billing=SqlAlchemyAccessUsageStore(session),
                     clock=_Clock(at),
                 )
                 projected_series = preview.projection.payload["series"]
@@ -1018,6 +1205,7 @@ def test_stopped_series_with_future_open_occurrence_is_requalified_without_resum
                     authenticated_owner_id=owner,
                     store=SqlAlchemyHomeZoneChangeStore(session),
                     identity=SqlAlchemyIdentityStore(session),
+                    billing=SqlAlchemyAccessUsageStore(session),
                     verifier=_Verifier(at + timedelta(hours=1)),
                     clock=_Clock(at),
                 )

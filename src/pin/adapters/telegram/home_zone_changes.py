@@ -6,6 +6,7 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from pin.contexts.billing.api import AccessUsageStore
 from pin.contexts.identity.api import IdentityStore
 from pin.contexts.planning.application.home_zone_changes import (
     HomeZoneChangeClock,
@@ -26,6 +27,7 @@ async def preview_home_zone_change_for_telegram(
     *,
     session: AsyncSession,
     identity: IdentityStore,
+    billing: AccessUsageStore,
     clock: HomeZoneChangeClock,
 ) -> HomeZoneChangePreview:
     """Persist a preview in a savepoint; the caller owns the outer transaction."""
@@ -34,6 +36,7 @@ async def preview_home_zone_change_for_telegram(
             request,
             store=SqlAlchemyHomeZoneChangeStore(session),
             identity=identity,
+            billing=billing,
             clock=clock,
         )
 
@@ -44,6 +47,7 @@ async def confirm_home_zone_change_for_telegram(
     authenticated_owner_id: UUID,
     session: AsyncSession,
     identity: IdentityStore,
+    billing: AccessUsageStore,
     verifier: HomeZoneChangeVerifier,
     clock: HomeZoneChangeClock,
 ) -> dict[str, object]:
@@ -54,6 +58,7 @@ async def confirm_home_zone_change_for_telegram(
             authenticated_owner_id=authenticated_owner_id,
             store=SqlAlchemyHomeZoneChangeStore(session),
             identity=identity,
+            billing=billing,
             verifier=verifier,
             clock=clock,
         )
