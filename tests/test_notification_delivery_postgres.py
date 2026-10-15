@@ -599,6 +599,10 @@ def test_outer_delivery_suppresses_expired_deleted_or_obsolete_reminders(
             assert attempt is not None
             assert attempt.outcome == "skipped"
             assert attempt.failure_code == expected_failure
+            if case == "stale_dispatch":
+                intent = await session.get(ReminderIntentRecord, fixture.intent_id)
+                assert intent is not None and intent.dispatch_version == 2
+                assert attempt.dispatch_version == 1
 
     run_local_async(scenario)
 
