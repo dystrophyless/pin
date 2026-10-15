@@ -1,7 +1,7 @@
 # SPEC-001: Pin overall MVP
 
 Status: **approved**
-Version: 0.14
+Version: 0.15
 Created: 2026-10-13 (Asia/Qyzylorda)
 Owner: Pin product owner (the user)
 Requirements source: [PROJECT_BRAINSTORM.md](../PROJECT_BRAINSTORM.md)
@@ -26,6 +26,8 @@ Amendment v0.12, 2026-10-16: the owner selected end-to-end request scoring: fail
 Amendment v0.13, 2026-10-16: the owner confirmed MVP support for elapsed-from-now requests such as “remind me in two hours,” anchored to when the bot received that message, including delayed processing. This is distinct from event-relative reminder offsets.
 
 Amendment v0.14,2026-10-16: the owner approved the revised RU/EN reference scripts and expected temporal calendars after recurrence was added. This approves the selected reference set, not voice recordings, API spend or measured quality; section11 binds the exact artifact.
+
+Amendment v0.15,2026-10-16: the owner selected real human recordings for the200voice examples. This resolves audio source only; recordings, collection/acoustic protocol and execution remain pending.
 
 ## 1. Purpose, authority, and evidence boundary
 
@@ -437,6 +439,10 @@ Subsequent explicit owner decision, 2026-10-16: the future quality evaluation us
 After requesting recurring-task examples, the owner explicitly approved the revised **texts and expected dates**. The selected reference composition contains100distinct RU and100distinct EN scripts paired across the four100-slot groups, including10elapsed-from-receipt and10finite-recurring scripts per language. The approved temporal references include all80RU/ENrecurrence occurrences. This subsequent approval resolves the script/reference selection left open by the earlier sample-count decision.
 
 The [approval record](../qualification/TR-04_reference_set_approval.md) binds `TR-04_evaluation_candidates.jsonl` at revision`de28299`, Git-blob SHA-256`8e825856284f6e52aadcf63edd689122ae27e85df78053724f7c54b3d2bebd40`. Preserve the approved inputs and expected calendars. Real audio is absent; its source/eligibility and acoustic sampling, workload/bursts/cold-warm measurement and actual host/provider evidence remain pending. No additional API spend, recording, deployment, measured accuracy or suitability approval follows. Existing99% end-to-end scoring is unchanged.
+
+### Human audio source — owner decision,2026-10-16
+
+The owner selected **real human recordings** for the100RU and100ENvoice inputs, rather than local speech synthesis or a mixed set. Use the already approved reference scripts; preserve original audio and stable IDs. This chooses the source, not actual recordings, participant/acoustic sampling, collection/eligibility/handling protocol or execution budget. The [recording kit](../qualification/recording_kit/README.md) contains only derived scripts and a blank tracker; no recordings or quality result exist.
 
 ### Receipt-anchored relative time — owner decision, 2026-10-16
 

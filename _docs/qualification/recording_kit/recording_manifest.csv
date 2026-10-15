@@ -1,0 +1,201 @@
+﻿case_id,language,script,reference_instant_utc,home_zone,audio_file,speaker_alias,recording_condition,consent_note,audio_sha256,duration_seconds,status
+EN-V-001,en,Schedule call the pharmacy to check whether the prescription is ready in 2 hours.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-002,en,Schedule send the monthly report to the manager in 4 hours.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-003,en,Schedule check the status of the insurance claim in 6 hours.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-004,en,Schedule renew the library books in 8 hours.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-005,en,Schedule send the expense receipts to accounting in 10 hours.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-006,en,"Tomorrow at 08:15, review the plan for the next workweek.",2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-007,en,"Tomorrow at 09:40, water the balcony plants.",2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-008,en,"Tomorrow at 11:05, pick up the parcel from the collection point.",2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-009,en,"Tomorrow at 14:30, prepare slides for the team review.",2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-010,en,"Tomorrow at 20:10, back up the family photographs.",2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-011,en,Schedule check the laboratory supply inventory in 12 hours.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-012,en,Schedule submit the expense reimbursement form in 18 hours.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-013,en,Schedule order a replacement coffee-machine filter in 2 hours.,2026-01-31T18:30:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-014,en,Schedule update the client project brief in 2 hours.,2026-12-31T18:30:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-015,en,Schedule return the books to the reading room in 24 hours.,2026-12-31T20:30:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-016,en,"Repeat the task ""review work email"" every day at 09:00, starting 6 January 2026, for 3 occurrences.",2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-017,en,"Repeat the task ""do a short stretch routine"" every 2 days at 07:30, starting 2 February 2026, for 4 occurrences.",2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-018,en,"Repeat the task ""check the greenhouse readings"" every 3 days at 18:00, starting 10 March 2026, for 3 occurrences.",2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-019,en,"Repeat the task ""collect the team status"" every week on Mondays at 10:00, starting 12 January 2026, for 4 occurrences and remind me 30 minutes before each occurrence.",2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-020,en,"Repeat the task ""review the study flashcards"" every week on Tuesdays and Thursdays at 16:30, starting 13 January 2026, for 6 occurrences.",2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-021,en,22 June 2026 at 18:30: send the source list to the instructor.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-022,en,Set a task to review the department monthly budget for 9 July 2026 at 09:55.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-023,en,Schedule upload the signed form to the archive for 18 August 2026 at 14:05.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-024,en,7 September 2026 at 16:25: record the water-meter reading.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-025,en,Set a task to send the quality-check plan to the team for 19 October 2026 at 19:10.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-026,en,"Repeat the task ""check inventory levels"" every 2 weeks on Mondays at 09:00, starting 1 June 2026, for 3 occurrences.",2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-027,en,"Repeat the task ""reconcile the meter readings"" on the 15th of every month at 11:00, starting 15 January 2026, for 4 occurrences.",2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-028,en,"Repeat the task ""check the feed supplies"" on the 31st of every month at 08:15, starting 31 January 2026, for 5 occurrences.",2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-029,en,"Repeat the task ""review the on-call roster"" on the last day of every month at 17:00, starting 31 January 2026, for 4 occurrences.",2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-030,en,"Repeat the task ""send the expense summary"" on the last day every 2 months at 12:00, starting 31 January 2026, for 4 occurrences.",2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-031,en,"Schedule order workshop supplies for Friday, 6 March 2026, at 15:15.",2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-032,en,"Schedule send the meeting notes to the attendees for Tuesday, 17 March 2026, at 16:30.",2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-033,en,"Schedule update the supplier spreadsheet for Friday, 3 April 2026, at 17:45.",2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-034,en,"Schedule prepare a short research summary for Tuesday, 14 April 2026, at 08:30.",2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-035,en,"Schedule review the help-page layout for Friday, 8 May 2026, at 13:20.",2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-036,en,"Schedule collect the finished photographs from the studio for Tuesday, 19 May 2026, at 18:10.",2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-037,en,"Schedule submit the purchase request for Friday, 5 June 2026, at 09:35.",2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-038,en,"Schedule check the course participant list for Tuesday, 16 June 2026, at 14:50.",2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-039,en,"Schedule send the cost estimate to the client for Friday, 3 July 2026, at 16:05.",2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-040,en,"Schedule prepare the lesson materials for Tuesday, 14 July 2026, at 19:30.",2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-041,en,Schedule send the order to the supplier for 20 January 2026 at 08:30 in UTC.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-042,en,Schedule file the tax form for 4 February 2026 at 09:15 in Europe/Berlin.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-043,en,Schedule review the grant application for 18 February 2026 at 10:40 in America/New_York.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-044,en,Schedule call the project coordinator for 3 March 2026 at 11:05 in Asia/Tokyo.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-045,en,Schedule submit the travel-expense report for 19 March 2026 at 12:20 in Asia/Almaty.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-046,en,Schedule check the signatures on the contract for 7 April 2026 at 13:35 in Europe/Berlin.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-047,en,Schedule send the revised chapter to the editor for 21 April 2026 at 14:50 in America/New_York.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-048,en,Schedule prepare the sales proposal for 6 May 2026 at 15:05 in Asia/Tokyo.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-049,en,Schedule review the export document for 20 May 2026 at 16:20 in UTC.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-050,en,Schedule send the launch plan to the partners for 9 June 2026 at 17:35 in Asia/Almaty.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-051,en,Schedule update the safety instructions for 24 June 2026 at 08:45 in Europe/Berlin.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-052,en,Schedule order the replacement parts for 8 July 2026 at 09:55 in America/New_York.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-053,en,Schedule prepare the course handout for 22 July 2026 at 11:15 in Asia/Tokyo.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-054,en,Schedule review the newsletter layout for 5 August 2026 at 13:25 in UTC.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-055,en,Schedule send a request to customer support for 19 August 2026 at 18:40 in Asia/Almaty.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-056,en,Add a task to reconcile the monthly inventory report on 31 January 2026 at 09:05.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-057,en,"On 1 February 2026 at 10:20, schedule send the quarter-end invoice.",2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-058,en,"Add this: review the team annual calendar; date 2026-02-28, time 11:35.",2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-059,en,Add a task to submit the permit renewal form on 1 March 2026 at 12:50.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-060,en,"On 30 April 2026 at 14:05, schedule close out the monthly task list.",2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-061,en,"Add this: update the on-call plan for the new month; date 2026-05-01, time 15:20.",2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-062,en,Add a task to review the payment schedule on 30 June 2026 at 16:35.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-063,en,"On 1 July 2026 at 17:50, schedule send the archive catalog.",2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-064,en,"Add this: submit the scholarship application; date 2026-08-31, time 08:40.",2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-065,en,Add a task to review the learning-resource subscription on 1 September 2026 at 13:55.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-066,en,"On 31 December 2026 at 18:15, schedule prepare the new-year plan.",2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-067,en,"Add this: send the tax-filing confirmation; date 2027-01-01, time 09:25.",2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-068,en,Add a task to reconcile the February observation log on 28 February 2028 at 14:45.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-069,en,"On 29 February 2028 at 16:10, schedule prepare the leap-day letter.",2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-070,en,"Add this: review the March delivery plan; date 2028-03-01, time 19:20.",2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-071,en,Book the dentist appointment on 10 February 2026 from 09:00 to 09:45 in Europe/Berlin.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-072,en,Book the meeting with the thesis supervisor on 12 March 2026 from 10:15 to 11:00 in Asia/Qyzylorda.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-073,en,Book the bicycle-repair consultation on 9 April 2026 from 11:30 to 12:15 in America/New_York.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-074,en,Book the project review with the team on 7 May 2026 from 13:00 to 14:20 in Asia/Qyzylorda.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-075,en,Book the painting lesson on 11 June 2026 from 14:10 to 15:10 in Asia/Tokyo.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-076,en,Book the routine doctor visit on 16 July 2026 from 15:20 to 16:05 in Asia/Qyzylorda.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-077,en,Book the exam-preparation session on 13 August 2026 from 16:30 to 17:15 in UTC.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-078,en,Book the design review with the designer on 10 September 2026 from 08:40 to 10:10 in Asia/Qyzylorda.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-079,en,Book the service-center appointment on 8 October 2026 from 12:00 to 13:30 in Europe/Berlin.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-080,en,Book the budget-planning meeting on 12 November 2026 from 17:10 to 18:00 in Asia/Qyzylorda.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-081,en,Schedule the career-coaching session for 12 February 2026 at 09:20 for 30 minutes in UTC.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-082,en,Schedule the spoken-English lesson for 18 March 2026 at 10:35 for 45 minutes in Asia/Qyzylorda.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-083,en,Schedule the meeting with the accountant for 16 April 2026 at 11:50 for 60 minutes in Europe/Berlin.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-084,en,Schedule the training session with the instructor for 21 May 2026 at 13:05 for 75 minutes in Asia/Qyzylorda.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-085,en,Schedule the manuscript review with the editor for 18 June 2026 at 14:20 for 90 minutes in America/New_York.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-086,en,Schedule the car maintenance appointment for 23 July 2026 at 15:35 for 120 minutes in Asia/Qyzylorda.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-087,en,Schedule the piano lesson for 20 August 2026 at 08:50 for 40 minutes in Asia/Tokyo.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-088,en,Schedule the product-launch planning session for 17 September 2026 at 12:10 for 50 minutes in Asia/Qyzylorda.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-089,en,Schedule the tax consultation for 15 October 2026 at 16:25 for 80 minutes in UTC.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-090,en,Schedule the physiotherapy appointment for 19 November 2026 at 18:40 for 55 minutes in Asia/Qyzylorda.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-091,en,Schedule submit the course application for 16 February 2026 at 10:00 and remind me 15 minutes before.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-092,en,Schedule call the supplier for 23 March 2026 at 11:15 and remind me 30 minutes before.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-093,en,Schedule review the printed report for 27 April 2026 at 13:30 and remind me 45 minutes before.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-094,en,Schedule send the booking confirmation for 28 May 2026 at 15:45 and remind me 1 hour before.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-095,en,Schedule pick up the documents from the office for 29 June 2026 at 17:00 and remind me 90 minutes before.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-096,en,Schedule prepare the backup drive for 30 July 2026 at 19:15 and remind me 2 hours before.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-097,en,Schedule review the autumn delivery plan for 25 October 2026 at 10:30 in Europe/Berlin and remind me one day before.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-098,en,Schedule send the final estimate for 25 October 2026 at 10:30 in Europe/Berlin and remind me exactly 24 hours before.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-099,en,Schedule submit the conference application for 25 October 2026 at 10:30 in Europe/Berlin and remind me one day before.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+EN-V-100,en,Schedule send the migration plan to the team for 25 October 2026 at 10:30 in Europe/Berlin and remind me exactly 24 hours before.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-001,ru,Через 2 часа запланируй позвонить в аптеку и уточнить готовность рецепта.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-002,ru,Через 4 часа запланируй отправить ежемесячный отчёт руководителю.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-003,ru,Через 6 часов запланируй проверить статус страхового заявления.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-004,ru,Через 8 часов запланируй продлить книги в библиотеке.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-005,ru,Через 10 часов запланируй передать бухгалтеру чеки за расходы.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-006,ru,завтра в 08:15 просмотреть план на следующую рабочую неделю.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-007,ru,завтра в 09:40 полить растения на балконе.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-008,ru,завтра в 11:05 забрать посылку из пункта выдачи.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-009,ru,завтра в 14:30 подготовить слайды для командного обзора.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-010,ru,завтра в 20:10 сохранить семейные фотографии в резервную копию.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-011,ru,Через 12 часов запланируй сверить остатки лабораторных материалов.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-012,ru,Через 18 часов запланируй подать заявление на возмещение расходов.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-013,ru,Через 2 часа запланируй заказать фильтр для кофемашины.,2026-01-31T18:30:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-014,ru,Через 2 часа запланируй обновить карточку проекта для клиента.,2026-12-31T18:30:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-015,ru,Через 24 часа запланируй сдать книги в читальный зал.,2026-12-31T20:30:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-016,ru,"Повторяй задачу «проверять рабочую почту» каждый день в 09:00, начиная с 6 января 2026 года, всего 3 раза.",2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-017,ru,"Повторяй задачу «проводить короткую разминку» каждые 2 дня в 07:30, начиная с 2 февраля 2026 года, всего 4 раза.",2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-018,ru,"Повторяй задачу «проверять показания теплицы» каждые 3 дня в 18:00, начиная с 10 марта 2026 года, всего 3 раза.",2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-019,ru,"Повторяй задачу «собирать статус команды» каждую неделю по понедельникам в 10:00, начиная с 12 января 2026 года, всего 4 раза и напоминай мне за 30 минут до каждого повтора.",2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-020,ru,"Повторяй задачу «повторять учебные карточки» каждую неделю по вторникам и четвергам в 16:30, начиная с 13 января 2026 года, всего 6 раз.",2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-021,ru,"22 июня 2026 года, 18:30: передать преподавателю список источников.",2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-022,ru,Поставь задачу «проверить месячный бюджет отдела» на 9 июля 2026 года к 09:55.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-023,ru,Запланируй загрузить подписанную форму в архив на 18 августа 2026 года в 14:05.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-024,ru,"7 сентября 2026 года, 16:25: записать показания счётчика воды.",2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-025,ru,Поставь задачу «отправить команде план проверки качества» на 19 октября 2026 года к 19:10.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-026,ru,"Повторяй задачу «проверять складские остатки» каждые две недели по понедельникам в 09:00, начиная с 1 июня 2026 года, всего 3 раза.",2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-027,ru,"Повторяй задачу «сверять показания счётчиков» 15-го числа каждого месяца в 11:00, начиная с 15 января 2026 года, всего 4 раза.",2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-028,ru,"Повторяй задачу «проверять запас кормов» 31-го числа каждого месяца в 08:15, начиная с 31 января 2026 года, всего 5 раз.",2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-029,ru,"Повторяй задачу «проверять список дежурств» в последний день каждого месяца в 17:00, начиная с 31 января 2026 года, всего 4 раза.",2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-030,ru,"Повторяй задачу «отправлять сводку расходов» в последний день каждые 2 месяца в 12:00, начиная с 31 января 2026 года, всего 4 раза.",2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-031,ru,"Запланируй заказать расходные материалы для мастерской на пятница, 6 марта 2026 года, в 15:15.",2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-032,ru,"Запланируй отправить протокол встречи участникам на вторник, 17 марта 2026 года, в 16:30.",2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-033,ru,"Запланируй обновить таблицу поставщиков на пятница, 3 апреля 2026 года, в 17:45.",2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-034,ru,"Запланируй подготовить краткий обзор исследования на вторник, 14 апреля 2026 года, в 08:30.",2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-035,ru,"Запланируй проверить макет страницы справки на пятница, 8 мая 2026 года, в 13:20.",2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-036,ru,"Запланируй забрать готовые фотографии из студии на вторник, 19 мая 2026 года, в 18:10.",2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-037,ru,"Запланируй передать заявку на закупку на пятница, 5 июня 2026 года, в 09:35.",2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-038,ru,"Запланируй сверить список участников курса на вторник, 16 июня 2026 года, в 14:50.",2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-039,ru,"Запланируй отправить клиенту расчёт стоимости на пятница, 3 июля 2026 года, в 16:05.",2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-040,ru,"Запланируй подготовить материалы для занятия на вторник, 14 июля 2026 года, в 19:30.",2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-041,ru,Запланируй отправить поставщику заказ на 20 января 2026 года в 08:30 по времени UTC.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-042,ru,Запланируй подать налоговую форму на 4 февраля 2026 года в 09:15 по времени Europe/Berlin.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-043,ru,Запланируй проверить заявку на грант на 18 февраля 2026 года в 10:40 по времени America/New_York.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-044,ru,Запланируй позвонить координатору проекта на 3 марта 2026 года в 11:05 по времени Asia/Tokyo.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-045,ru,Запланируй сдать отчёт о командировке на 19 марта 2026 года в 12:20 по времени Asia/Almaty.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-046,ru,Запланируй проверить подписи в договоре на 7 апреля 2026 года в 13:35 по времени Europe/Berlin.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-047,ru,Запланируй отправить редактору исправленную главу на 21 апреля 2026 года в 14:50 по времени America/New_York.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-048,ru,Запланируй подготовить коммерческое предложение на 6 мая 2026 года в 15:05 по времени Asia/Tokyo.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-049,ru,Запланируй проверить экспортный документ на 20 мая 2026 года в 16:20 по времени UTC.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-050,ru,Запланируй передать партнёрам план запуска на 9 июня 2026 года в 17:35 по времени Asia/Almaty.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-051,ru,Запланируй обновить инструкцию по безопасности на 24 июня 2026 года в 08:45 по времени Europe/Berlin.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-052,ru,Запланируй заказать запасные детали на 8 июля 2026 года в 09:55 по времени America/New_York.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-053,ru,Запланируй подготовить учебный конспект на 22 июля 2026 года в 11:15 по времени Asia/Tokyo.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-054,ru,Запланируй проверить макет рекламного письма на 5 августа 2026 года в 13:25 по времени UTC.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-055,ru,Запланируй отправить запрос в службу поддержки на 19 августа 2026 года в 18:40 по времени Asia/Almaty.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-056,ru,Поставь себе задачу «сверить складской отчёт за месяц» на 31 января 2026 года в 09:05.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-057,ru,1 февраля 2026 года в 10:20 запланируй отправить итоговый счёт за квартал.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-058,ru,"Запиши: проверить годовой календарь команды; дата 2026-02-28, время 11:35.",2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-059,ru,Поставь себе задачу «подать форму продления разрешения» на 1 марта 2026 года в 12:50.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-060,ru,30 апреля 2026 года в 14:05 запланируй закрыть список задач месяца.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-061,ru,"Запиши: обновить план дежурств на новый месяц; дата 2026-05-01, время 15:20.",2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-062,ru,Поставь себе задачу «проверить график выплат» на 30 июня 2026 года в 16:35.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-063,ru,1 июля 2026 года в 17:50 запланируй отправить архивный каталог.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-064,ru,"Запиши: сдать заявление на стипендию; дата 2026-08-31, время 08:40.",2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-065,ru,Поставь себе задачу «проверить подписку на учебные ресурсы» на 1 сентября 2026 года в 13:55.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-066,ru,31 декабря 2026 года в 18:15 запланируй подготовить план на новый год.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-067,ru,"Запиши: отправить подтверждение налоговой подачи; дата 2027-01-01, время 09:25.",2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-068,ru,Поставь себе задачу «сверить февральский журнал наблюдений» на 28 февраля 2028 года в 14:45.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-069,ru,29 февраля 2028 года в 16:10 запланируй подготовить письмо ко дню високосного года.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-070,ru,"Запиши: проверить мартовский план поставок; дата 2028-03-01, время 19:20.",2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-071,ru,Назначь приём у стоматолога на 10 февраля 2026 года с 09:00 до 09:45 по времени Europe/Berlin.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-072,ru,Назначь встреча с научным руководителем на 12 марта 2026 года с 10:15 до 11:00 по времени Asia/Qyzylorda.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-073,ru,Назначь консультация по ремонту велосипеда на 9 апреля 2026 года с 11:30 до 12:15 по времени America/New_York.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-074,ru,Назначь обзор проекта с командой на 7 мая 2026 года с 13:00 до 14:20 по времени Asia/Qyzylorda.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-075,ru,Назначь занятие по рисованию на 11 июня 2026 года с 14:10 до 15:10 по времени Asia/Tokyo.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-076,ru,Назначь плановый осмотр у врача на 16 июля 2026 года с 15:20 до 16:05 по времени Asia/Qyzylorda.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-077,ru,Назначь сессия подготовки к экзамену на 13 августа 2026 года с 16:30 до 17:15 по времени UTC.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-078,ru,Назначь обсуждение макета с дизайнером на 10 сентября 2026 года с 08:40 до 10:10 по времени Asia/Qyzylorda.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-079,ru,Назначь приём в сервисном центре на 8 октября 2026 года с 12:00 до 13:30 по времени Europe/Berlin.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-080,ru,Назначь встреча по планированию бюджета на 12 ноября 2026 года с 17:10 до 18:00 по времени Asia/Qyzylorda.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-081,ru,Запланируй консультация с карьерным наставником на 12 февраля 2026 года в 09:20 на 30 минут по времени UTC.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-082,ru,Запланируй занятие по разговорному английскому на 18 марта 2026 года в 10:35 на 45 минут по времени Asia/Qyzylorda.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-083,ru,Запланируй встреча с бухгалтером на 16 апреля 2026 года в 11:50 на 60 минут по времени Europe/Berlin.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-084,ru,Запланируй тренировка с инструктором на 21 мая 2026 года в 13:05 на 75 минут по времени Asia/Qyzylorda.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-085,ru,Запланируй разбор рукописи с редактором на 18 июня 2026 года в 14:20 на 90 минут по времени America/New_York.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-086,ru,Запланируй обслуживание автомобиля на 23 июля 2026 года в 15:35 на 120 минут по времени Asia/Qyzylorda.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-087,ru,Запланируй урок игры на фортепиано на 20 августа 2026 года в 08:50 на 40 минут по времени Asia/Tokyo.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-088,ru,Запланируй планёрка по запуску продукта на 17 сентября 2026 года в 12:10 на 50 минут по времени Asia/Qyzylorda.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-089,ru,Запланируй консультация по налогам на 15 октября 2026 года в 16:25 на 80 минут по времени UTC.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-090,ru,Запланируй сеанс физиотерапии на 19 ноября 2026 года в 18:40 на 55 минут по времени Asia/Qyzylorda.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-091,ru,Запланируй сдать заявку на курс на 16 февраля 2026 года в 10:00 и напомни за 15 минут.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-092,ru,Запланируй позвонить поставщику на 23 марта 2026 года в 11:15 и напомни за 30 минут.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-093,ru,Запланируй проверить печатную версию отчёта на 27 апреля 2026 года в 13:30 и напомни за 45 минут.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-094,ru,Запланируй отправить подтверждение бронирования на 28 мая 2026 года в 15:45 и напомни за 1 час.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-095,ru,Запланируй забрать документы из офиса на 29 июня 2026 года в 17:00 и напомни за 90 минут.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-096,ru,Запланируй подготовить резервный накопитель на 30 июля 2026 года в 19:15 и напомни за 2 часа.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-097,ru,Запланируй проверить план осенней поставки на 25 октября 2026 года в 10:30 по времени Europe/Berlin и напомни за день.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-098,ru,Запланируй отправить финальную смету на 25 октября 2026 года в 10:30 по времени Europe/Berlin и напомни ровно за 24 часа.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-099,ru,Запланируй сдать заявление на участие в конференции на 25 октября 2026 года в 10:30 по времени Europe/Berlin и напомни за день.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
+RU-V-100,ru,Запланируй передать команде план миграции на 25 октября 2026 года в 10:30 по времени Europe/Berlin и напомни ровно за 24 часа.,2026-01-05T09:00:00Z,Asia/Qyzylorda,,,,,,,awaiting_human_recording
