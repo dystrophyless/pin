@@ -21,6 +21,7 @@ from pin.bootstrap.config import SettingsError, load_database_url
 from pin.contexts.billing.api import read_operational_projection as read_billing
 from pin.contexts.conversation.api import read_operational_projection as read_provider
 from pin.contexts.notifications.api import read_operational_projection as read_delivery
+from pin.contexts.retention.api import read_operational_progress
 from pin.contexts.speech.api import read_operational_projection as read_speech
 from pin.persistence import create_engine, create_session_factory, run_local_async
 from pin.platform.operations import read_operational_snapshot
@@ -107,10 +108,11 @@ async def _snapshot(database_url: str) -> tuple[dict[str, Any], bool]:
                 "provider": await read_provider(session),
                 "speech": await read_speech(session),
                 "billing": await read_billing(session, at=now),
+                "retention": await read_operational_progress(session),
             }
         value = snapshot.as_dict()
         value["contexts"] = {name: asdict(projection) for name, projection in projections.items()}
-        value["restore_and_deletion_progress"] = "not_available_in_local_foundation"
+        value["restore_and_deletion_progress"] = projections["retention"].as_dict()
         value["host"] = read_host_resources()
         return value, True
     except Exception as error:
