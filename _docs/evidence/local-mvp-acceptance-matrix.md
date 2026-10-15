@@ -35,6 +35,8 @@ The authoritative current combined local packet is [`local-integration-5464eec.m
 
 ## Cross-context integration seams
 
+Supplementary local proof added after the frozen baseline: [issue 25 composed lifecycle](issue-25-core-local-integration.md), test/evidence commit `6d20666`. Both RU/EN cases pass through actual ingress/onboarding/capture clarification/confirmation, persisted plan/occurrence, reminder consumers/fake delivery, check-in/one nudge and Done, followed by a 24-hour sweep proving no new reply or pending/leased delivery work. This closes the single-plan composed **local** gap for the specified appointment path in AC01/02/04/05/07/08/12. It does not replace the missing live evidence in the rows above, cover all branches, or change the 543-test frozen baseline count: these two added cases were qualified separately on the unchanged product source.
+
 These are the places where component PASS must not be read as one integrated product journey:
 
 | Producer → consumer seam | Local frozen evidence | What that evidence does not establish |

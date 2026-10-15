@@ -108,6 +108,8 @@ Owner override recorded 2026-10-13: implementation reviewers are not required; f
 
 ### Active integration checkpoint
 
+- Added test/evidence-only6d20666 for issue25 composed RU/EN lifecycle. Root inspected finalJUnit2/2,zero failures/errors/skips,10.310s; sourceSHA6af872c36d510257e29566408ae0124b3009b61be0bdbc8f26187711bdee16f1 matches. Actual local producers/consumers connect one persisted appointment through capture/confirm/two reminders/check-in/one nudge/Done;24h sweep sends nothing further,cycleterminalexhausted,noactiveintents/pendingleasedjobs. Fake interpreter/Telegram only. Allsixfixture names absent in cleanup audit; nonmanifestDBset unchanged. RootRuff/focusedmypyPASS. [Evidence](evidence/issue-25-core-local-integration.md); full543baselineunchangedproductsource,not545fullsuiteclaim. Wholeissue25 remainsblockedhost/livegates.
+
 - AC01–AC20 evidence inventory committeded4d7c6 at [matrix](evidence/local-mvp-acceptance-matrix.md). Root assigned a finite local issue25 integration test to the existing LunaHigh executor: one RU/EN appointment through actual ingress/onboarding/capture confirmation/Planning intents/fake delivery/check-in/nudge/Done with the same persisted occurrence. No product changes unless an observed bug is reported first. This fills a concrete composed-local evidence gap; no live/provider/host gate waiver. Assigned freshfixture prefixpin_issue25_core_ and exactcluster guards remain mandatory.
 - Owner clarified intended jurisdiction Kazakhstan, entity form IP/TOO not selected; additive SPEC clarification pushed5704e69. No numeric financial retention period or new paid/deployment authority follows.
 
