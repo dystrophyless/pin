@@ -10,6 +10,8 @@ The authoritative current combined local packet is [`local-integration-5464eec.m
 
 ## Owner scope correction — 2026-10-15
 
+Current full-candidate finding: [frozen12aa qualification](local-integration-12aa6b5.md) is FAIL547/549, with both core-language cases leaving delayed activation recovery-summary jobs. The core reference-clock correction is in progress; no new full-suite PASS or release acceptance follows from earlier focused results. All36fixtures were cleaned, protected data preserved and the exact174non-template catalog restored.
+
 The final focused #26 file passed3/3, zero failures/errors/skips (JUnit57.068s), adding a real PostgreSQL renewal/old-period-settlement/dispatch race and an owner-confirmed deletion fence across an already-started send. Operational purge and refund/replay assertions preserve financial audit without restoring access or plans. [Evidence](issue-26-paid-local-integration.md) distinguishes these local synthetic inputs from missing full staging/release evidence. Root is preparing the final full frozen qualification; no new full-suite total is asserted yet.
 
 Subsequent #26 cancellation/refund journey and combined two-case run passed2/2 (JUnit51.428s). The actual cancellation worker preserved paid-through delivery; refund/replay retained separate current coverage, consumed quota, original plans and reminders. [Exact evidence and limits](issue-26-paid-local-integration.md) include native database cleanup and synthetic transport labels. This extends local AC14/AC19 coverage without declaring the whole integration/release gates passed.

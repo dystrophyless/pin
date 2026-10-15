@@ -20,6 +20,8 @@ The owner selected `https://t.me/pin_appbot` for both the local landing's Telegr
 
 ## Verified local state
 
+Latest full candidate `12aa6b5` is **FAIL: 547/549 passed**, two core RU/EN failures, zero errors/skips. Each leaves an activation recovery-summary job delayed into a later slot; the core test's reference time comes from the host clock. No product bug is established. All other qualification gates passed, including p95 2.225s, offline Whisper and configured landing. All36fixtures were cleaned and the exact174non-template catalog restored; root checked the independent audit and live catalog. [Failed qualification](evidence/local-integration-12aa6b5.md) and raw packet retain the diagnostics. Focused passes below do not override this full-run finding.
+
 Issues 1–20 are accepted/closed for Windows local development. Latest: [#20 acceptance](https://github.com/dystrophyless/pin/issues/20#issuecomment-6191790583), [contract audit](evidence/issue-20-local-acceptance.md), and [support proof](evidence/issue-20-support-local.md). Acceptance of a local feature is not release acceptance.
 
 The combined frozen product-source baseline is `5464eec0f958c7bf40febf3dfe77ba0e5ed50fe5`: 543 tests, zero failures/errors/skips; Ruff, mypy219, architecture, migration roundtrip/drift, landing and actual cached offline RU/EN/silence checks passed. Injected-transport 50-owner dispatch-start p95 was 3.146 seconds. All 33 manifest fixtures were cleaned; protected databases were preserved. Two pytest-asyncio deprecation warnings remain. [Durable qualification](evidence/local-integration-5464eec.md); raw packet `C:/Users/roman/AppData/Local/Temp/pin-combined-retention-qual-5464eec-20261015`.
@@ -35,7 +37,7 @@ The [AC evidence matrix](evidence/local-mvp-acceptance-matrix.md) distinguishes 
 
 ## Active assignment
 
-The #26 Executor completed all three assigned local journeys without a product-source finding. Root is preparing one final frozen-revision full qualification including the added integration tests and configured landing. This is verification, not permission for new features or deferred deployment/model work. Root owns Git, handoff and acceptance; Publisher transfers root decisions. Check live agent/process handles rather than assuming activity from this file. Do not overlap writers or repeat broad checks without a new finding.
+The frozen12aa qualifier completed and cleaned its fixtures. `/root/paid_local_integration` (same GPT-6 Luna High Executor) now owns only the core lifecycle test and its issue25 evidence for a deterministic reference-clock correction, preserving the completion/no-active-campaign assertions. Native fixture creation was released after root's cleanup audit. No product-source edit is authorized without a finding. Root will commit the focused correction and qualify that new frozen revision; the failed12aa packet remains unchanged. Root owns Git, handoff and acceptance; Publisher transfers decisions. Check live handles and do not overlap writers.
 
 Untracked `output/` is unrelated mascot work. Preserve it and all other unrelated edits; stage explicit in-scope paths only. There is no pending Stars-payment user action or missing landing support choice.
 
