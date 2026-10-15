@@ -79,4 +79,3 @@ async def purge_owner_operational_data(
     # TrialActivationRecord is deliberately retained as the TR-03 trial-used fact.
     from pin.contexts.billing.infrastructure.models import TrialActivationRecord  # noqa: F401
     await session.flush()
-
