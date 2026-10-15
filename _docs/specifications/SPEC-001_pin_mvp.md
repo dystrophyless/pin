@@ -1,7 +1,7 @@
 # SPEC-001: Pin overall MVP
 
 Status: **approved**
-Version: 0.11
+Version: 0.12
 Created: 2026-10-13 (Asia/Qyzylorda)
 Owner: Pin product owner (the user)
 Requirements source: [PROJECT_BRAINSTORM.md](../PROJECT_BRAINSTORM.md)
@@ -20,6 +20,8 @@ Amendment v0.9, 2026-10-16: the owner selected separate text and voice quality e
 Amendment v0.10, 2026-10-16: the owner confirmed that unnecessary date/time clarification on an unambiguous request is an unsuccessful quality result. Required clarification of genuinely ambiguous requests is unchanged.
 
 Amendment v0.11, 2026-10-16: the owner selected 100 unambiguous requests per language/channel group, 400 requests total, for the future quality evaluation. This selects sample counts, not an approved corpus, collected recordings or permission to spend.
+
+Amendment v0.12, 2026-10-16: the owner selected end-to-end request scoring: failure to produce a plan for an unambiguous request, including processing errors, counts as an unsuccessful example against the same 99% target.
 
 ## 1. Purpose, authority, and evidence boundary
 
@@ -422,7 +424,9 @@ Follow-up owner decision, 2026-10-16: apply this ceiling **separately to Russian
 
 Further owner decision, 2026-10-16: when the request already makes the date and time unambiguous, asking for that information again counts as an **unsuccessful quality result**. The correct proposed plan must not require unnecessary temporal clarification. Retain such requests in the evaluated group's observations; do not treat the extra question as a successful interpretation. Necessary clarification of ambiguous or missing information remains required.
 
-Subsequent explicit owner decision, 2026-10-16: the future quality evaluation uses **100 unambiguous requests in each of RU text, RU voice, EN text and EN voice — 400 requests total**. Each group is evaluated independently against its approved99% target. This approves the sample counts only, not the actual prompts/recordings, corpus representativeness, execution budget or measurement results. The earlier illustrative100-request question alone did not approve those counts; this later answer does. Scoring of missing proposals and other failures, reference clocks/zones, ambiguity/error grading, representative workload/bursts and cold/warm runs still need an explicit evaluation protocol and owner suitability approval. No quality, cost, capacity or whole TR-04 PASS is implied. Additional model spend and actual-host/deployment work remain outside the current local-only authorization.
+Further owner decision, 2026-10-16: score the complete request-processing chain. If an unambiguous request produces no proposed plan, including when processing returns an error, the example is unsuccessful against the **same 99% target**; it is not excluded or counted only in a separate reliability metric. Record the failure reason separately for diagnosis. Together with the confirmed temporal-error and unnecessary-clarification rules, count successful/unsuccessful **requests**, not individual mismatching fields: each group of 100 must have at least 99 successful requests and at most one unsuccessful request before manual correction. Necessary clarification cases remain a separate policy check, not part of the approved 400 unambiguous requests.
+
+Subsequent explicit owner decision, 2026-10-16: the future quality evaluation uses **100 unambiguous requests in each of RU text, RU voice, EN text and EN voice — 400 requests total**. Each group is evaluated independently against its approved99% target. This approves the sample counts only, not the actual prompts/recordings, corpus representativeness, execution budget or measurement results. The earlier illustrative100-request question alone did not approve those counts; this later answer does. Actual corpus/recordings and representativeness, reproducible reference clocks/zones, ambiguity-test coverage, representative workload/bursts and cold/warm runs still need an explicit evaluation protocol and owner suitability approval. No quality, cost, capacity or whole TR-04 PASS is implied. Additional model spend and actual-host/deployment work remain outside the current local-only authorization.
 
 ### Routine details selected by the executor within the requested scope
 
