@@ -1,7 +1,7 @@
 # SPEC-001: Pin overall MVP
 
 Status: **approved**
-Version: 0.8
+Version: 0.9
 Created: 2026-10-13 (Asia/Qyzylorda)
 Owner: Pin product owner (the user)
 Requirements source: [PROJECT_BRAINSTORM.md](../PROJECT_BRAINSTORM.md)
@@ -14,6 +14,8 @@ Amendment v0.6, 2026-10-15: the owner removed actual Stars payment testing from 
 Amendment v0.7, 2026-10-16: the owner selected a date/time interpretation error ceiling of one error per 100 unambiguous requests before manual correction. Section 11 records this partial TR-04 decision; the remaining evaluation rubric and actual qualification are still pending.
 
 Amendment v0.8, 2026-10-16: the owner confirmed that the date/time accuracy threshold applies separately to Russian and English; aggregate performance cannot hide a failing language.
+
+Amendment v0.9, 2026-10-16: the owner selected separate text and voice quality evaluation within each language. The date/time accuracy target applies independently to RU text, RU voice, EN text and EN voice.
 
 ## 1. Purpose, authority, and evidence boundary
 
@@ -412,9 +414,9 @@ Additional owner clarification, 2026-10-15: Pin's intended legal operating juris
 
 The owner selected **no more than one date/time error per 100 unambiguous requests**, assessed on the assistant's proposed plan before the user corrects or confirms it (at least 99% correct date/time interpretation in the evaluated set). This is an acceptance target, not a measured result or a statistical guarantee about all future requests. Existing ambiguity-clarification requirements remain unchanged.
 
-Follow-up owner decision, 2026-10-16: apply this ceiling **separately to Russian and English**. Each language must meet at least 99% date/time correctness; a combined RU/EN average cannot compensate for either language failing. Whether text and voice receive separate scores is not yet selected.
+Follow-up owner decision, 2026-10-16: apply this ceiling **separately to Russian and English**. Each language must meet at least 99% date/time correctness; a combined RU/EN average cannot compensate for either language failing. A further owner answer on the same date requires separate text and voice scores within each language: **RU text, RU voice, EN text, EN voice must each meet the 99% target**. A good result in another group cannot compensate for a failing group. Voice evaluation follows the proposed plan produced from the original recording; a text-only transcript check does not prove voice-input accuracy.
 
-This answer does not approve a particular corpus or sample size merely because the question used 100 requests as an example. Text/voice strata, scoring of unnecessary clarification/missing proposals, reference clocks/zones, ambiguity/error grading, representative workload/bursts and cold/warm runs still need an explicit evaluation protocol and owner suitability approval. No quality, cost, capacity or whole TR-04 PASS is implied. Additional model spend and actual-host/deployment work remain outside the current local-only authorization.
+This answer does not approve a particular corpus or sample size merely because the question used 100 requests as an example. Scoring of unnecessary clarification/missing proposals, reference clocks/zones, ambiguity/error grading, representative workload/bursts and cold/warm runs still need an explicit evaluation protocol and owner suitability approval. No quality, cost, capacity or whole TR-04 PASS is implied. Additional model spend and actual-host/deployment work remain outside the current local-only authorization.
 
 ### Routine details selected by the executor within the requested scope
 
