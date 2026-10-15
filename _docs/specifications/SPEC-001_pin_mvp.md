@@ -1,7 +1,7 @@
 # SPEC-001: Pin overall MVP
 
 Status: **approved**
-Version: 0.10
+Version: 0.11
 Created: 2026-10-13 (Asia/Qyzylorda)
 Owner: Pin product owner (the user)
 Requirements source: [PROJECT_BRAINSTORM.md](../PROJECT_BRAINSTORM.md)
@@ -18,6 +18,8 @@ Amendment v0.8, 2026-10-16: the owner confirmed that the date/time accuracy thre
 Amendment v0.9, 2026-10-16: the owner selected separate text and voice quality evaluation within each language. The date/time accuracy target applies independently to RU text, RU voice, EN text and EN voice.
 
 Amendment v0.10, 2026-10-16: the owner confirmed that unnecessary date/time clarification on an unambiguous request is an unsuccessful quality result. Required clarification of genuinely ambiguous requests is unchanged.
+
+Amendment v0.11, 2026-10-16: the owner selected 100 unambiguous requests per language/channel group, 400 requests total, for the future quality evaluation. This selects sample counts, not an approved corpus, collected recordings or permission to spend.
 
 ## 1. Purpose, authority, and evidence boundary
 
@@ -420,7 +422,7 @@ Follow-up owner decision, 2026-10-16: apply this ceiling **separately to Russian
 
 Further owner decision, 2026-10-16: when the request already makes the date and time unambiguous, asking for that information again counts as an **unsuccessful quality result**. The correct proposed plan must not require unnecessary temporal clarification. Retain such requests in the evaluated group's observations; do not treat the extra question as a successful interpretation. Necessary clarification of ambiguous or missing information remains required.
 
-This answer does not approve a particular corpus or sample size merely because the question used 100 requests as an example. Scoring of missing proposals and other failures, reference clocks/zones, ambiguity/error grading, representative workload/bursts and cold/warm runs still need an explicit evaluation protocol and owner suitability approval. No quality, cost, capacity or whole TR-04 PASS is implied. Additional model spend and actual-host/deployment work remain outside the current local-only authorization.
+Subsequent explicit owner decision, 2026-10-16: the future quality evaluation uses **100 unambiguous requests in each of RU text, RU voice, EN text and EN voice — 400 requests total**. Each group is evaluated independently against its approved99% target. This approves the sample counts only, not the actual prompts/recordings, corpus representativeness, execution budget or measurement results. The earlier illustrative100-request question alone did not approve those counts; this later answer does. Scoring of missing proposals and other failures, reference clocks/zones, ambiguity/error grading, representative workload/bursts and cold/warm runs still need an explicit evaluation protocol and owner suitability approval. No quality, cost, capacity or whole TR-04 PASS is implied. Additional model spend and actual-host/deployment work remain outside the current local-only authorization.
 
 ### Routine details selected by the executor within the requested scope
 
