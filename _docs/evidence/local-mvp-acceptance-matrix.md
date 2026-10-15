@@ -10,6 +10,8 @@ The authoritative current combined local packet is [`local-integration-5464eec.m
 
 ## Owner scope correction — 2026-10-15
 
+The final focused #26 file passed3/3, zero failures/errors/skips (JUnit57.068s), adding a real PostgreSQL renewal/old-period-settlement/dispatch race and an owner-confirmed deletion fence across an already-started send. Operational purge and refund/replay assertions preserve financial audit without restoring access or plans. [Evidence](issue-26-paid-local-integration.md) distinguishes these local synthetic inputs from missing full staging/release evidence. Root is preparing the final full frozen qualification; no new full-suite total is asserted yet.
+
 Subsequent #26 cancellation/refund journey and combined two-case run passed2/2 (JUnit51.428s). The actual cancellation worker preserved paid-through delivery; refund/replay retained separate current coverage, consumed quota, original plans and reminders. [Exact evidence and limits](issue-26-paid-local-integration.md) include native database cleanup and synthetic transport labels. This extends local AC14/AC19 coverage without declaring the whole integration/release gates passed.
 
 Additional composed #26 [paid journey](issue-26-paid-local-integration.md) passed one native scenario: landing/policy values, actual subscription route, exhausted trial/paid quota with reminder sends, synthetic receipt/renewal replay and dispatch denial after renewed expiry. Root inspected raw JUnit and all three cleanup receipts. This adds local cross-context evidence for AC14/AC19; cancellation/refund/concurrency/deletion seams and full gate acceptance are not claimed. #20 is now accepted/closed for Windows local development; the remaining open gate references below concern #21–#28.

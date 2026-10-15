@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import re
-from collections.abc import Iterator
+from collections.abc import Awaitable, Callable, Iterator
 from datetime import UTC, datetime, time, timedelta
 from pathlib import Path
 from typing import cast
@@ -16,11 +17,18 @@ from sqlalchemy import func, select, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from pin.adapters.retention.deletion import finish_pending_deletions
+from pin.adapters.telegram.account_deletion import (
+    apply_account_deletion_callback,
+    begin_account_deletion,
+    current_deletion_preview_version,
+)
 from pin.adapters.telegram.application_worker import (
     claim_application_job,
     process_application_job,
     process_pending_reminder_schedules,
 )
+from pin.adapters.telegram.deletion import purge_account
 from pin.adapters.telegram.delivery_worker import process_delivery_iteration
 from pin.adapters.telegram.ingress import (
     PostgresTelegramOwnerResolver,
@@ -33,27 +41,37 @@ from pin.contexts.billing.api import (
     CreateStarsOrder,
     FinishStarsRefund,
     Operation,
+    PaymentRejected,
     ReadSubscriptionStatus,
     RecordStarsPayment,
     RequestStarsRefund,
     ReserveUsage,
+    RestoreReturningPaidAccess,
+    RetainBillingIdentity,
     SqlAlchemyAccessUsageStore,
     SqlAlchemyStarsPaymentStore,
     StartTrial,
     TrialActivationStatus,
     ViewPaymentTerms,
 )
-from pin.contexts.billing.domain.access import PeriodKind, PlanPolicy
+from pin.contexts.billing.domain.access import InvalidTransition, PeriodKind, PlanPolicy
 from pin.contexts.billing.domain.payments import STARS_CURRENCY, STARS_PERIOD, STARS_PRICE
 from pin.contexts.billing.infrastructure.models import (
+    AccessAccountRecord,
     AccessPeriodRecord,
     PaymentOrderRecord,
     PaymentReceiptRecord,
     PaymentRefundRecord,
+    RetainedBillingIdentityRecord,
+    UsageReservationRecord,
 )
 from pin.contexts.identity.domain.preferences import Preferences
 from pin.contexts.identity.infrastructure.store import SqlAlchemyIdentityStore
-from pin.contexts.notifications.application.delivery import ReminderSend, TelegramReplySend
+from pin.contexts.notifications.application.delivery import (
+    ReminderSend,
+    TelegramReplySend,
+    UnknownDeliveryFailure,
+)
 from pin.contexts.notifications.infrastructure.models import (
     DeliveryAttemptRecord,
     ReminderIntentRecord,
@@ -72,7 +90,7 @@ from pin.contexts.planning.infrastructure.models import PlanItemRecord
 from pin.contexts.planning.infrastructure.store import SqlAlchemyPlanningStore
 from pin.persistence import run_local_async
 from pin.persistence.db import create_engine, create_session_factory
-from pin.platform.models import InboxUpdate, OutboxEvent
+from pin.platform.models import InboxUpdate, Job, OutboxEvent
 
 ROOT = Path(__file__).resolve().parents[1]
 DATABASE_PREFIX = "pin_issue26_paid_"
@@ -1020,5 +1038,502 @@ def test_cancel_and_refund_preserve_unrelated_paid_coverage_and_reminders(
             )
             assert final_status.active and final_status.period_id == renewed_period_id
             assert final_status.ai_turns_remaining == PlanPolicy.paid().allowance.ai_turns - 1
+
+    run_local_async(scenario)
+
+
+def test_paid_period_boundary_and_deletion_fence_race(
+    paid_lifecycle_sessions: async_sessionmaker[AsyncSession], tmp_path: Path
+) -> None:
+    base = datetime(2026, 10, 15, 9, tzinfo=UTC)
+    clock = _Clock(base)
+    owner_bot_id = 8_100_028
+    telegram_user_id = 8_200_028
+    owner_id: UUID
+    first_receipt: RecordStarsPayment
+    renewal_receipt: RecordStarsPayment
+    first_period_id: str
+    renewed_period_id: str
+    intent_at_end: UUID
+    intent_after_end: UUID
+
+    class _BoundaryTransport(_LocalDeliveryTransport):
+        def __init__(self) -> None:
+            super().__init__()
+            self.unknown_next = True
+            self.pause_next = False
+            self.send_started = asyncio.Event()
+            self.allow_send_to_finish = asyncio.Event()
+            self.invocations: list[tuple[int, str, datetime]] = []
+            self.paused_at: datetime | None = None
+
+        async def send_reminder(self, message: ReminderSend) -> str:
+            attempt_id = f"issue26-boundary-send-{len(self.invocations) + 1}"
+            self.invocations.append((message.destination_id, attempt_id, clock.now()))
+            if self.unknown_next:
+                self.unknown_next = False
+                raise UnknownDeliveryFailure("synthetic_outcome_unknown")
+            if self.pause_next:
+                self.pause_next = False
+                self.paused_at = clock.now()
+                self.send_started.set()
+                await self.allow_send_to_finish.wait()
+            return attempt_id
+
+    local_transport = _BoundaryTransport()
+
+    async def scenario() -> None:
+        nonlocal owner_id, first_receipt, renewal_receipt
+        nonlocal first_period_id, renewed_period_id, intent_at_end, intent_after_end
+        async with paid_lifecycle_sessions() as session, session.begin():
+            accepted = await persist_update(
+                session,
+                bot_id=owner_bot_id,
+                payload={
+                    "update_id": 1,
+                    "message": {
+                        "message_id": 1,
+                        "date": int(base.timestamp()),
+                        "chat": {"id": telegram_user_id, "type": "private"},
+                        "from": {"id": telegram_user_id, "is_bot": False},
+                        "text": "/subscription",
+                    },
+                },
+                owner_resolver=PostgresTelegramOwnerResolver(),
+            )
+            assert accepted is not None and accepted.accepted
+            inbox = await session.scalar(
+                select(InboxUpdate).where(
+                    InboxUpdate.bot_id == owner_bot_id,
+                    InboxUpdate.update_id == 1,
+                )
+            )
+            assert inbox is not None and inbox.owner_id is not None
+            owner_id = inbox.owner_id
+            trial = await SqlAlchemyAccessUsageStore(session).activate_trial(
+                StartTrial(owner_id, telegram_user_id, base)
+            )
+            assert trial.status is TrialActivationStatus.ACTIVATED
+            saved_preferences = await SqlAlchemyIdentityStore(session).save_preferences(
+                owner_id=owner_id,
+                expected_version=None,
+                preferences=Preferences(
+                    language="en",
+                    home_zone="UTC",
+                    reminder_calendar_days=0,
+                    reminder_elapsed_hours=0,
+                ),
+            )
+            assert saved_preferences is not None
+
+        payment_at = base + timedelta(seconds=1)
+        invoice_payload = f"issue26-boundary-{owner_id}"
+        first_receipt = _synthetic_receipt(
+            owner_id=owner_id,
+            telegram_user_id=telegram_user_id,
+            payload=invoice_payload,
+            charge_id=f"synthetic-boundary-first-{owner_id}",
+            at=payment_at,
+        )
+        paid_end = payment_at + STARS_PERIOD
+        renewal_receipt = _synthetic_receipt(
+            owner_id=owner_id,
+            telegram_user_id=telegram_user_id,
+            payload=invoice_payload,
+            charge_id=f"synthetic-boundary-renewal-{owner_id}",
+            at=paid_end,
+            is_first_recurring=False,
+        )
+        async with paid_lifecycle_sessions() as session, session.begin():
+            payments = SqlAlchemyStarsPaymentStore(session)
+            await payments.view_terms(ViewPaymentTerms(owner_id, payment_at))
+            await payments.accept_terms(AcceptPaymentTerms(owner_id, payment_at))
+            order = await payments.create_order(
+                CreateStarsOrder(owner_id, telegram_user_id, invoice_payload, payment_at)
+            )
+            assert (
+                await payments.check_checkout(
+                    CheckStarsCheckout(
+                        owner_id,
+                        telegram_user_id,
+                        order.payload,
+                        f"synthetic-boundary-checkout-{owner_id}",
+                        STARS_CURRENCY,
+                        STARS_PRICE,
+                        payment_at,
+                    )
+                )
+            ).ok
+            assert await payments.record_payment(first_receipt)
+            status = await SqlAlchemyAccessUsageStore(session).read_subscription_status(
+                ReadSubscriptionStatus(owner_id, payment_at)
+            )
+            assert status.active and status.period_kind is PeriodKind.PAID
+            first_period_id = cast(str, status.period_id)
+            assert status.ends_at == paid_end
+            assert await SqlAlchemyAccessUsageStore(session).retain_owner_for_return(
+                RetainBillingIdentity(owner_id, telegram_user_id, payment_at)
+            )
+
+        event_start = paid_end + timedelta(days=2)
+        proof = ConfirmationProof(uuid4(), 1, f"issue26-boundary-plan-{uuid4().hex}")
+        async with paid_lifecycle_sessions() as session, session.begin():
+            identity = SqlAlchemyIdentityStore(session)
+            profile = await identity.get_preferences(owner_id)
+            assert profile is not None
+            await create_confirmed_plan_batch(
+                ConfirmedPlanBatch(
+                    f"issue26-boundary-{owner_id}",
+                    profile.version,
+                    (
+                        OneOffPlanDraft(
+                            kind=PlanKind.TASK,
+                            title="Boundary reminder survives until deletion",
+                            local_date=event_start.date(),
+                            local_time=time(
+                                event_start.hour, event_start.minute, event_start.second
+                            ),
+                            event_zone="UTC",
+                            reminders=(
+                                ReminderOffset(OffsetKind.ELAPSED_SECONDS, 48 * 60 * 60),
+                                ReminderOffset(OffsetKind.ELAPSED_SECONDS, 47 * 60 * 60),
+                            ),
+                        ),
+                    ),
+                    proof,
+                ),
+                authenticated_owner_id=owner_id,
+                store=SqlAlchemyPlanningStore(session),
+                identity=identity,
+                billing=SqlAlchemyAccessUsageStore(session),
+                confirmation_verifier=_ConfirmedLocalPreview(proof),
+                clock=clock,
+            )
+        assert await process_pending_reminder_schedules(
+            paid_lifecycle_sessions, now=base, limit=100
+        ) >= 1
+        async with paid_lifecycle_sessions() as session:
+            intents = list(
+                await session.scalars(
+                    select(ReminderIntentRecord)
+                    .where(ReminderIntentRecord.owner_id == owner_id)
+                    .order_by(ReminderIntentRecord.due_at)
+                )
+            )
+            assert len(intents) == 2
+            assert [intent.due_at for intent in intents] == [
+                paid_end,
+                paid_end + timedelta(hours=1),
+            ]
+            intent_at_end, intent_after_end = intents[0].id, intents[1].id
+
+        held_request_id = f"issue26-boundary-held-{owner_id}"
+        async with paid_lifecycle_sessions() as session, session.begin():
+            billing = SqlAlchemyAccessUsageStore(session)
+            held = await billing.reserve_usage(
+                ReserveUsage(
+                    owner_id,
+                    held_request_id,
+                    Operation.AI_TURN,
+                    1,
+                    0,
+                    paid_end - timedelta(seconds=30),
+                    paid_end,
+                )
+            )
+            assert held.access.allowed and held.reservation is not None
+            assert held.reservation.period_id == first_period_id
+
+        clock.at = paid_end
+        boundary_unknown = False
+        gate = asyncio.Event()
+        ready = 0
+        all_ready = asyncio.Event()
+
+        async def at_boundary(
+            operation: Callable[[], Awaitable[bool | str]],
+        ) -> bool | str:
+            nonlocal ready
+            ready += 1
+            if ready == 3:
+                all_ready.set()
+            await gate.wait()
+            return await operation()
+
+        async def accept_renewal() -> bool:
+            async with paid_lifecycle_sessions() as session, session.begin():
+                return await SqlAlchemyStarsPaymentStore(session).record_payment(renewal_receipt)
+
+        async def settle_old_period() -> str:
+            try:
+                async with paid_lifecycle_sessions() as session, session.begin():
+                    await SqlAlchemyAccessUsageStore(session).settle_usage(
+                        owner_id=owner_id,
+                        request_id=held_request_id,
+                        ai_turns=1,
+                        voice_seconds=0,
+                        at=paid_end,
+                    )
+            except InvalidTransition:
+                return "expired_at_period_end"
+            return "settled"
+
+        async def deliver_due_reminder() -> bool:
+            processed_any = False
+            for _ in range(10):
+                processed = await process_delivery_iteration(
+                    paid_lifecycle_sessions,
+                    local_transport,
+                    worker_id="issue26-boundary-race",
+                    now=clock.now,
+                )
+                if not processed:
+                    return processed_any
+                processed_any = True
+            raise AssertionError("boundary delivery worker did not become idle")
+
+        boundary_tasks = [
+            asyncio.create_task(at_boundary(accept_renewal)),
+            asyncio.create_task(at_boundary(settle_old_period)),
+            asyncio.create_task(at_boundary(deliver_due_reminder)),
+        ]
+        await all_ready.wait()
+        gate.set()
+        renewal_accepted, settlement_outcome, reminder_processed = await asyncio.gather(
+            *boundary_tasks
+        )
+        assert renewal_accepted is True
+        assert settlement_outcome == "expired_at_period_end"
+        assert isinstance(reminder_processed, bool)
+
+        async with paid_lifecycle_sessions() as session, session.begin():
+            billing = SqlAlchemyAccessUsageStore(session)
+            assert await billing.expire_reservations(at=paid_end, limit=100) == 1
+            old_hold = await billing.get_usage_reservation(owner_id, held_request_id)
+            assert old_hold is not None
+            assert old_hold.period_id == first_period_id and old_hold.state.value == "expired"
+            payments = SqlAlchemyStarsPaymentStore(session)
+            assert await payments.record_payment(renewal_receipt)
+            status = await billing.read_subscription_status(
+                ReadSubscriptionStatus(owner_id, paid_end)
+            )
+            assert status.active and status.period_kind is PeriodKind.PAID
+            renewed_period_id = cast(str, status.period_id)
+            assert renewed_period_id != first_period_id
+            paid_periods = list(
+                await session.scalars(
+                    select(AccessPeriodRecord).where(
+                        AccessPeriodRecord.owner_id == owner_id,
+                        AccessPeriodRecord.policy_kind == PeriodKind.PAID.value,
+                    )
+                )
+            )
+            assert len(paid_periods) == 2
+            assert sum(row.ai_turn_limit for row in paid_periods) == (
+                2 * PlanPolicy.paid().allowance.ai_turns
+            )
+            assert not any(
+                row.request_id == held_request_id and row.period_id == renewed_period_id
+                for row in await session.scalars(
+                    select(UsageReservationRecord).where(
+                        UsageReservationRecord.owner_id == owner_id
+                    )
+                )
+            )
+            boundary_attempts = list(
+                await session.scalars(
+                    select(DeliveryAttemptRecord).where(
+                        DeliveryAttemptRecord.intent_id == intent_at_end
+                    )
+                )
+            )
+            assert len(boundary_attempts) <= 1
+            if boundary_attempts:
+                outcome = boundary_attempts[0].outcome
+                assert outcome in {"skipped", "unknown", "coalesced"}
+                if outcome == "skipped":
+                    assert boundary_attempts[0].failure_code == "access_expired"
+                    assert not local_transport.invocations
+                elif outcome == "unknown":
+                    boundary_unknown = True
+                    assert boundary_attempts[0].access_period_id == renewed_period_id
+                    assert boundary_attempts[0].failure_code == "synthetic_outcome_unknown"
+                else:
+                    assert boundary_attempts[0].failure_code == "newer_due_reminder_selected"
+                    assert not local_transport.invocations
+            else:
+                assert not local_transport.invocations
+
+        delete_at = paid_end + timedelta(hours=1, seconds=1)
+        clock.at = delete_at - timedelta(seconds=1)
+        local_transport.unknown_next = False
+        local_transport.pause_next = True
+        delivery_task = asyncio.create_task(deliver_due_reminder())
+        await asyncio.wait_for(local_transport.send_started.wait(), timeout=15)
+        assert local_transport.paused_at == delete_at - timedelta(seconds=1)
+
+        async with paid_lifecycle_sessions() as session, session.begin():
+            preview_reply = await begin_account_deletion(
+                session, owner_id=owner_id, language="en", now=delete_at
+            )
+            assert preview_reply.buttons
+            confirm_button = next(
+                button for button in preview_reply.buttons if button.action == "deletion.confirm"
+            )
+            expected_version = await current_deletion_preview_version(
+                session, owner_id=owner_id, now=delete_at
+            )
+            result = await apply_account_deletion_callback(
+                session,
+                owner_id=owner_id,
+                action=confirm_button.action,
+                preview_id=confirm_button.value,
+                expected_version=expected_version,
+                language="en",
+                now=delete_at,
+            )
+            assert "Deletion is confirmed" in result.plain_text
+        async with paid_lifecycle_sessions() as session:
+            account = await session.get(AccessAccountRecord, owner_id)
+            assert account is not None and account.deleted_at == delete_at
+            assert account.deletion_pending
+        clock.at = delete_at + timedelta(seconds=2)
+        local_transport.allow_send_to_finish.set()
+        await asyncio.wait_for(delivery_task, timeout=15)
+
+        async with paid_lifecycle_sessions() as session:
+            last_reminder_attempt = await session.scalar(
+                select(DeliveryAttemptRecord).where(
+                    DeliveryAttemptRecord.intent_id == intent_after_end
+                )
+            )
+            assert last_reminder_attempt is not None
+            assert last_reminder_attempt.outcome == "confirmed"
+            assert last_reminder_attempt.access_period_id == renewed_period_id
+            assert local_transport.paused_at is not None
+            assert last_reminder_attempt.started_at is not None
+            assert last_reminder_attempt.started_at == local_transport.paused_at
+            assert last_reminder_attempt.finished_at is not None
+            assert last_reminder_attempt.finished_at > delete_at
+            assert len(local_transport.invocations) == 1 + int(boundary_unknown)
+
+        artifact = tmp_path / "issue26-paid-deletion-tombstones.jsonl"
+        assert (
+            await finish_pending_deletions(
+                paid_lifecycle_sessions,
+                artifact=artifact,
+                now=delete_at + timedelta(seconds=5),
+                purge_owner=purge_account,
+            )
+            == 1
+        )
+        async with paid_lifecycle_sessions() as session:
+            assert await SqlAlchemyIdentityStore(session).get_preferences(owner_id) is None
+            assert await session.scalar(
+                select(PlanItemRecord.id).where(PlanItemRecord.owner_id == owner_id)
+            ) is None
+            assert await session.scalar(
+                select(ReminderIntentRecord.id).where(ReminderIntentRecord.owner_id == owner_id)
+            ) is None
+            assert await session.scalar(
+                select(TelegramOwnerRecord.owner_id).where(
+                    TelegramOwnerRecord.owner_id == owner_id
+                )
+            ) is None
+            assert await session.scalar(
+                select(InboxUpdate.id).where(InboxUpdate.owner_id == owner_id)
+            ) is None
+            assert await session.scalar(
+                select(Job.id).where(Job.owner_id == owner_id)
+            ) is None
+            assert await session.scalar(
+                select(OutboxEvent.id).where(OutboxEvent.owner_id == owner_id)
+            ) is None
+            assert await session.scalar(
+                select(func.count())
+                .select_from(UsageReservationRecord)
+                .where(UsageReservationRecord.owner_id == owner_id)
+            ) == 0
+            assert await session.get(PaymentReceiptRecord, first_receipt.telegram_charge_id)
+            assert await session.get(PaymentReceiptRecord, renewal_receipt.telegram_charge_id)
+            assert await session.get(RetainedBillingIdentityRecord, owner_id) is not None
+            assert await session.scalar(
+                select(func.count())
+                .select_from(AccessPeriodRecord)
+                .where(
+                    AccessPeriodRecord.owner_id == owner_id,
+                    AccessPeriodRecord.period_id == renewed_period_id,
+                )
+            ) == 1
+
+        calls_before_post_delete_drain = len(local_transport.invocations)
+        clock.at = delete_at + timedelta(minutes=1)
+        assert await process_pending_reminder_schedules(
+            paid_lifecycle_sessions, now=clock.now(), limit=100
+        ) == 0
+        assert not await process_delivery_iteration(
+            paid_lifecycle_sessions,
+            local_transport,
+            worker_id="issue26-boundary-after-delete",
+            now=clock.now,
+        )
+        assert len(local_transport.invocations) == calls_before_post_delete_drain
+
+        refund_at = delete_at + timedelta(minutes=2)
+        async with paid_lifecycle_sessions() as session, session.begin():
+            refund_user, refunded_charge = await SqlAlchemyStarsPaymentStore(session).begin_refund(
+                RequestStarsRefund(
+                    renewal_receipt.telegram_charge_id,
+                    "issue26-local-operator",
+                    refund_at,
+                )
+            )
+            assert refund_user == telegram_user_id
+            assert refunded_charge == renewal_receipt.telegram_charge_id
+        async with paid_lifecycle_sessions() as session, session.begin():
+            assert await SqlAlchemyStarsPaymentStore(session).finish_refund(
+                FinishStarsRefund(renewal_receipt.telegram_charge_id, "confirmed", refund_at)
+            )
+        try:
+            async with paid_lifecycle_sessions() as session, session.begin():
+                await SqlAlchemyStarsPaymentStore(session).record_payment(renewal_receipt)
+        except PaymentRejected:
+            pass
+        else:
+            raise AssertionError("a post-deletion receipt replay must not recreate paid access")
+
+        async with paid_lifecycle_sessions() as session, session.begin():
+            billing = SqlAlchemyAccessUsageStore(session)
+            assert not await billing.restore_returning_paid_access(
+                RestoreReturningPaidAccess(owner_id, telegram_user_id, refund_at)
+            )
+            status = await billing.read_subscription_status(
+                ReadSubscriptionStatus(owner_id, refund_at)
+            )
+            assert not status.active
+            assert await session.scalar(
+                select(func.count())
+                .select_from(AccessPeriodRecord)
+                .where(
+                    AccessPeriodRecord.owner_id == owner_id,
+                    AccessPeriodRecord.policy_kind == PeriodKind.PAID.value,
+                )
+            ) == 0
+            refunded = await session.get(PaymentReceiptRecord, renewal_receipt.telegram_charge_id)
+            refund = await session.get(PaymentRefundRecord, renewal_receipt.telegram_charge_id)
+            order = await session.scalar(
+                select(PaymentOrderRecord).where(
+                    PaymentOrderRecord.invoice_payload == renewal_receipt.invoice_payload
+                )
+            )
+            assert refunded is not None and refunded.refunded_at == refund_at
+            assert refund is not None and refund.status == "confirmed"
+            assert order is not None
+            assert await session.scalar(
+                select(func.count())
+                .select_from(PaymentReceiptRecord)
+                .where(PaymentReceiptRecord.owner_id == owner_id)
+            ) == 2
+        assert len(local_transport.invocations) == calls_before_post_delete_drain
 
     run_local_async(scenario)
