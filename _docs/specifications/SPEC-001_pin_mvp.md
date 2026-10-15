@@ -1,7 +1,7 @@
 # SPEC-001: Pin overall MVP
 
 Status: **approved**
-Version: 0.16
+Version: 0.17
 Created: 2026-10-13 (Asia/Qyzylorda)
 Owner: Pin product owner (the user)
 Requirements source: [PROJECT_BRAINSTORM.md](../PROJECT_BRAINSTORM.md)
@@ -30,6 +30,8 @@ Amendment v0.14,2026-10-16: the owner approved the revised RU/EN reference scrip
 Amendment v0.15,2026-10-16: the owner selected real human recordings for the200voice examples. This resolves audio source only; recordings, collection/acoustic protocol and execution remain pending.
 
 Amendment v0.16,2026-10-16: the owner narrowed the current local voice check to a couple of owner-provided Russian/English examples. Use oneRU and oneENclip for a manual smoke check; the larger prepared reference set is not a prerequisite for this local check. No99%accuracy result follows from two examples.
+
+Amendment v0.17,2026-10-16: the owner selected the user's persisted RU/EN profile language as the language supplied to voice recognition. Missing or unsupported profile language fails before inference and refunds the voice reservation; automatic language detection does not override the selected preference. This does not establish mixed-language recognition quality or broader TR-04 accuracy.
 
 ## 1. Purpose, authority, and evidence boundary
 
@@ -449,6 +451,10 @@ The owner selected **real human recordings** for the100RU and100ENvoice inputs, 
 ### Current local voice smoke — owner scope change,2026-10-16
 
 After selecting real recordings and a proposed two-voices-per-language plan, the owner asked to perform **only a couple of test examples from the owner in Russian and English**. The current local check is therefore oneowner-providedRU and oneowner-providedENaudio sample. Do not require200recordings, volunteers or a multi-speaker corpus before this check. Keep the approved400-slot reference set and recording kit as optional preparation; do not launch that large evaluation under this request.
+
+### Voice recognition language — owner decision,2026-10-16
+
+Use the language explicitly selected in the user's persisted profile (`ru` or `en`) for local voice recognition. Pass it through the worker and recognition adapter to Whisper; backend language guesses do not replace it. If the profile or valid selection is missing, do not infer a language: finish the bounded voice job as a failure before inference and refund its reservation. This decision does not establish mixed-language support or change the broader quality-evaluation gates.
 
 Record the original audio, actual localWhisper transcription and any actually executed downstream interpretation separately. Two examples provide manual smoke observations, not a99%accuracy/representativeness claim, fullTR-04qualification or host/cost suitability. Larger future qualification would need its own agreed protocol and authorization. Existing external-call budget limits are not silently reset. [Current smoke worksheet](../qualification/TR-04_manual_smoke.md).
 

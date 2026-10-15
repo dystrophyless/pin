@@ -28,7 +28,7 @@ async def main() -> None:
         if digest != manifest["voices"][filename]["sha256"]:
             raise AssertionError(f"fixture hash mismatch: {filename}")
         decoded = await decoder.decode(path, size_bytes=path.stat().st_size)
-        recognized = await recognizer.transcribe(decoded)
+        recognized = await recognizer.transcribe(decoded, language=language)
         if recognized.language != language or keyword not in recognized.text.casefold():
             raise AssertionError(
                 f"{filename}: expected {language}/{keyword}; "
@@ -52,7 +52,7 @@ async def main() -> None:
             output.writeframes(b"\0\0" * (16_000 * 3))
         decoded = await decoder.decode(silent, size_bytes=silent.stat().st_size)
         try:
-            await recognizer.transcribe(decoded)
+            await recognizer.transcribe(decoded, language="en")
         except UnusableAudio:
             print("silence.wav: rejected as no recognized speech")
         else:
