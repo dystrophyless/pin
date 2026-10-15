@@ -16,6 +16,7 @@ from pin.contexts.accountability.infrastructure.models import (
     CheckInCycleRecord,
 )
 from pin.contexts.accountability.infrastructure.scheduler import synchronize_occurrence
+from pin.contexts.billing.api import AccountLifecycle, SqlAlchemyAccessUsageStore
 from pin.platform.models import OutboxEvent
 
 PLANNING_CYCLE_EVENTS = frozenset(
@@ -60,6 +61,11 @@ async def consume_planning_cycle_events(
         ).all()
     )
     for event in events:
+        lifecycle = await SqlAlchemyAccessUsageStore(session).lock_account_lifecycle(
+            event.owner_id
+        )
+        if lifecycle is not AccountLifecycle.PRESENT:
+            continue
         current = await current_occurrences.get_current_occurrence(
             event.owner_id, event.aggregate_id
         )

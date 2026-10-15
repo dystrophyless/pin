@@ -38,6 +38,7 @@ pin-delivery-worker = "pin.entrypoints.delivery_worker:main"
 pin-billing-refund = "pin.entrypoints.billing_refund:main"
 pin-speech-worker = "pin.entrypoints.speech_worker:main"
 pin-operations = "pin.entrypoints.operations:main"
+pin-retention = "pin.entrypoints.retention_maintenance:main"
 pin-architecture-check = "pin.architecture:main"
 
 [tool.hatch.build.targets.wheel]

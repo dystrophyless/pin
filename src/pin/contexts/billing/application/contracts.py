@@ -133,6 +133,12 @@ class RestoreReturningPaidAccess:
 
 
 @dataclass(frozen=True, slots=True)
+class MarkAccountDeleted:
+    owner_id: UUID
+    at: datetime
+
+
+@dataclass(frozen=True, slots=True)
 class ViewPaymentTerms:
     owner_id: UUID
     at: datetime
@@ -229,6 +235,12 @@ class AccessUsageStore(AccessLifecycleStore, Protocol):
 
     async def lock_account_lifecycle(self, owner_id: UUID) -> AccountLifecycle:
         """Lock account lifecycle through caller authorization; missing stays missing."""
+
+    async def mark_account_deleted(self, command: MarkAccountDeleted) -> bool:
+        """Tombstone an account without erasing billing evidence or return facts."""
+
+    async def finish_account_deletion(self, owner_id: UUID) -> None:
+        """Clear the deletion fence after operational rows have been removed."""
 
     async def reserve_usage(self, command: ReserveUsage) -> ReserveUsageResult:
         """Check current entitlement and reserve all requested dimensions atomically."""

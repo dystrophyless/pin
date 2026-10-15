@@ -43,7 +43,11 @@ from pin.adapters.telegram.presentation.capture import (
 )
 from pin.adapters.telegram.presentation.tokens import SqlAlchemyCallbackTokenStore
 from pin.adapters.telegram.support import with_owned_plans
-from pin.contexts.billing.api import ReadSubscriptionStatus, SqlAlchemyAccessUsageStore
+from pin.contexts.billing.api import (
+    AccountLifecycle,
+    ReadSubscriptionStatus,
+    SqlAlchemyAccessUsageStore,
+)
 from pin.contexts.conversation.application.dto import (
     ActionProposal,
     ConversationContext,
@@ -190,6 +194,10 @@ async def _process_capture_job(
     callback_inbound: _Inbound | None = None
 
     async with sessions() as session, session.begin():
+        lifecycle = await SqlAlchemyAccessUsageStore(session).lock_account_lifecycle(claim.owner_id)
+        if lifecycle is not AccountLifecycle.PRESENT:
+            await complete_job(session, claim)
+            return True
         inbound = await _capture_inbound(session, claim)
         if inbound is None:
             return False
@@ -220,10 +228,7 @@ async def _process_capture_job(
             and not onboarding_active
         ):
             words = inbound.text.strip().split(maxsplit=1)
-            if (
-                len(words) == 1
-                and words[0].split("@", 1)[0].casefold() == "/cancel"
-            ):
+            if len(words) == 1 and words[0].split("@", 1)[0].casefold() == "/cancel":
                 subscription = await SqlAlchemyAccessUsageStore(session).read_subscription_status(
                     ReadSubscriptionStatus(owner_id, at)
                 )
@@ -316,6 +321,12 @@ async def _process_capture_job(
         assert assistant is not None
         outcome = await assistant.interpret(interpretation.context, at=at, claim=claim)
         async with sessions() as session, session.begin():
+            lifecycle = await SqlAlchemyAccessUsageStore(session).lock_account_lifecycle(
+                interpretation.draft.owner_id
+            )
+            if lifecycle is not AccountLifecycle.PRESENT:
+                await complete_job(session, claim)
+                return True
             already_applied = await record_job_effect_once(
                 session,
                 claim,
@@ -537,8 +548,16 @@ async def _process_capture_callback_job(
     chat_id: int,
     now: datetime,
 ) -> bool:
+    if claim.owner_id is None:
+        raise RuntimeError("capture callback job has no owner")
     try:
         async with sessions() as session, session.begin():
+            lifecycle = await SqlAlchemyAccessUsageStore(session).lock_account_lifecycle(
+                claim.owner_id
+            )
+            if lifecycle is not AccountLifecycle.PRESENT:
+                await complete_job(session, claim)
+                return True
             current = await _capture_inbound(session, claim)
             if current is None or current.callback_data != inbound.callback_data:
                 raise InvalidCallbackToken("capture callback changed during processing")

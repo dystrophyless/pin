@@ -27,6 +27,7 @@ from pin.contexts.planning.infrastructure.series_models import (
     SeriesOccurrenceRecord,
     SeriesRecord,
 )
+from pin.contexts.retention.infrastructure import models as retention_models
 from pin.contexts.speech.infrastructure.models import SpeechRequestRecord
 from pin.persistence.models import Base
 from pin.platform import models as platform_models  # noqa: F401
@@ -66,6 +67,8 @@ assert notifications_models.ReminderIntentRecord.metadata is target_metadata
 assert notifications_models.NotificationReconciliationReceiptRecord.metadata is target_metadata
 assert notifications_models.DeliveryAttemptRecord.metadata is target_metadata
 assert notifications_models.AccountabilityDeliveryAttemptRecord.metadata is target_metadata
+assert retention_models.DeletionRequestRecord.metadata is target_metadata
+assert retention_models.DeletionTombstoneRecord.metadata is target_metadata
 
 
 def _database_url() -> str:

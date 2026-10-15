@@ -15,6 +15,7 @@ from pin.contexts.billing.application.contracts import (
     ActivatePaidPeriod,
     CheckAccess,
     CheckAccessNotice,
+    MarkAccountDeleted,
     ReadSubscriptionStatus,
     ReserveUsage,
     ReserveUsageResult,
@@ -159,7 +160,7 @@ class SqlAlchemyAccessUsageStore(AccessUsageStore):
             .where(AccessAccountRecord.owner_id == command.owner_id)
             .with_for_update()
         )
-        if account is None or account.deleted_at is None:
+        if account is None or account.deleted_at is None or account.deletion_pending:
             return False
         paid = await self._session.scalar(
             select(AccessPeriodRecord.period_id)
@@ -176,6 +177,30 @@ class SqlAlchemyAccessUsageStore(AccessUsageStore):
             return False
         account.deleted_at = None
         return True
+
+    async def mark_account_deleted(self, command: MarkAccountDeleted) -> bool:
+        _require_aware(command.at)
+        account = await self._session.scalar(
+            select(AccessAccountRecord)
+            .where(AccessAccountRecord.owner_id == command.owner_id)
+            .with_for_update()
+        )
+        if account is None:
+            return False
+        account.deleted_at = account.deleted_at or command.at.astimezone(UTC)
+        account.deletion_pending = True
+        await self._session.flush()
+        return True
+
+    async def finish_account_deletion(self, owner_id: UUID) -> None:
+        account = await self._session.scalar(
+            select(AccessAccountRecord)
+            .where(AccessAccountRecord.owner_id == owner_id)
+            .with_for_update()
+        )
+        if account is not None:
+            account.deletion_pending = False
+            await self._session.flush()
 
     async def activate_trial(self, command: StartTrial) -> TrialActivationResult:
         if type(command.telegram_user_id) is not int or command.telegram_user_id <= 0:

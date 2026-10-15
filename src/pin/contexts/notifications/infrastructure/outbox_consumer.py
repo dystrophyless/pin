@@ -7,6 +7,7 @@ from datetime import datetime
 from sqlalchemy import exists, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from pin.contexts.billing.api import AccountLifecycle, SqlAlchemyAccessUsageStore
 from pin.contexts.notifications.application.contracts import (
     SCHEDULE_EVENT_TYPES,
     CurrentScheduleStore,
@@ -27,9 +28,7 @@ class SqlAlchemyNotificationScheduleEventConsumer:
         self._session = session
         self._current_schedules = current_schedules
 
-    async def consume_pending(
-        self, *, at: datetime, limit: int = 100
-    ) -> int:
+    async def consume_pending(self, *, at: datetime, limit: int = 100) -> int:
         """Apply unreceipted Planning schedule events in the caller's transaction.
 
         This is a separate in-process consumer: it deliberately ignores
@@ -47,23 +46,44 @@ class SqlAlchemyNotificationScheduleEventConsumer:
                 NotificationReconciliationReceiptRecord.event_id == OutboxEvent.id,
             )
         )
-        rows = list(
+        candidates = tuple(
             (
-                await self._session.scalars(
-                    select(OutboxEvent)
+                await self._session.execute(
+                    select(OutboxEvent.id, OutboxEvent.owner_id)
                     .where(
                         OutboxEvent.event_type.in_(SCHEDULE_EVENT_TYPES),
                         ~receipt_exists,
                     )
                     .order_by(OutboxEvent.created_at, OutboxEvent.id)
                     .limit(limit)
-                    .with_for_update(skip_locked=True)
                 )
             ).all()
         )
         intents = SqlAlchemyNotificationsStore(self._session)
         consumed = 0
-        for row in rows:
+        for event_id, owner_id in candidates:
+            lifecycle = await SqlAlchemyAccessUsageStore(self._session).lock_account_lifecycle(
+                owner_id
+            )
+            if lifecycle is not AccountLifecycle.PRESENT:
+                continue
+            row = await self._session.scalar(
+                select(OutboxEvent)
+                .where(OutboxEvent.id == event_id)
+                .with_for_update(skip_locked=True)
+            )
+            if row is None:
+                continue
+            if (
+                await self._session.scalar(
+                    select(NotificationReconciliationReceiptRecord.id).where(
+                        NotificationReconciliationReceiptRecord.owner_id == owner_id,
+                        NotificationReconciliationReceiptRecord.event_id == event_id,
+                    )
+                )
+                is not None
+            ):
+                continue
             change = ScheduleChange(
                 event_id=row.id,
                 event_type=row.event_type,

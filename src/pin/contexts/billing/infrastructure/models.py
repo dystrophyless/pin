@@ -7,6 +7,7 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKeyConstraint,
@@ -32,6 +33,7 @@ class AccessAccountRecord(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    deletion_pending: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
 
 class TrialActivationRecord(Base):

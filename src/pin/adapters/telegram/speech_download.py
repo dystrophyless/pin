@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO, Protocol
+from uuid import UUID
 
 from pin.contexts.speech.domain.audio import MAX_AUDIO_BYTES, UnusableAudio
 from pin.contexts.speech.infrastructure.files import (
@@ -43,6 +44,7 @@ async def download_voice_file(
     *,
     file_id: str,
     files: PrivateAudioFiles,
+    owner_id: UUID | None = None,
 ) -> DownloadedAudio:
     """Resolve only Telegram's trusted file ID and enforce actual streamed bytes."""
     if not file_id or len(file_id) > 1024:
@@ -56,7 +58,7 @@ async def download_voice_file(
         if remote.file_size > MAX_AUDIO_BYTES:
             raise UnusableAudio("audio exceeds the 10 MB limit")
 
-    path, destination = files.create()
+    path, destination = files.create(owner_id=owner_id)
     writer = BoundedAudioWriter(destination)
     try:
         try:

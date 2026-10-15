@@ -5,12 +5,13 @@ from __future__ import annotations
 import hashlib
 import io
 import os
+import stat
 import tempfile
 from collections.abc import Buffer
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import BinaryIO
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from pin.contexts.speech.domain.audio import MAX_AUDIO_BYTES
 
@@ -34,16 +35,39 @@ class PrivateAudioFiles:
             directory = Path(tempfile.gettempdir()) / f"pin-speech-{identity}"
         self.directory = directory
 
-    def create(self) -> tuple[Path, BinaryIO]:
+    @staticmethod
+    def _owner_prefix(owner_id: UUID) -> str:
+        identity = str(owner_id).encode("utf-8")
+        return f"{_FILE_PREFIX}{hashlib.sha256(identity).hexdigest()[:16]}-"
+
+    def create(self, *, owner_id: UUID | None = None) -> tuple[Path, BinaryIO]:
         self.directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         if os.name != "nt":
             self.directory.chmod(0o700)
-        path = self.directory / f"{_FILE_PREFIX}{uuid4().hex}{_FILE_SUFFIX}"
+        prefix = _FILE_PREFIX if owner_id is None else self._owner_prefix(owner_id)
+        path = self.directory / f"{prefix}{uuid4().hex}{_FILE_SUFFIX}"
         return path, path.open("xb")
 
     def remove(self, path: Path) -> None:
         if path.parent == self.directory and path.name.startswith(_FILE_PREFIX):
             path.unlink(missing_ok=True)
+
+    def remove_owner(self, owner_id: UUID) -> int:
+        """Remove only regular generated audio files assigned to this owner."""
+        if not self.directory.exists():
+            return 0
+        prefix = self._owner_prefix(owner_id)
+        removed = 0
+        for path in self.directory.iterdir():
+            if not path.name.startswith(prefix) or path.suffix != _FILE_SUFFIX:
+                continue
+            try:
+                if stat.S_ISREG(path.lstat().st_mode):
+                    path.unlink()
+                    removed += 1
+            except FileNotFoundError:
+                continue
+        return removed
 
     def cleanup_crash_leftovers(self, *, now: datetime | None = None) -> int:
         """Delete only generated regular files older than the 24-hour crash bound."""
