@@ -108,6 +108,8 @@ Owner override recorded 2026-10-13: implementation reviewers are not required; f
 
 ### Active integration checkpoint
 
+- Corrective source5464eec distinguishes valid pretrial MISSING from DELETED, orders batch-owner lifecycle locks consistently before event locks, and permits only an exact static denial tied to a trusted post-deletion inbox/source job. Old notices and delayed pre-deletion requests remain suppressed. Root inspected raw JUnit: lifecycle20/20(23.136s), ordering2/2(6.411s), denial delivery1/1(10.822s), actual50-ownerp95=4.931s(1/1,no deadlock). Seven regression fixture DBs cleaned with protected names unchanged. Packet C:/Users/roman/AppData/Local/Temp/pin-issue23-deleted-denial-proof-a87f3c-20261015. Root independently passed Ruffsrc/tests/landing,mypy219,architecture,diffcheck. A new full frozen5464eec qualification is assigned; focused proof does not replace it or provider/host gates.
+
 - The02cc379 packet is finalized:436 archive files, tree eef3bb65629709ecec6173bbe645b035c435ffad, archiveSHA256 d7cd65419d1f4c59a1ddf1bfd458e6b9643f1829cf577ab1d8d8eb1b416c716f. Actual offline speech and all33-fixture cleanup/independent protected-DB audit passed. Overall stays FAIL527/541; 50-owner test deadlocked and produced no p95 value. Same retention executor owns correction, with MISSING explicitly distinguished from DELETED for legitimate pretrial onboarding.
 - Operations retention projection committed7905452 after native1/1 and actual CLI snapshot proof, with opaque ID caps and restore_status unavailable. Packet C:/Users/roman/AppData/Local/Temp/pin-issue22-retention-projection-a74c-20261015 includes exact fixture cleanup and protected DB checks. Whole22 remains blocked on broader gates.
 
