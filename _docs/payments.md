@@ -85,3 +85,6 @@ remain available; this task does not invent a legal financial-retention period.
 Before deployment, configure the real support destination, determine applicable
 financial-record retention with the operator, and qualify the actual provider
 account. No production invoice, charge, cancellation, or refund was issued.
+# Current external qualification blocker
+
+The owner confirmed that Test Server Stars top-up remains unavailable in the current setup. No actual Pin payment receipt, provider-confirmed cancellation or refund was qualified. This report does not establish universal Test Server unavailability. A real-money test requires separate explicit authorization; the local green qualification does not authorize it or close issue20.
