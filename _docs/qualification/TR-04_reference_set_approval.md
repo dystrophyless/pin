@@ -13,3 +13,7 @@ The earlier12-row small example file is separate and is not implicitly approved 
 ## Audio-source decision —2026-10-16
 
 The owner subsequently selected **“Реальные записи людей”** for the200voice examples (100RU/100EN). Use human-spoken original recordings, not local speech synthesis or a mixed synthetic set. No recordings have been supplied or collected by this decision. The [recording kit](recording_kit/README.md) derives the200voice scripts and an empty tracker from the approved immutable reference set. Participant count, acoustic sampling and collection/eligibility/handling protocol remain pending; no additional API spend or measured quality follows.
+
+## Current local-check scope override —2026-10-16
+
+The owner selected two voices per language (50phrases each), then narrowed the immediate check to a couple of owner-providedRU/ENexamples. For the current local phase, use oneRU and oneENclip, not volunteer collection or the200/400-item run. The approved library remains unchanged optional preparation; earlier voice-roster choices are not prerequisites for this smoke check. [Worksheet](TR-04_manual_smoke.md). Two examples do not support99%accuracy or a fullqualificationPASS.

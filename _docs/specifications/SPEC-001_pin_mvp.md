@@ -1,7 +1,7 @@
 # SPEC-001: Pin overall MVP
 
 Status: **approved**
-Version: 0.15
+Version: 0.16
 Created: 2026-10-13 (Asia/Qyzylorda)
 Owner: Pin product owner (the user)
 Requirements source: [PROJECT_BRAINSTORM.md](../PROJECT_BRAINSTORM.md)
@@ -28,6 +28,8 @@ Amendment v0.13, 2026-10-16: the owner confirmed MVP support for elapsed-from-no
 Amendment v0.14,2026-10-16: the owner approved the revised RU/EN reference scripts and expected temporal calendars after recurrence was added. This approves the selected reference set, not voice recordings, API spend or measured quality; section11 binds the exact artifact.
 
 Amendment v0.15,2026-10-16: the owner selected real human recordings for the200voice examples. This resolves audio source only; recordings, collection/acoustic protocol and execution remain pending.
+
+Amendment v0.16,2026-10-16: the owner narrowed the current local voice check to a couple of owner-provided Russian/English examples. Use oneRU and oneENclip for a manual smoke check; the larger prepared reference set is not a prerequisite for this local check. No99%accuracy result follows from two examples.
 
 ## 1. Purpose, authority, and evidence boundary
 
@@ -443,6 +445,12 @@ The [approval record](../qualification/TR-04_reference_set_approval.md) binds `T
 ### Human audio source — owner decision,2026-10-16
 
 The owner selected **real human recordings** for the100RU and100ENvoice inputs, rather than local speech synthesis or a mixed set. Use the already approved reference scripts; preserve original audio and stable IDs. This chooses the source, not actual recordings, participant/acoustic sampling, collection/eligibility/handling protocol or execution budget. The [recording kit](../qualification/recording_kit/README.md) contains only derived scripts and a blank tracker; no recordings or quality result exist.
+
+### Current local voice smoke — owner scope change,2026-10-16
+
+After selecting real recordings and a proposed two-voices-per-language plan, the owner asked to perform **only a couple of test examples from the owner in Russian and English**. The current local check is therefore oneowner-providedRU and oneowner-providedENaudio sample. Do not require200recordings, volunteers or a multi-speaker corpus before this check. Keep the approved400-slot reference set and recording kit as optional preparation; do not launch that large evaluation under this request.
+
+Record the original audio, actual localWhisper transcription and any actually executed downstream interpretation separately. Two examples provide manual smoke observations, not a99%accuracy/representativeness claim, fullTR-04qualification or host/cost suitability. Larger future qualification would need its own agreed protocol and authorization. Existing external-call budget limits are not silently reset. [Current smoke worksheet](../qualification/TR-04_manual_smoke.md).
 
 ### Receipt-anchored relative time — owner decision, 2026-10-16
 
