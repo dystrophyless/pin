@@ -108,6 +108,9 @@ Owner override recorded 2026-10-13: implementation reviewers are not required; f
 
 ### Active integration checkpoint
 
+- Local retention implementation committed at 2d9c65b plus whitespace02cc379. [Focused evidence](evidence/issue-23-retention-local.md): fresh native5/5, ledger/architecture10/10, mypy218 and whole-source/tests/landing Ruff passed; two feature fixtures were cleaned with exact-cluster receipts. Root assigned a new frozen full qualifier at explicit 02cc379; not yet a combined PASS. Output mascot artifacts are unrelated and left untracked.
+- A separate narrow local issue22 follow-up /root/operations_retention_projection now owns the read-only retention projection and operator composition, replacing only the obsolete deletion-unavailable placeholder with actual persisted counts/states. Hosted restore status remains unavailable; whole22/23 acceptance is not implied. Qualifier source stays frozen before this follow-up.
+
 - Startup/landing correction committed as 4e5f527. Root inspected the 37-case JUnit (zero failures/errors/skips, 56.857 seconds), safe-field/static-event diff and independently passed Ruff for landing/startup surfaces. Existing redaction negatives remain; raw exception messages are not logged. This focused correction does not retroactively change the frozen 1a1fdc7 FAIL. Retention remains uncommitted and needs its own native/race/restore proof before a new combined gate.
 - The 1a1fdc7 packet is now complete: actual cached offline RU/EN/silence passed, local 50-owner p95 2.597 seconds, migration/landing/32-fixture cleanup passed; overall remains FAIL due two startup assertions and five Ruff E501 findings. README and executor-receipt.json are retained in the packet. Protected historical/sandbox databases remain present.
 
