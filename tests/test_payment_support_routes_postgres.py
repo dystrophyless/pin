@@ -1,0 +1,300 @@
+from __future__ import annotations
+
+import os
+from collections.abc import Iterator
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any, cast
+from uuid import UUID, uuid4
+
+import pytest
+from alembic import command
+from alembic.config import Config
+from sqlalchemy import create_engine as create_sync_engine
+from sqlalchemy import select
+from sqlalchemy.engine import make_url
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from pin.adapters.telegram.application_worker import (
+    claim_application_job,
+    process_application_job,
+)
+from pin.adapters.telegram.ingress import (
+    PostgresTelegramOwnerResolver,
+    TelegramOwnerRecord,
+    persist_update,
+)
+from pin.contexts.billing.api import SqlAlchemyAccessUsageStore, StartTrial
+from pin.contexts.billing.domain.payments import TERMS_VERSION
+from pin.contexts.billing.infrastructure.models import (
+    AccessPeriodRecord,
+    PaymentOrderRecord,
+    PaymentReceiptRecord,
+    TermsAcceptanceRecord,
+)
+from pin.contexts.identity.domain.preferences import Preferences
+from pin.contexts.identity.infrastructure.store import SqlAlchemyIdentityStore
+from pin.persistence import run_local_async
+from pin.persistence.db import create_engine, create_session_factory
+from pin.platform.models import InboxUpdate, Job, OutboxEvent
+
+ROOT = Path(__file__).resolve().parents[1]
+DATABASE_PREFIX = "pin_issue20_support_"
+DATABASE_USER = "pin_test"
+DATABASE_PORT = 51017
+DATABASE_DIRECTORY = "C:/Users/roman/AppData/Local/Temp/pin-issue2-eeadfd1-20261013"
+PROTECTED_DATABASES = {
+    "pin_model_adapter_20261013",
+    "pin_issue20_sandbox_20261014_25eb0b51",
+    "pin_issue20_sandbox_20261014_33a6ed3b",
+}
+NOW = datetime(2026, 10, 15, 8, tzinfo=UTC)
+
+
+def _support_database_url() -> str:
+    value = os.getenv("PIN_TEST_ISSUE20_SUPPORT_DATABASE_URL")
+    if not value:
+        pytest.skip(
+            "set PIN_TEST_ISSUE20_SUPPORT_DATABASE_URL to an owned issue20 support database"
+        )
+    url = make_url(value)
+    if url.host != "127.0.0.1" or url.port != DATABASE_PORT:
+        pytest.fail("Issue20 support proof requires the designated local PostgreSQL cluster")
+    database = url.database or ""
+    suffix = database.removeprefix(DATABASE_PREFIX).replace("_", "")
+    if not database.startswith(DATABASE_PREFIX) or not suffix.isalnum():
+        pytest.fail("Issue20 support proof requires its own pin_issue20_support_ database")
+    if database in PROTECTED_DATABASES:
+        pytest.fail("Issue20 support proof cannot use a protected database")
+
+    engine = create_sync_engine(value)
+    try:
+        with engine.connect() as connection:
+            identity = (
+                str(connection.exec_driver_sql("select current_database()").scalar_one()),
+                str(connection.exec_driver_sql("select current_user").scalar_one()),
+                int(connection.exec_driver_sql("show port").scalar_one()),
+                str(connection.exec_driver_sql("show data_directory").scalar_one()),
+                str(connection.exec_driver_sql("show server_version").scalar_one()),
+                int(connection.exec_driver_sql("show server_version_num").scalar_one()),
+            )
+    finally:
+        engine.dispose()
+    name, user, port, directory, version, version_num = identity
+    if (name, user, port, version, version_num) != (
+        database,
+        DATABASE_USER,
+        DATABASE_PORT,
+        "18.6",
+        180006,
+    ):
+        pytest.fail("Issue20 support PostgreSQL does not match the assigned database identity")
+    if directory.replace("\\", "/").rstrip("/").casefold() != DATABASE_DIRECTORY.casefold():
+        pytest.fail("Issue20 support proof is outside the assigned disposable cluster")
+    return value
+
+
+@pytest.fixture(scope="session")
+def support_sessions() -> Iterator[async_sessionmaker[AsyncSession]]:
+    database_url = _support_database_url()
+    config = Config(ROOT / "alembic.ini")
+    config.set_main_option("sqlalchemy.url", database_url.replace("%", "%%"))
+    command.upgrade(config, "head")
+    engine = create_engine(database_url)
+    yield create_session_factory(engine)
+    # The external fixture manifest owns database cleanup; this test only closes its engine.
+    run_local_async(engine.dispose)
+
+
+def test_bilingual_terms_acceptance_and_payment_support_are_persisted_routes(
+    support_sessions: async_sessionmaker[AsyncSession],
+) -> None:
+    ru_owner, en_owner = uuid4(), uuid4()
+    ru_user = 741_000_000 + ru_owner.int % 10_000_000
+    en_user = 751_000_000 + en_owner.int % 10_000_000
+    bot_id = 876_543 + ru_owner.int % 100_000
+    worker_id = f"issue20-support-{uuid4().hex[:12]}"
+
+    async def seed_owner(owner_id: UUID, telegram_user_id: int, language: str) -> None:
+        async with support_sessions() as session, session.begin():
+            session.add(
+                TelegramOwnerRecord(
+                    bot_id=bot_id, telegram_user_id=telegram_user_id, owner_id=owner_id
+                )
+            )
+            await SqlAlchemyAccessUsageStore(session).activate_trial(
+                StartTrial(owner_id, telegram_user_id, NOW)
+            )
+            saved = await SqlAlchemyIdentityStore(session).save_preferences(
+                owner_id=owner_id,
+                expected_version=None,
+                preferences=Preferences(language=language, home_zone="UTC"),
+            )
+            assert saved is not None
+
+    async def command_route(
+        update_id: int, owner_id: UUID, user_id: int, command_text: str
+    ) -> dict[str, Any]:
+        async with support_sessions() as session, session.begin():
+            receipt = await persist_update(
+                session,
+                bot_id=bot_id,
+                payload={
+                    "update_id": update_id,
+                    "message": {
+                        "message_id": update_id,
+                        "date": int(NOW.timestamp()),
+                        "chat": {"id": user_id, "type": "private"},
+                        "from": {"id": user_id, "is_bot": False},
+                        "text": command_text,
+                    },
+                },
+                owner_resolver=PostgresTelegramOwnerResolver(),
+            )
+            assert receipt is not None and receipt.accepted
+            mapping = await session.get(TelegramOwnerRecord, (bot_id, user_id))
+            assert mapping is not None and mapping.owner_id == owner_id
+            inbox = await session.scalar(
+                select(InboxUpdate).where(
+                    InboxUpdate.bot_id == bot_id, InboxUpdate.update_id == update_id
+                )
+            )
+            assert inbox is not None and inbox.owner_id == owner_id
+
+        claim = await claim_application_job(support_sessions, worker_id=worker_id)
+        assert claim is not None and claim.owner_id == owner_id
+        await process_application_job(
+            support_sessions,
+            claim,
+            now=NOW,
+            assistant=None,
+            payment_support_contact=None,
+        )
+        async with support_sessions() as session:
+            saved_job = await session.get(Job, claim.job_id)
+            assert saved_job is not None and saved_job.status == "succeeded"
+            replies = list(
+                (
+                    await session.scalars(
+                        select(OutboxEvent).where(
+                            OutboxEvent.event_type == "telegram.reply.requested",
+                            OutboxEvent.causation_id == claim.job_id,
+                            OutboxEvent.owner_id == owner_id,
+                        )
+                    )
+                ).all()
+            )
+            assert len(replies) == 1
+            envelope = replies[0].payload
+            assert envelope["event_type"] == "telegram.reply.requested"
+            assert envelope["owner_id"] == str(owner_id)
+            reply_payload = envelope["payload"]
+            assert reply_payload["chat_id"] == user_id
+            assert reply_payload["source_job_id"] == str(claim.job_id)
+            return cast(dict[str, Any], reply_payload)
+
+    async def scenario() -> None:
+        await seed_owner(ru_owner, ru_user, "ru")
+        await seed_owner(en_owner, en_user, "en")
+
+        foreign_acceptance = await command_route(1, en_owner, en_user, "/acceptterms")
+        assert "read the subscription terms first" in foreign_acceptance["plain_text"]
+        async with support_sessions() as session:
+            assert await session.get(TermsAcceptanceRecord, (en_owner, TERMS_VERSION)) is None
+
+        ru_terms = await command_route(2, ru_owner, ru_user, "/terms")
+        for required in (
+            "250 Telegram Stars за 30 дней",
+            "автоматически продлевается",
+            "/cancel",
+            "1 000 обращений к ИИ",
+            "60 минут обработки голоса",
+            "без переноса остатка",
+            "/paysupport",
+            "/acceptterms",
+        ):
+            assert required in ru_terms["plain_text"]
+        async with support_sessions() as session:
+            ru_terms_row = await session.get(TermsAcceptanceRecord, (ru_owner, TERMS_VERSION))
+            assert ru_terms_row is not None and ru_terms_row.viewed_at == NOW
+            assert ru_terms_row.accepted_at is None
+
+        denied_order = await command_route(3, ru_owner, ru_user, "/buy")
+        assert "/terms" in denied_order["plain_text"]
+        async with support_sessions() as session:
+            assert not (
+                await session.scalars(
+                    select(PaymentOrderRecord).where(PaymentOrderRecord.owner_id == ru_owner)
+                )
+            ).all()
+            assert not (
+                await session.scalars(
+                    select(AccessPeriodRecord).where(
+                        AccessPeriodRecord.owner_id == ru_owner,
+                        AccessPeriodRecord.policy_kind == "paid",
+                    )
+                )
+            ).all()
+            assert not (
+                await session.scalars(
+                    select(PaymentReceiptRecord).where(PaymentReceiptRecord.owner_id == ru_owner)
+                )
+            ).all()
+
+        en_terms = await command_route(4, en_owner, en_user, "/terms")
+        for required in (
+            "250 Telegram Stars for each 30-day period",
+            "renews automatically",
+            "/cancel",
+            "1,000 AI turns",
+            "60 minutes of voice processing",
+            "no rollover",
+            "/paysupport",
+            "/acceptterms",
+        ):
+            assert required in en_terms["plain_text"]
+
+        en_accepted = await command_route(5, en_owner, en_user, "/acceptterms")
+        assert "Terms accepted" in en_accepted["plain_text"]
+        async with support_sessions() as session:
+            accepted_terms = await session.get(TermsAcceptanceRecord, (en_owner, TERMS_VERSION))
+            assert accepted_terms is not None
+            assert accepted_terms.viewed_at == NOW and accepted_terms.accepted_at == NOW
+            ru_terms_row = await session.get(TermsAcceptanceRecord, (ru_owner, TERMS_VERSION))
+            assert ru_terms_row is not None and ru_terms_row.accepted_at is None
+
+        pending_order = await command_route(6, en_owner, en_user, "/buy")
+        assert "no payment is confirmed yet" in pending_order["plain_text"]
+        async with support_sessions() as session:
+            orders = list(
+                (
+                    await session.scalars(
+                        select(PaymentOrderRecord).where(PaymentOrderRecord.owner_id == en_owner)
+                    )
+                ).all()
+            )
+            assert len(orders) == 1 and orders[0].invoice_status == "queued"
+            assert not (
+                await session.scalars(
+                    select(PaymentReceiptRecord).where(PaymentReceiptRecord.owner_id == en_owner)
+                )
+            ).all()
+            assert not (
+                await session.scalars(
+                    select(AccessPeriodRecord).where(
+                        AccessPeriodRecord.owner_id == en_owner,
+                        AccessPeriodRecord.policy_kind == "paid",
+                    )
+                )
+            ).all()
+
+        ru_support = await command_route(7, ru_owner, ru_user, "/paysupport")
+        assert "укажите Telegram charge ID" in ru_support["plain_text"]
+        assert "Возвраты рассматриваются вручную" in ru_support["plain_text"]
+        assert "банковские данные" in ru_support["plain_text"]
+        en_support = await command_route(8, en_owner, en_user, "/paysupport")
+        assert "Telegram charge ID" in en_support["plain_text"]
+        assert "reviewed manually" in en_support["plain_text"]
+        assert "Do not send bank details" in en_support["plain_text"]
+
+    run_local_async(scenario)
