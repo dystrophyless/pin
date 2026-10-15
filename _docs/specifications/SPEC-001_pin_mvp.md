@@ -1,7 +1,7 @@
 # SPEC-001: Pin overall MVP
 
 Status: **approved**
-Version: 0.13
+Version: 0.14
 Created: 2026-10-13 (Asia/Qyzylorda)
 Owner: Pin product owner (the user)
 Requirements source: [PROJECT_BRAINSTORM.md](../PROJECT_BRAINSTORM.md)
@@ -24,6 +24,8 @@ Amendment v0.11, 2026-10-16: the owner selected 100 unambiguous requests per lan
 Amendment v0.12, 2026-10-16: the owner selected end-to-end request scoring: failure to produce a plan for an unambiguous request, including processing errors, counts as an unsuccessful example against the same 99% target.
 
 Amendment v0.13, 2026-10-16: the owner confirmed MVP support for elapsed-from-now requests such as “remind me in two hours,” anchored to when the bot received that message, including delayed processing. This is distinct from event-relative reminder offsets.
+
+Amendment v0.14,2026-10-16: the owner approved the revised RU/EN reference scripts and expected temporal calendars after recurrence was added. This approves the selected reference set, not voice recordings, API spend or measured quality; section11 binds the exact artifact.
 
 ## 1. Purpose, authority, and evidence boundary
 
@@ -429,6 +431,12 @@ Further owner decision, 2026-10-16: when the request already makes the date and 
 Further owner decision, 2026-10-16: score the complete request-processing chain. If an unambiguous request produces no proposed plan, including when processing returns an error, the example is unsuccessful against the **same 99% target**; it is not excluded or counted only in a separate reliability metric. Record the failure reason separately for diagnosis. Together with the confirmed temporal-error and unnecessary-clarification rules, count successful/unsuccessful **requests**, not individual mismatching fields: each group of 100 must have at least 99 successful requests and at most one unsuccessful request before manual correction. Necessary clarification cases remain a separate policy check, not part of the approved 400 unambiguous requests.
 
 Subsequent explicit owner decision, 2026-10-16: the future quality evaluation uses **100 unambiguous requests in each of RU text, RU voice, EN text and EN voice — 400 requests total**. Each group is evaluated independently against its approved99% target. This approves the sample counts only, not the actual prompts/recordings, corpus representativeness, execution budget or measurement results. The earlier illustrative100-request question alone did not approve those counts; this later answer does. Actual corpus/recordings and representativeness, reproducible reference clocks/zones, ambiguity-test coverage, representative workload/bursts and cold/warm runs still need an explicit evaluation protocol and owner suitability approval. No quality, cost, capacity or whole TR-04 PASS is implied. Additional model spend and actual-host/deployment work remain outside the current local-only authorization.
+
+### Text/reference set approval — owner decision, 2026-10-16
+
+After requesting recurring-task examples, the owner explicitly approved the revised **texts and expected dates**. The selected reference composition contains100distinct RU and100distinct EN scripts paired across the four100-slot groups, including10elapsed-from-receipt and10finite-recurring scripts per language. The approved temporal references include all80RU/ENrecurrence occurrences. This subsequent approval resolves the script/reference selection left open by the earlier sample-count decision.
+
+The [approval record](../qualification/TR-04_reference_set_approval.md) binds `TR-04_evaluation_candidates.jsonl` at revision`de28299`, Git-blob SHA-256`8e825856284f6e52aadcf63edd689122ae27e85df78053724f7c54b3d2bebd40`. Preserve the approved inputs and expected calendars. Real audio is absent; its source/eligibility and acoustic sampling, workload/bursts/cold-warm measurement and actual host/provider evidence remain pending. No additional API spend, recording, deployment, measured accuracy or suitability approval follows. Existing99% end-to-end scoring is unchanged.
 
 ### Receipt-anchored relative time — owner decision, 2026-10-16
 
