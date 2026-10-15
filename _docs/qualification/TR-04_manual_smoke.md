@@ -1,13 +1,13 @@
 # Current local RU/EN voice smoke
 
-Owner scope:2026-10-16, SPEC-001v0.16. One original audio sample from the owner inRU and one inEN; no200-recording collection or400-request run. The approved reference library and recording kit are optional preparation only.
+Owner scope:2026-10-16, SPEC-001v0.17. One original audio sample from the owner inRU and one inEN; no200-recording collection or400-request run. The approved reference library and recording kit are optional preparation only.
 
-Status: **TWO ORIGINAL FILES RECEIVED; DECODING PASSED; ASR BLOCKED BY MODEL-LOAD MEMORY FAILURE.** Language-to-file mapping is not yet established. No transcript, model proposal, accuracy score or live-user plan exists.
+Status: **SELECTED-LANGUAGE RETRY COMPLETED: BOTH ORIGINALS TRANSCRIBED.** The earlier automatic-English failure remains recorded below. No downstream model proposal or saved plan exists.
 
 | Case | Source | Audio/hash | Local speech result | Downstream interpretation |
 |---|---|---|---|---|
-| OWNER-RU-01 | Owner, Russian | Mapping pending transcription | Model load failed; not transcribed | Not run |
-| OWNER-EN-01 | Owner, English | Mapping pending transcription | Model load failed; not transcribed | Not run |
+| OWNER-RU-01 | Owner, Russian | Original ending 02-02-50 | Selected `ru`; «Завтра напомни, сходить мне в аптеку.» (4.865s) | Not run |
+| OWNER-EN-01 | Owner, English | Original ending 02-02-46 | Selected `en`; “Remind me to go to the drugstore tomorrow, 2pm” (5.091s) | Not run |
 
 Use one clear task with a date/time in each recording. The owner may read the same request in both languages. Preserve the actual original audio and stable per-sample receipt/reference metadata; explicitly record the test timezone and reference calendar for relative phrases. Do not infer a production home zone from the language. Declared test context is not proof of Telegram upstream arrival time.
 
@@ -28,3 +28,14 @@ Both originals remain outside Git in the owner's Downloads directory. Existing `
 Cached `WhisperModel('small', device='cpu', compute_type='int8', num_workers=1, cpu_threads=2, local_files_only=True)` failed during model construction with `RuntimeError: mkl_malloc: failed to allocate memory`. Offline environment flags were enabled; no download or provider request occurred. At the subsequent host observation Windows reported 592772 KiB free physical memory and 1800236 KiB free virtual memory. No transcription was attempted after construction failed. The independent decoding check then passed for both originals.
 
 Next step: retry the same cached model after memory becomes available. Do not substitute another model or mark either language successful. Relative-time reference context remains to be recorded if the actual transcripts require it. This attempt does not establish Telegram delivery behavior or end-to-end planning quality.
+
+
+## Retry after owner freed memory
+
+The same cached small CPU/INT8 model loaded successfully in 2.571 seconds. No model download, paid API call or saved plan was involved.
+
+- Russian (5.02s original): automatic language `ru`, confidence 0.7589. Transcript: «Завтра напомни, сходить мне в аптеку.» Recognition took 7.095s in the diagnostic rerun. This is observed transcription, not an independently scored verbatim-reference result.
+- English (12.76s original): automatic language `sl`, confidence 0.1884. Raw transcript: «Remeš mi, da v državstvu tomorom 2 p.m.» Production validation rejected this unsupported language. Diagnostic rerun took 8.019s. The automatic path failed; this observation must not be erased by the next diagnostic.
+- Explicit-English diagnostic on that same original, with all other decode options preserved: “Remind me to go to the drugstore tomorrow, 2pm”. Recognition took 3.712s. This suggests language detection is the failure boundary; it is not proof that automatic inference or the product route is fixed.
+
+At the time of the diagnostic above, no product source had changed and selected-language recognition was only a proposed correction. The owner then chose to use the persisted RU/EN profile language for voice recognition. The changed production adapter was run against both same original files with the selected language and cached small CPU/INT8 model (`cpu_threads=1`); both transcripts are shown in the current result table. This confirms these two local transcriptions only. No plan interpretation/date resolution, reminder, or full quality qualification was run. The earlier automatic `sl` detection and rejection remains a failed result and is not replaced by this selected-language diagnostic.

@@ -249,7 +249,7 @@ class _FixedRecognizer:
         self.text = text
         self.calls = 0
 
-    async def transcribe(self, audio: DecodedAudio) -> SpeechRecognition:
+    async def transcribe(self, audio: DecodedAudio, *, language: str) -> SpeechRecognition:
         self.calls += 1
         return SpeechRecognition(self.text, "en", audio.facts)
 
@@ -291,9 +291,7 @@ def _terminated_speech_worker(
             sessions,
             claim,
             bot=(
-                _ProcessBarrierBot(audio, reached)
-                if boundary == "download"
-                else _VoiceBot(audio)
+                _ProcessBarrierBot(audio, reached) if boundary == "download" else _VoiceBot(audio)
             ),
             assistant=_assistant(sessions, transport, datetime.now(UTC)),
             now=datetime.now(UTC),
@@ -465,6 +463,15 @@ def test_voice_worker_runs_actual_local_whisper_and_continues_original_capture(
             owner_id, claim, user_id, inbox_id, sequence = await _seed_voice_job(
                 sessions, now=now, voice_seconds=900, language=language
             )
+            recognizer_languages: list[str] = []
+
+            class RecordingRecognizer:
+                async def transcribe(
+                    self, audio: DecodedAudio, *, language: str
+                ) -> SpeechRecognition:
+                    recognizer_languages.append(language)
+                    return await local_whisper_recognizer.transcribe(audio, language=language)
+
             async with sessions() as session:
                 queued_text = await session.scalar(
                     select(Job).where(
@@ -487,8 +494,9 @@ def test_voice_worker_runs_actual_local_whisper_and_continues_original_capture(
                 assistant=_assistant(sessions, transport, now),
                 now=now,
                 files=PrivateAudioFiles(tmp_path / "private-speech"),
-                recognizer=local_whisper_recognizer,
+                recognizer=RecordingRecognizer(),
             )
+            assert recognizer_languages == [language]
             assert bot.get_file_calls == bot.download_calls == 1
             assert transport.calls == 1
             async with sessions() as session:
@@ -529,10 +537,7 @@ def test_voice_worker_runs_actual_local_whisper_and_continues_original_capture(
                 assert capture_input is not None and capture_input.state == "complete"
                 assert capture_input.sequence == 1
                 assert len(replies) == 3  # queued, transcribing, capture clarification
-                assert any(
-                    reply in event.payload["payload"]["plain_text"]
-                    for event in replies
-                )
+                assert any(reply in event.payload["payload"]["plain_text"] for event in replies)
                 assert transport.last_payload is not None
                 assert expected_transcript.casefold() in str(transport.last_payload).casefold()
                 assert plans is None
@@ -568,7 +573,7 @@ def test_actual_voice_capture_clarification_text_preview_and_confirmation_saves_
         engine = create_engine(speech_worker_database)
         sessions = create_session_factory(engine)
         now = datetime.now(UTC)
-        start_date = (now.astimezone(ZoneInfo("Asia/Almaty")).date() + timedelta(days=2))
+        start_date = now.astimezone(ZoneInfo("Asia/Almaty")).date() + timedelta(days=2)
         local_start = f"{start_date.isoformat()}T15:00:00"
         local_end = f"{start_date.isoformat()}T16:00:00"
         transport = _ReplySequenceTransport(
@@ -604,14 +609,12 @@ def test_actual_voice_capture_clarification_text_preview_and_confirmation_saves_
         bot = _VoiceBot(audio)
         files = PrivateAudioFiles(tmp_path / "voice-capture-private")
         try:
-            owner_id, voice_claim, user_id, voice_inbox_id, voice_sequence = (
-                await _seed_voice_job(
-                    sessions,
-                    now=now,
-                    voice_seconds=900,
-                    add_later_text=False,
-                    language="en",
-                )
+            owner_id, voice_claim, user_id, voice_inbox_id, voice_sequence = await _seed_voice_job(
+                sessions,
+                now=now,
+                voice_seconds=900,
+                add_later_text=False,
+                language="en",
             )
             async with sessions() as session:
                 voice_inbox = await session.get(InboxUpdate, voice_inbox_id)
@@ -932,7 +935,9 @@ def test_failed_local_recognition_refunds_hold_and_keeps_provider_unused(
             )
 
             class NoSpeechRecognizer:
-                async def transcribe(self, _audio: DecodedAudio) -> SpeechRecognition:
+                async def transcribe(
+                    self, _audio: DecodedAudio, *, language: str
+                ) -> SpeechRecognition:
                     raise UnusableAudio("no supported speech was recognized")
 
             await process_speech_job(
@@ -964,6 +969,56 @@ def test_failed_local_recognition_refunds_hold_and_keeps_provider_unused(
                 assert job is not None and job.status == "succeeded"
                 assert reservation is not None and reservation.state == "refunded"
                 assert reservation.settled_ai_turns == reservation.settled_voice_seconds == 0
+        finally:
+            await engine.dispose()
+
+    run_local_async(scenario)
+
+
+def test_missing_profile_language_fails_closed_before_recognition(
+    speech_worker_database: str, tmp_path: Path
+) -> None:
+    async def scenario() -> None:
+        engine = create_engine(speech_worker_database)
+        sessions = create_session_factory(engine)
+        now = datetime.now(UTC)
+        audio = (ROOT / "tests" / "fixtures" / "speech" / "en.wav").read_bytes()
+        bot = _VoiceBot(audio)
+        recognizer = _FixedRecognizer("Take a break tomorrow.")
+        try:
+            owner_id, claim, _, inbox_id, _ = await _seed_voice_job(
+                sessions, now=now, voice_seconds=900, add_later_text=False, language="en"
+            )
+            async with sessions() as session, session.begin():
+                preferences = await session.get(PreferencesRecord, owner_id)
+                assert preferences is not None
+                await session.delete(preferences)
+
+            await process_speech_job(
+                sessions,
+                claim,
+                bot=bot,
+                assistant=_assistant(sessions, _Transport(), now),
+                now=now,
+                files=PrivateAudioFiles(tmp_path / "missing-language-private"),
+                recognizer=recognizer,
+            )
+
+            assert recognizer.calls == 0
+            async with sessions() as session:
+                speech = await session.get(SpeechRequestRecord, claim.job_id)
+                job = await session.get(Job, claim.job_id)
+                reservation = await session.scalar(
+                    select(UsageReservationRecord).where(
+                        UsageReservationRecord.owner_id == owner_id,
+                        UsageReservationRecord.request_id == f"telegram-inbox:{inbox_id}",
+                    )
+                )
+                assert speech is not None and speech.failure_code == "speech_language_unavailable"
+                assert job is not None and job.status == "succeeded"
+                assert reservation is not None and reservation.state == "refunded"
+                assert reservation.settled_ai_turns == reservation.settled_voice_seconds == 0
+            assert list((tmp_path / "missing-language-private").glob("audio-*.bin")) == []
         finally:
             await engine.dispose()
 
@@ -1011,9 +1066,7 @@ def test_expired_reclaimed_worker_cannot_publish_after_audio_stage(
             )
             from pin.adapters.telegram import speech_worker
 
-            monkeypatch.setattr(
-                speech_worker, "LEASE_RENEW_INTERVAL", timedelta(hours=1)
-            )
+            monkeypatch.setattr(speech_worker, "LEASE_RENEW_INTERVAL", timedelta(hours=1))
             real_decoder = PyAVAudioDecoder()
 
             class PausedDecoder:
@@ -1025,7 +1078,9 @@ def test_expired_reclaimed_worker_cannot_publish_after_audio_stage(
                     return result
 
             class PausedRecognizer:
-                async def transcribe(self, decoded: DecodedAudio) -> SpeechRecognition:
+                async def transcribe(
+                    self, decoded: DecodedAudio, *, language: str
+                ) -> SpeechRecognition:
                     if pause_at == "inference":
                         entered.set()
                         await release.wait()
@@ -1105,7 +1160,9 @@ def test_deleted_account_during_inference_discards_transcript_and_refunds(
             )
 
             class PausedRecognizer:
-                async def transcribe(self, decoded: DecodedAudio) -> SpeechRecognition:
+                async def transcribe(
+                    self, decoded: DecodedAudio, *, language: str
+                ) -> SpeechRecognition:
                     entered.set()
                     await release.wait()
                     return SpeechRecognition("Add a reminder tomorrow.", "en", decoded.facts)
@@ -1188,7 +1245,9 @@ def test_durable_transcript_recovers_without_second_telegram_download(
             monkeypatch.setattr(speech_worker, "_continue_capture", crash_before_continuation)
 
             class FixedRecognizer:
-                async def transcribe(self, decoded: DecodedAudio) -> SpeechRecognition:
+                async def transcribe(
+                    self, decoded: DecodedAudio, *, language: str
+                ) -> SpeechRecognition:
                     return SpeechRecognition("Add a reminder for tomorrow.", "en", decoded.facts)
 
             with pytest.raises(RuntimeError, match="simulated crash"):
@@ -1209,7 +1268,9 @@ def test_durable_transcript_recovers_without_second_telegram_download(
             monkeypatch.undo()
 
             class UnexpectedRecognizer:
-                async def transcribe(self, _decoded: DecodedAudio) -> SpeechRecognition:
+                async def transcribe(
+                    self, _decoded: DecodedAudio, *, language: str
+                ) -> SpeechRecognition:
                     raise AssertionError("recovery must reuse the durable transcript")
 
             await process_speech_job(
@@ -1412,9 +1473,7 @@ def test_spawned_worker_death_reclaims_original_voice_job_without_duplicate_work
             )
             async with sessions() as session, session.begin():
                 await session.execute(
-                    update(Job)
-                    .where(Job.id == claim.job_id)
-                    .values(priority=2_147_483_647)
+                    update(Job).where(Job.id == claim.job_id).values(priority=2_147_483_647)
                 )
 
             process = context.Process(
@@ -1603,9 +1662,7 @@ def test_spawned_worker_death_after_final_continuation_commit_keeps_one_result(
             )
             async with sessions() as session, session.begin():
                 await session.execute(
-                    update(Job)
-                    .where(Job.id == claim.job_id)
-                    .values(priority=2_147_483_647)
+                    update(Job).where(Job.id == claim.job_id).values(priority=2_147_483_647)
                 )
             process = context.Process(
                 target=_terminated_speech_worker,
@@ -1671,5 +1728,3 @@ def test_spawned_worker_death_after_final_continuation_commit_keeps_one_result(
             await engine.dispose()
 
     run_local_async(scenario)
-
-

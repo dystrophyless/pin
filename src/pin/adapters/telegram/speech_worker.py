@@ -253,9 +253,9 @@ async def process_speech_job(
                 )
                 downloaded_path = downloaded.path
                 async with sessions() as session, session.begin():
-                    lifecycle = await SqlAlchemyAccessUsageStore(
-                        session
-                    ).lock_account_lifecycle(claim.owner_id)
+                    lifecycle = await SqlAlchemyAccessUsageStore(session).lock_account_lifecycle(
+                        claim.owner_id
+                    )
                     if lifecycle is not AccountLifecycle.PRESENT:
                         private_files.remove(downloaded.path)
                         downloaded_path = None
@@ -319,14 +319,18 @@ async def process_speech_job(
                         at=datetime.now(UTC),
                         claim=claim,
                     )
-                    await _queue_status(
-                        uow.session,
-                        claim,
-                        chat_id=telegram_user_id,
-                        phase="processing",
-                        language=await _language(uow.session, claim.owner_id),
-                        now=datetime.now(UTC),
+                    speech_language = await _selected_speech_language(
+                        uow.session, claim.owner_id
                     )
+                    if speech_language is not None:
+                        await _queue_status(
+                            uow.session,
+                            claim,
+                            chat_id=telegram_user_id,
+                            phase="processing",
+                            language=speech_language,
+                            now=datetime.now(UTC),
+                        )
             except QuotaExceeded:
                 await _finish_audio_failure(
                     sessions,
@@ -354,8 +358,22 @@ async def process_speech_job(
                 )
                 return
 
+            if speech_language is None:
+                await _finish_audio_failure(
+                    sessions,
+                    claim,
+                    inbox=inbox,
+                    chat_id=telegram_user_id,
+                    request_key=request_key,
+                    reason="speech_language_unavailable",
+                    allowance=allowance,
+                    speech_store=speech_store,
+                    now=datetime.now(UTC),
+                )
+                return
+
             try:
-                recognition = await speech_recognizer.transcribe(decoded)
+                recognition = await speech_recognizer.transcribe(decoded, language=speech_language)
             except UnusableAudio:
                 await _finish_audio_failure(
                     sessions,
@@ -487,13 +505,13 @@ class _LazyWhisperRecognizer:
         self._recognizer: SpeechRecognizer | None = None
         self._load_lock = asyncio.Lock()
 
-    async def transcribe(self, audio: DecodedAudio) -> SpeechRecognition:
+    async def transcribe(self, audio: DecodedAudio, *, language: str) -> SpeechRecognition:
         if self._recognizer is None:
             async with self._load_lock:
                 if self._recognizer is None:
                     backend = await asyncio.to_thread(load_speech_model, cpu_threads=1)
                     self._recognizer = FasterWhisperSmall(backend)
-        return await self._recognizer.transcribe(audio)
+        return await self._recognizer.transcribe(audio, language=language)
 
 
 async def _load_private_voice(
@@ -714,9 +732,7 @@ async def _store_authorized_transcript(
             and reservation.voice_seconds == recognition.audio.billable_seconds
         )
         if can_publish:
-            await speech_store.store_transcript(
-                uow.session, claim, recognition=recognition, at=at
-            )
+            await speech_store.store_transcript(uow.session, claim, recognition=recognition, at=at)
     return can_publish
 
 
@@ -890,6 +906,17 @@ async def _language(session: AsyncSession, owner_id: UUID | None) -> str:
         return "ru"
     preferences = await SqlAlchemyIdentityStore(session).get_preferences(owner_id)
     return preferences.language if preferences and preferences.language in {"ru", "en"} else "ru"
+
+
+async def _selected_speech_language(
+    session: AsyncSession, owner_id: UUID | None
+) -> str | None:
+    if owner_id is None:
+        return None
+    preferences = await SqlAlchemyIdentityStore(session).get_preferences(owner_id)
+    if preferences is None or preferences.language not in {"ru", "en"}:
+        return None
+    return preferences.language
 
 
 @asynccontextmanager
