@@ -9,6 +9,10 @@ from pin.contexts.retention.domain.deletion import (
     DeletionRejected,
     DeletionTombstone,
 )
+from pin.contexts.retention.infrastructure.operations import (
+    OperationalDeletionProgress,
+    read_operational_progress,
+)
 
 __all__ = [
     "DeletionPreview",
@@ -16,4 +20,6 @@ __all__ = [
     "DeletionTombstone",
     "ExpiredTextPurger",
     "OwnerPurger",
+    "OperationalDeletionProgress",
+    "read_operational_progress",
 ]

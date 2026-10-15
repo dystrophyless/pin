@@ -17,7 +17,10 @@ details.
 The snapshot groups jobs by application, speech, and delivery lane; reports the oldest due pending
 job age; and lists at most 25 dead-job and expired-lease IDs. It also reports process heartbeats and
 context-owned summaries for delivery outcomes, provider usage, speech failures, payment orders,
-refunds, and expired usage reservations. These projections omit user IDs, Telegram destinations,
+refunds, expired usage reservations, and retention deletion state counts. Retention reports the
+oldest confirmed deletion awaiting export, its opaque request ID, and the count plus up to 25 opaque
+event IDs for tombstones that have not been exported. The restore status remains `unavailable`: this
+snapshot does not inspect backup or host restore progress. These projections omit owner IDs, Telegram destinations,
 job payloads, task text, transcripts, prompts, provider charge IDs, credentials, and free-form error
 messages. Correlate a case with the reported opaque job, attempt, call, reservation, or order ID.
 
@@ -51,7 +54,7 @@ The operator command does not send alerts or contact anyone.
 ## Limits of this local foundation
 
 This command does not configure host alerts, inspect a remote provider, or prove service behavior
-on a deployed host. `restore_and_deletion_progress` is explicitly reported as unavailable because
-the retention/deletion consumer and the post-restore deletion replay contract are not implemented
-in this local slice. Restore, deletion, alert delivery, provider reconciliation, and actual-host
-checks remain required before issue 22 can be accepted as a whole.
+on a deployed host. Deletion progress reflects persisted request and tombstone rows only; it does
+not prove that an artifact exists, that owner data was purged, or that a restore replay succeeded.
+Restore, alert delivery, provider reconciliation, and actual-host checks remain required before
+issue 22 can be accepted as a whole.
