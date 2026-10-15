@@ -2,7 +2,7 @@ const copy = {
   ru: {
     title: 'Pin — планы, которые помнят о вас', description: 'Pin помогает спокойно планировать дела в Telegram.', skipMain: 'Перейти к содержимому', brandLabel: 'Pin — главная', featuresLabel: 'Возможности Pin',
     previewNote: 'Локальный просмотр. Доступность предложения и Telegram-провайдер ещё не подтверждены.',
-    navHow: 'Как это работает', navPlan: 'Тарифы', privacy: 'Конфиденциальность', terms: 'Условия', support: 'Поддержка', languageLabel: 'Язык',
+    navHow: 'Как это работает', navPlan: 'Тарифы', privacy: 'Конфиденциальность', terms: 'Условия', support: 'Поддержка в боте: /support · платежи: /paysupport', languageLabel: 'Язык',
     openTelegram: 'Открыть Telegram', eyebrow: 'Ваш спокойный план на каждый день', headline: 'Меньше держать в голове.<br><em>Больше успевать.</em>',
     intro: 'Расскажите Pin о задаче текстом или голосом. Он уточнит детали, покажет план и напомнит вовремя — прямо в Telegram.',
     seeHow: 'Посмотреть, как это работает', private: 'Личные чаты. Ваши планы остаются под вашим контролем.', chatIllustration: 'Пример диалога с Pin', assistant: 'Ваш помощник',
@@ -22,7 +22,7 @@ const copy = {
     expiryNote: 'Перед окончанием пробного периода Pin предупредит вас. После окончания пробного периода или оплаченного доступа новые планы, AI и голосовые сообщения приостанавливаются; напоминания тоже ставятся на паузу. Просматривать планы, отмечать их выполненными и отменять их можно.',
     reminderNote: 'Если доступ возобновится, Pin напомнит о предстоящих делах, предложит один обзор просроченных и не будет переносить их автоматически.',
     closingEyebrow: 'Освободите место для важного', closingTitle: 'Пусть планы будут<br>под рукой, а не в голове.', footerTag: 'Планы с заботой о вашем времени.',
-    ctaUnavailable: 'Ссылка на бота не настроена для локального просмотра.', supportUnavailable: 'Контакт поддержки не настроен.', back: '← На главную',
+    ctaUnavailable: 'Откройте Pin в Telegram, чтобы начать.', supportUnavailable: 'Контакт поддержки не настроен.', back: '← На главную',
     privacyTitle: 'Конфиденциальность', privacyIntro: 'Pin помогает вести личные планы в Telegram. Ниже указано, как обрабатываются данные согласно утверждённым требованиям проекта.',
     privacyAudioTitle: 'Голосовые сообщения', privacyAudio: 'Исходные аудиоданные, полученные и обработанные Pin, удаляются после обработки в системах Pin. Это относится к копиям Pin, а не к сообщениям, хранящимся в Telegram, или копиям у провайдеров.',
     privacyTextTitle: 'Текст и планы', privacyText: 'Текстовые данные, хранящиеся в системах Pin, сохраняются 30 дней. Планы Pin хранятся до удаления аккаунта. Резервные копии Pin — до семи дней. Эти сроки не описывают копии сообщений в Telegram или системах провайдеров.',
@@ -34,12 +34,12 @@ const copy = {
     termsPreviewTitle: 'Подтверждение планов', termsPreview: 'Pin показывает предлагаемые изменения до сохранения. План записывается только после подтверждения пользователя. После восстановления доступа Pin сообщает о будущих делах и может показать один обзор просроченных; он не переносит планы автоматически.',
     termsAvailability: 'Доступность Telegram-платежей зависит от применимых правил Telegram и аккаунта. Провайдер и фактическая доступность предложения пока не подтверждены.',
     termsRefund: 'Запросы по оплате рассматриваются поддержкой вручную. Подтверждённые повторные или ошибочные списания подлежат возврату в соответствии с применимыми требованиями.',
-    legalNoContact: 'Поддержка пока не настроена для локального просмотра.'
+    legalNoContact: 'Откройте бота и отправьте /support или /paysupport для вопросов о поддержке и оплате.'
   },
   en: {
     title: 'Pin — plans that remember for you', description: 'Plan your day calmly with Pin in Telegram.', skipMain: 'Skip to content', brandLabel: 'Pin — home', featuresLabel: 'Pin features',
     previewNote: 'Local preview. Offer availability and the Telegram provider are not yet verified.',
-    navHow: 'How it works', navPlan: 'Plans', privacy: 'Privacy', terms: 'Terms', support: 'Support', languageLabel: 'Language',
+    navHow: 'How it works', navPlan: 'Plans', privacy: 'Privacy', terms: 'Terms', support: 'Bot support: /support · payments: /paysupport', languageLabel: 'Language',
     openTelegram: 'Open Telegram', eyebrow: 'A calmer plan for every day', headline: 'Less to keep in your head.<br><em>More room for life.</em>',
     intro: 'Tell Pin what you need to do, by text or voice. It asks for details, shows you the plan, and reminds you at the right time — in Telegram.',
     seeHow: 'See how it works', private: 'Private chats. Your plans stay under your control.', chatIllustration: 'Example conversation with Pin', assistant: 'Your assistant',
@@ -59,7 +59,7 @@ const copy = {
     expiryNote: 'Pin warns you before the trial ends. When a trial or paid access ends, new plans, AI, voice messages, and reminders pause. You can still view, complete, and cancel plans.',
     reminderNote: 'When access resumes, Pin can remind you about upcoming plans and show one summary of overdue plans. It will not reschedule them automatically.',
     closingEyebrow: 'Make room for what matters', closingTitle: 'Keep plans close at hand,<br>not on your mind.', footerTag: 'Plans that care about your time.',
-    ctaUnavailable: 'The bot link is not configured for this local preview.', supportUnavailable: 'The support contact is not configured.', back: '← Home',
+    ctaUnavailable: 'Open Pin in Telegram to get started.', supportUnavailable: 'The support contact is not configured.', back: '← Home',
     privacyTitle: 'Privacy', privacyIntro: 'Pin helps you manage personal plans in Telegram. This page describes data handling from the approved project requirements.',
     privacyAudioTitle: 'Voice messages', privacyAudio: 'Pin deletes the original audio data it receives and processes from Pin systems after processing. This applies to Pin copies, not Telegram-stored messages or provider copies.',
     privacyTextTitle: 'Text and plans', privacyText: 'Text data stored in Pin systems is kept for 30 days. Pin plans are kept until account deletion. Pin backups are kept for up to seven days. These periods do not describe copies held by Telegram or providers.',
@@ -71,7 +71,7 @@ const copy = {
     termsPreviewTitle: 'Confirming plans', termsPreview: 'Pin shows proposed changes before saving. A plan is saved only after you confirm. When access resumes, Pin can report upcoming plans and show one summary of overdue plans; it does not reschedule them automatically.',
     termsAvailability: 'Telegram payment availability depends on Telegram rules and account eligibility. The provider and actual offer availability have not yet been verified.',
     termsRefund: 'Payment-support requests are reviewed manually. Confirmed duplicate or incorrect charges are refunded in line with applicable requirements.',
-    legalNoContact: 'Support is not configured for this local preview.'
+    legalNoContact: 'Open the bot and use /support or /paysupport for support and payment questions.'
   }
 };
 
