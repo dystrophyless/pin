@@ -108,6 +108,9 @@ Owner override recorded 2026-10-13: implementation reviewers are not required; f
 
 ### Active integration checkpoint
 
+- Startup/landing correction committed as 4e5f527. Root inspected the 37-case JUnit (zero failures/errors/skips, 56.857 seconds), safe-field/static-event diff and independently passed Ruff for landing/startup surfaces. Existing redaction negatives remain; raw exception messages are not logged. This focused correction does not retroactively change the frozen 1a1fdc7 FAIL. Retention remains uncommitted and needs its own native/race/restore proof before a new combined gate.
+- The 1a1fdc7 packet is now complete: actual cached offline RU/EN/silence passed, local 50-owner p95 2.597 seconds, migration/landing/32-fixture cleanup passed; overall remains FAIL due two startup assertions and five Ruff E501 findings. README and executor-receipt.json are retained in the packet. Protected historical/sandbox databases remain present.
+
 - Resume: usage tool confirmed ordinaryUsageAllowed=true. The same three executors were resumed with their original ownership. Qualification resumes only missing offline speech/final receipt; its 522/524 failed pytest/static logs and completed cleanup stay preserved. Startup executor additionally owns formatting-only corrections for the five landing Python E501 findings. Retention may perform bounded fresh-fixture native checks, coordinating around Whisper memory use.
 
 - 2026-10-15 interrupted-executor checkpoint: /root/retention_local_issue23, /root/fix_startup_diagnostics and /root/qualify_combined_local terminated with usage-limit errors (reported retry 06:04). Do not treat partial retention source as accepted. No matching qualification Python/uv process remained when root inspected after the limit. Preserve dirty source and resume the same bounded tasks rather than replacing implementations.
