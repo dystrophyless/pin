@@ -8,6 +8,10 @@ The authoritative current combined local packet is [`local-integration-5464eec.m
 
 “Local implemented” means the behavior or local component exists in that frozen source. “Native evidence” means the named unit/PostgreSQL case passed in that frozen suite. Neither label means the full AC journey is accepted. In particular, **543 passing component tests do not prove a complete journey across all producer/consumer boundaries or prove that a real Telegram message from the same revision traversed that whole journey**. Prior live Telegram rows below refer to older, separately frozen source revisions and prove only their stated boundary. The current frozen suite made no Telegram, model-provider, payment/refund, Docker, or deployment calls.
 
+## Owner scope correction — 2026-10-15
+
+Actual Telegram Stars payment testing is removed from required acceptance, not postponed (SPEC-001 §11; owner: “Проверку оплаты не откладываем, а убираем.”). References below to missing real checkout/receipt/cancellation/refund proof describe evidence limitations, not an outstanding acceptance blocker. Keep payment functionality and local synthetic-event/PostgreSQL checks. This does not prove actual provider operation or remove unrelated model, Telegram, host or legal requirements. The frozen qualification results below are historical observations and are unchanged.
+
 ## AC01–AC20
 
 | AC | Approved observable result | Local implemented | Local native evidence in frozen `5464eec` | Live provider/host evidence | Missing verdict |
