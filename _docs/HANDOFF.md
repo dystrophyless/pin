@@ -6,7 +6,7 @@ Updated:2026-10-16 (Asia/Qyzylorda). Revalidate Git, issues and live handles bef
 
 - Actual checkout:`D:\Program\python\pin`; branch`main`; origin`https://github.com/dystrophyless/pin.git`.
 - Qualified product source:`be53f926d6320394e49e5986a77d13136b591949`. Later pushed changes through`de28299` are documentation only; inspect Git for later commits.
-- Read [AGENTS.md](../AGENTS.md), [SDD workflow](sdd/README.md), [orchestration](orchestration.md), [brainstorm](PROJECT_BRAINSTORM.md), [SPEC-001v0.15](specifications/SPEC-001_pin_mvp.md), [architecture](ARCHITECTURE.md) and [task index](specifications/SPEC-001_pin_mvp_tasks.md).
+- Read [AGENTS.md](../AGENTS.md), [SDD workflow](sdd/README.md), [orchestration](orchestration.md), [brainstorm](PROJECT_BRAINSTORM.md), [SPEC-001v0.16](specifications/SPEC-001_pin_mvp.md), [architecture](ARCHITECTURE.md) and [task index](specifications/SPEC-001_pin_mvp_tasks.md).
 - Standing objective:implement and complete remaining issues. The owner authorized local implementation, direct criterion verification/eligible acceptance and closure, GitHub updates, commits and pushes. Preserve the original whole-task requirements; local evidence does not waive remaining gates.
 - Windows local only. No Docker, deployment, paid provisioning, further OpenRouter spend or public rollout. The eight-call/$0.01model-smoke authorization is exhausted; never reset its budget or resubmit unknown calls.
 - Use project-local Ponytail full, never Superpowers. Exact GPT-6 Luna Executors/Publishers with explicit effort; no implementation Reviewer. Root verifies AC and raw evidence directly. Let active executors work without repeated nudges.
@@ -57,3 +57,5 @@ Remaining scope includes complete current live Telegram/model journeys, actual-h
 - Cached offline Whisper is allowed; no dependency/model downloads or new external model calls.
 
 Keep this checkpoint concise/current. Issue contracts are authoritative for scope/AC/dependencies; accepted changes belong inCHANGELOG. Record revision/environment/commands/artifacts and evidence limits; preserve other agents' work.
+
+Latest owner steering:after selecting2voices/language, owner narrowed immediate voice testing to a couple of owner-providedRU/ENexamples. Use[manual smoke](qualification/TR-04_manual_smoke.md):oneRU and oneENclip, actualfilesWAITING, no200/400collection/run and no99%claim. Do not ask for volunteer numbers/noise-strata decisions before this smallcheck. No other user question is pending. Priorproviderbudgetexhaustion remains; do not silently reset it.

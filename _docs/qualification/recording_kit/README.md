@@ -1,5 +1,7 @@
 # TR-04 human-recording kit
 
+**Optional preparation, not the current required check.** The owner narrowed the local check to oneRU and oneENrecording from the owner; see[the manual smoke worksheet](../TR-04_manual_smoke.md). Do not collect200clips or recruit speakers under the current request.
+
 **Preparation only:200script rows,0audio recordings,0evaluation results.** The owner selected real human recordings on2026-10-16. Speech synthesis is outside this selected voice set. Reference scripts and temporal calendars were separately approved; [approval record](../TR-04_reference_set_approval.md).
 
 Sources:[unchanged reference JSONL](../TR-04_evaluation_candidates.jsonl) at`de28299`, Git-blob SHA-256`8e825856284f6e52aadcf63edd689122ae27e85df78053724f7c54b3d2bebd40`. This kit is a generated collection aid, not a second requirements source. It has100RU and100ENvoice IDs corresponding to the original400evaluation slots; text inputs require no recording.
