@@ -236,6 +236,9 @@ class AccessUsageStore(AccessLifecycleStore, Protocol):
     async def lock_account_lifecycle(self, owner_id: UUID) -> AccountLifecycle:
         """Lock account lifecycle through caller authorization; missing stays missing."""
 
+    async def lock_account_deletion_at(self, owner_id: UUID) -> datetime | None:
+        """Return the persisted deletion time while holding the account lifecycle lock."""
+
     async def mark_account_deleted(self, command: MarkAccountDeleted) -> bool:
         """Tombstone an account without erasing billing evidence or return facts."""
 

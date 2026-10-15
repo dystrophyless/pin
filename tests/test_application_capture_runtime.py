@@ -37,9 +37,10 @@ class _Session:
     async def scalar(self, _statement: object) -> UUID | None:
         assert self.active
         self.scalar_calls += 1
-        # The first scalar is the live-job lease fence; later runtime lookup
-        # sees no pending mutation clarification for this owner.
-        return uuid4() if self.scalar_calls == 1 else None
+        # A missing Billing row is valid before trial activation. The next
+        # scalar is the live-job lease fence; later lookup finds no pending
+        # mutation clarification for this owner.
+        return uuid4() if self.scalar_calls == 2 else None
 
 
 class _EmptyResult:

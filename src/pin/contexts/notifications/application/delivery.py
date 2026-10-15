@@ -2,12 +2,26 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Literal, Protocol
 from uuid import UUID
 
 ACCOUNTABILITY_DELIVERY_JOB_KIND = "accountability.deliver"
+DELETED_ACCOUNT_DENIAL_TEXT = "Account data is unavailable. Данные недоступны."
+
+
+def is_deleted_account_denial(payload: Mapping[str, object]) -> bool:
+    """Allow only the fixed, non-personal response generated after a deletion fence."""
+    return (
+        payload.get("safe_deleted_account_denial") is True
+        and payload.get("handling") == "denied"
+        and payload.get("markdown") == DELETED_ACCOUNT_DENIAL_TEXT
+        and payload.get("plain_text") == DELETED_ACCOUNT_DENIAL_TEXT
+        and payload.get("reply_markup") is None
+        and payload.get("requires_preparation", False) is False
+    )
 
 
 @dataclass(frozen=True, slots=True)

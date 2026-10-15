@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from pin.adapters.telegram.presentation.subscription import render_access_expiry_notice
 from pin.contexts.billing.api import (
     AccessNoticeStatus,
+    AccountLifecycle,
     CheckAccessNotice,
     SqlAlchemyAccessUsageStore,
 )
@@ -95,29 +96,42 @@ async def schedule_access_notices(
             OutboxConsumption.event_id == OutboxEvent.id,
         )
     )
-    events = list(
+    candidates = list(
         (
-            await session.scalars(
-                select(OutboxEvent)
+            await session.execute(
+                select(OutboxEvent.id, OutboxEvent.owner_id)
                 .where(
                     OutboxEvent.event_type == "billing.access_notice.due",
                     ~receipt,
                 )
                 .order_by(OutboxEvent.created_at, OutboxEvent.id)
                 .limit(100)
-                .with_for_update(skip_locked=True)
             )
         ).all()
     )
+    lifecycle_by_owner = {}
+    for owner_id in sorted(
+        {owner for _, owner in candidates if owner is not None}, key=lambda value: value.int
+    ):
+        lifecycle_by_owner[owner_id] = (
+            await SqlAlchemyAccessUsageStore(session).lock_account_lifecycle(owner_id)
+        )
+
+    events = []
+    for event_id, owner_id in candidates:
+        if owner_id is None or lifecycle_by_owner.get(owner_id) is not AccountLifecycle.PRESENT:
+            continue
+        row = await session.scalar(
+            select(OutboxEvent)
+            .where(OutboxEvent.id == event_id)
+            .with_for_update(skip_locked=True)
+        )
+        if row is not None:
+            events.append(row)
 
     async def materialize(db: AsyncSession, event: EventEnvelope) -> None:
         if event.owner_id is None or event.schema_version != 1:
             raise ValueError("invalid access notice envelope")
-        from pin.contexts.billing.api import AccountLifecycle, SqlAlchemyAccessUsageStore
-
-        lifecycle = await SqlAlchemyAccessUsageStore(db).lock_account_lifecycle(event.owner_id)
-        if lifecycle is not AccountLifecycle.PRESENT:
-            return
         notice_id = UUID(str(event.payload["notice_id"]))
         period_id = event.payload["period_id"]
         if not isinstance(period_id, str) or not period_id:
@@ -147,11 +161,11 @@ async def schedule_access_notices(
         )
 
     for record in events:
-        event = EventEnvelope.from_dict(record.payload)
-        if event.id != record.id or event.owner_id != record.owner_id:
+        envelope = EventEnvelope.from_dict(record.payload)
+        if envelope.id != record.id or envelope.owner_id != record.owner_id:
             raise ValueError("access notice envelope mismatch")
         await consume_event(
-            session, consumer_name="telegram.access_notice", event=event, handler=materialize
+            session, consumer_name="telegram.access_notice", event=envelope, handler=materialize
         )
     await session.flush()
     return len(events)
