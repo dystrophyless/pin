@@ -343,7 +343,7 @@ def test_private_core_lifecycle_runs_through_real_producers_and_consumers(
     async def scenario() -> None:
         engine = create_engine(core_lifecycle_database)
         sessions = create_session_factory(engine)
-        at = datetime.now(UTC).replace(microsecond=0)
+        at = datetime(2026, 10, 13, 9, 0, tzinfo=UTC)
         clock = _Clock(at)
         suffix = uuid4().int % 800_000_000
         bot_id = BOT_BASE + suffix
@@ -773,6 +773,8 @@ def test_private_core_lifecycle_runs_through_real_producers_and_consumers(
             record_property("plan_id", str(plan_id))
             record_property("occurrence_id", str(occurrence_id))
             record_property("language", language)
+            record_property("reference_instant_utc", at.isoformat())
+            record_property("reference_zone", "Asia/Almaty")
             record_property(
                 "local_fake_reminder_attempts", json.dumps([x[0] for x in delivery.reminders])
             )
