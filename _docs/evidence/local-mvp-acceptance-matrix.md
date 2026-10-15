@@ -20,6 +20,8 @@ Actual Telegram Stars payment testing is **removed from required acceptance, not
 
 [Landing targets](issue-21-bot-target-local.md) are configured to `https://t.me/pin_appbot` for both CTA and support. RU/EN instructions name `/support` and `/paysupport`; local browser navigation reached the correct public Telegram launch page. Hosted publication and applicable legal/eligibility verification remain separate.
 
+Additional local #22 proof after the frozen run: [operations fault scenario](issue-22-faults-local.md) passed3/3 native cases (zero failures/errors/skips,16.967s), adding actual all-lane queue/dead/expired-lease and worker-state diagnostics, bounded IDs, payload redaction and read-only projection assertions. Root checked source/JUnit/catalog receipts, Ruff/mypy and live cleanup. This is not a new whole-suite total or host-alert/restore proof.
+
 ## AC01–AC20
 
 | AC | Approved observable result | Local implemented | Local native evidence (rerun in frozen `993412d`) | Live provider/host evidence | Missing verdict |
