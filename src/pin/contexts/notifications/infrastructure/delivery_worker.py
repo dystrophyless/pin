@@ -300,11 +300,14 @@ async def deliver_reminder_job(
                         session,
                         intent,
                         target_id=None,
-                        attempt_number=await _next_attempt_number(session, intent, None),
+                        attempt_number=await _next_attempt_number(
+                            session, intent, None, dispatch_version=dispatch_version
+                        ),
                         cycle_id=cycle_id,
                         outcome=DeliveryOutcomeKind.BLOCKED,
                         at=now(),
                         failure_code="destination_missing",
+                        dispatch_version=dispatch_version,
                     )
                     await complete_job(session, claim)
             else:
@@ -321,11 +324,14 @@ async def deliver_reminder_job(
                         session,
                         intent,
                         target_id=destination,
-                        attempt_number=await _next_attempt_number(session, intent, destination),
+                        attempt_number=await _next_attempt_number(
+                            session, intent, destination, dispatch_version=dispatch_version
+                        ),
                         cycle_id=cycle_id,
                         outcome=DeliveryOutcomeKind.SKIPPED,
                         at=now(),
                         failure_code="stale_intent_version",
+                        dispatch_version=dispatch_version,
                     )
                     await complete_job(session, claim)
                 else:
@@ -1586,12 +1592,19 @@ async def _latest_attempt_for_version(
 
 
 async def _next_attempt_number(
-    session: AsyncSession, intent: ReminderIntentRecord, target_id: int | None
+    session: AsyncSession,
+    intent: ReminderIntentRecord,
+    target_id: int | None,
+    *,
+    dispatch_version: int | None = None,
 ) -> int:
+    version = intent.dispatch_version if dispatch_version is None else dispatch_version
+    if type(version) is not int or version < 1:
+        raise ValueError("dispatch version must be a positive integer")
     highest = await session.scalar(
         select(func.max(DeliveryAttemptRecord.attempt_number)).where(
             DeliveryAttemptRecord.intent_id == intent.id,
-            DeliveryAttemptRecord.dispatch_version == intent.dispatch_version,
+            DeliveryAttemptRecord.dispatch_version == version,
             DeliveryAttemptRecord.target_id == target_id,
         )
     )
@@ -1609,14 +1622,18 @@ async def _record_outcome(
     at: datetime,
     failure_code: str | None,
     access_period_id: str | None = None,
+    dispatch_version: int | None = None,
 ) -> DeliveryAttemptOutcome:
     at = at.astimezone(UTC)
+    version = intent.dispatch_version if dispatch_version is None else dispatch_version
+    if type(version) is not int or version < 1:
+        raise ValueError("dispatch version must be a positive integer")
     attempt = DeliveryAttemptRecord(
         id=uuid4(),
         owner_id=intent.owner_id,
         intent_id=intent.id,
         target_id=target_id,
-        dispatch_version=intent.dispatch_version,
+        dispatch_version=version,
         attempt_number=attempt_number,
         check_in_cycle_id=cycle_id,
         access_period_id=access_period_id,
@@ -1671,11 +1688,7 @@ def _outcome_from_record(
     return DeliveryAttemptOutcome(
         intent_id=intent.id if isinstance(intent, ReminderIntentRecord) else intent.intent_id,
         owner_id=intent.owner_id,
-        dispatch_version=(
-            intent.dispatch_version
-            if isinstance(intent, ReminderIntentRecord)
-            else intent.dispatch_version
-        ),
+        dispatch_version=attempt.dispatch_version,
         target_id=attempt.target_id,
         attempt_id=attempt.id,
         outcome=DeliveryOutcomeKind(attempt.outcome),
