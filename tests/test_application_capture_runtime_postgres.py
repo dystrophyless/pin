@@ -31,7 +31,6 @@ from pin.contexts.conversation.application.dto import (
     ConversationContext,
     ModelFailure,
     ModelSuccess,
-    Reply,
 )
 from pin.contexts.conversation.application.service import ROUTE, BoundedPlanningAssistant
 from pin.contexts.conversation.domain.proposals import (
@@ -96,9 +95,11 @@ class _FakeTransport:
     def __init__(self, *responses: dict[str, object] | Exception) -> None:
         self.responses = list(responses)
         self.calls = 0
+        self.payloads: list[dict[str, object]] = []
 
-    async def complete(self, _payload: dict[str, object]) -> dict[str, object]:
+    async def complete(self, payload: dict[str, object]) -> dict[str, object]:
         self.calls += 1
+        self.payloads.append(payload)
         if not self.responses:
             raise AssertionError("runtime tried to submit an extra provider request")
         response = self.responses.pop(0)
@@ -315,6 +316,12 @@ def test_completed_profile_text_runs_through_fenced_capture_runtime(
         engine = create_async_engine(capture_runtime_database)
         sessions = create_session_factory(engine)
         at = datetime.now(UTC)
+        zone = ZoneInfo("Asia/Almaty")
+        receipt_local = datetime.combine(
+            at.astimezone(zone).date() - timedelta(days=1), time(23, 30), tzinfo=zone
+        )
+        received_at = receipt_local.astimezone(UTC)
+        access_starts_at = received_at + (at - received_at) / 2
         identity_suffix = uuid4().int % 1_000_000_000
         telegram_user_id = 1_000_000_000 + identity_suffix
         bot_id = 2_000_000_000 + identity_suffix
@@ -325,7 +332,7 @@ def test_completed_profile_text_runs_through_fenced_capture_runtime(
                     "from": {"id": telegram_user_id, "is_bot": False, "first_name": "Test"},
                     "chat": {"id": telegram_user_id, "type": "private"},
                     "date": int(at.timestamp()),
-                    "text": "Organize the garage tomorrow",
+                    "text": "Create a task to water the plant in 2 hours",
                 },
             }
             async with sessions() as session, session.begin():
@@ -334,8 +341,17 @@ def test_completed_profile_text_runs_through_fenced_capture_runtime(
                     bot_id=bot_id,
                     payload=payload,
                     owner_resolver=PostgresTelegramOwnerResolver(),
+                    received_at=received_at,
                 )
                 assert receipt is not None and receipt.accepted
+                duplicate = await persist_update(
+                    session,
+                    bot_id=bot_id,
+                    payload=payload,
+                    owner_resolver=PostgresTelegramOwnerResolver(),
+                    received_at=received_at + timedelta(hours=4),
+                )
+                assert duplicate is not None and not duplicate.accepted
                 inbox = await session.scalar(
                     select(InboxUpdate).where(
                         InboxUpdate.bot_id == bot_id,
@@ -343,9 +359,23 @@ def test_completed_profile_text_runs_through_fenced_capture_runtime(
                     )
                 )
                 assert inbox is not None and inbox.owner_id is not None
+                assert inbox.received_at == received_at
                 owner_id = inbox.owner_id
                 inbox_id = inbox.id
                 await _promote_latest_pending(session, owner_id)
+                session.add(AccessAccountRecord(owner_id=owner_id))
+                session.add(
+                    AccessPeriodRecord(
+                        owner_id=owner_id,
+                        period_id=f"reference-clock-{uuid4().hex}",
+                        policy_kind=PeriodKind.TRIAL.value,
+                        policy_version="reference-clock-test-v1",
+                        starts_at=access_starts_at,
+                        ends_at=at + timedelta(days=365),
+                        ai_turn_limit=100,
+                        voice_second_limit=900,
+                    )
+                )
                 session.add(
                     PreferencesRecord(
                         owner_id=owner_id,
@@ -373,34 +403,25 @@ def test_completed_profile_text_runs_through_fenced_capture_runtime(
 
             claim = await claim_application_job(sessions, worker_id="capture-runtime-pg-test")
             assert claim is not None
-
-            class Assistant:
-                calls = 0
-
-                async def interpret(
-                    self,
-                    context: ConversationContext,
-                    *,
-                    at: datetime,
-                    claim: JobClaim | None = None,
-                ) -> ModelSuccess:
-                    self.calls += 1
-                    assert context.owner_id == owner_id
-                    assert context.request_id == f"telegram-inbox:{inbox_id}"
-                    assert "Current user turn:\nOrganize the garage tomorrow" in context.text
-                    assert context.reference_date == at.astimezone(ZoneInfo("Asia/Almaty")).date()
-                    return ModelSuccess(
-                        result=Reply(
-                            kind="reply",
-                            language=SourceLanguage.EN,
-                            text="What should I organize first?",
-                        ),
-                        provider_request_ids=("runtime-test-request",),
-                    )
-
-            assistant = Assistant()
+            transport = _FakeTransport(
+                _provider_response(
+                    {"kind": "reply", "language": "en", "text": "Please confirm the time."},
+                    f"reference-clock-{uuid4().hex}",
+                )
+            )
+            assistant = _assistant(sessions, transport, at)
             await process_application_job(sessions, claim, now=at, assistant=assistant)
-            assert assistant.calls == 1
+            assert transport.calls == 1
+            request_messages = cast(list[dict[str, object]], transport.payloads[0]["messages"])
+            prompt_context = json.loads(cast(str, request_messages[1]["content"]))
+            assert prompt_context["text"].endswith(
+                "Current user turn:\nCreate a task to water the plant in 2 hours"
+            )
+            assert prompt_context["reference_instant"] == received_at.isoformat()
+            assert (
+                prompt_context["reference_date"]
+                == received_at.astimezone(zone).date().isoformat()
+            )
 
             async with sessions() as session:
                 draft = await session.scalar(
@@ -408,7 +429,15 @@ def test_completed_profile_text_runs_through_fenced_capture_runtime(
                 )
                 assert draft is not None and draft.state == "collecting"
                 assert draft.processing_key is None
-                assert draft.messages[-1]["text"] == "What should I organize first?"
+                assert draft.messages[-1]["text"] == "Please confirm the time."
+                reservation = await session.scalar(
+                    select(UsageReservationRecord).where(
+                        UsageReservationRecord.owner_id == owner_id,
+                        UsageReservationRecord.request_id == f"telegram-inbox:{inbox_id}",
+                    )
+                )
+                assert reservation is not None and reservation.state == "settled"
+                assert reservation.settled_ai_turns == 1
                 saved_input = await session.scalar(
                     select(CaptureInputRecord).where(
                         CaptureInputRecord.owner_id == owner_id,
@@ -427,7 +456,7 @@ def test_completed_profile_text_runs_through_fenced_capture_runtime(
                 assert reply_event is not None
                 event_payload = reply_event.payload["payload"]
                 assert event_payload["chat_id"] == telegram_user_id
-                assert "What should I organize first?" in event_payload["plain_text"]
+                assert "Please confirm the time." in event_payload["plain_text"]
                 assert event_payload["source_job_id"] == str(claim.job_id)
                 assert event_payload["page_index"] == 0
                 assert event_payload["page_count"] == 1
@@ -495,6 +524,7 @@ def test_runtime_clarification_foreign_stale_and_confirmation_callbacks_are_fenc
                 input_kind=InputKind.TEXT,
                 text=f"Current user turn:\n{text}",
                 reference_date=at.astimezone(ZoneInfo("Asia/Almaty")).date(),
+                reference_instant=at,
                 timezone="Asia/Almaty",
             )
             precomputed = await assistant.interpret(replay_context, at=at, claim=claim)
@@ -756,6 +786,7 @@ def test_runtime_unknown_provider_attempt_is_never_resubmitted(
                 input_kind=InputKind.TEXT,
                 text=f"Current user turn:\n{text}",
                 reference_date=at.astimezone(ZoneInfo("Asia/Almaty")).date(),
+                reference_instant=at,
                 timezone="Asia/Almaty",
             )
             replay = await assistant.interpret(context, at=at)
@@ -810,6 +841,7 @@ def test_runtime_unknown_provider_attempt_is_never_resubmitted(
                 input_kind=InputKind.TEXT,
                 text="Current user turn:\nStart a garage cleanup",
                 reference_date=at.astimezone(ZoneInfo("Asia/Almaty")).date(),
+                reference_instant=at,
                 timezone="Asia/Almaty",
             )
             started_replay = await started_assistant.interpret(started_context, at=at)

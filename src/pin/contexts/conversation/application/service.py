@@ -76,7 +76,10 @@ _SYSTEM = "\n".join(
         '"local_start":"2026-10-14T10:00:00","timezone":"Asia/Qyzylorda",'
         '"duration_minutes":30}}}. This is only a proposal; do not claim it was saved. '
         "Use dates, times, language, and wording from the current user request and context; "
-        "the example values are illustrative and must not be copied unless they match.",
+        "the example values are illustrative and must not be copied unless they match. "
+        "reference_instant is UTC bot receipt, not processing; reference_date is its profile-zone "
+        "date. Add 'in N hours/minutes'/'через N часов/минут' to that UTC instant, then convert "
+        "to event zone. calendar_day/elapsed reminders remain pre-event offsets.",
         f"Canonical output JSON Schema: {_RESULT_SCHEMA_JSON}",
         "Fields may contain title, description, schedule, recurrence, reminders, and "
         "reminder_mode. For create, omitted or null reminders use the user's profile defaults; "
@@ -87,15 +90,14 @@ _SYSTEM = "\n".join(
         "and known appointment end. Preserve the stored event timezone when the user did not "
         "request a zone change; never replace it with the profile zone. For changes, omit fields "
         "that are unchanged; use null only when removing a value.",
-        "Use schedule discriminators kind=appointment, deadline, or task. Appointment fields are "
-        "local_start, timezone, and optionally duration_minutes or later local_end, never both; "
-        "local datetimes have no UTC offset; fold and end_fold may be earlier or later. Deadline "
-        "fields are local_date, optional local_time, timezone, and optional fold. Task fields are "
-        "optional local_date, local_time, timezone, optional fold, and timing="
-        "timed|untimed|unspecified; timed needs date and time, untimed has no time.",
-        "Recurrence frequency is daily, weekly, or monthly; interval is a positive integer. "
-        "Weekly requires weekdays 0=Monday through 6=Sunday. Monthly requires month_day 1..31 "
-        "or last_day=true. Use ends_on or occurrence_count, never both.",
+        "Schedule kind is appointment, deadline, or task. Appointments use local_start, timezone, "
+        "and duration_minutes or local_end (not both); local times have no offset; folds are "
+        "earlier|later. Deadlines use local_date, optional local_time, timezone, fold. Tasks use "
+        "optional local_date/time/timezone/fold and timing=timed|untimed|unspecified; timed needs "
+        "date+time, untimed has no time.",
+        "Recurrence is daily|weekly|monthly with positive interval. Weekly requires weekdays "
+        "0=Mon..6=Sun; monthly requires month_day 1..31 or last_day=true. Use ends_on or "
+        "occurrence_count, never both.",
         "Reminder discriminator kind is explicit with local_at, timezone, provenance=explicit; "
         "or relative with basis=calendar_day and unit=day, or basis=elapsed and unit=hour|minute. "
         "Relative reminders require positive amount and provenance=default|explicit.",
@@ -533,6 +535,7 @@ def _serialize_context(context: ConversationContext) -> str:
             "input_kind": context.input_kind.value,
             "text": context.text,
             "reference_date": context.reference_date.isoformat(),
+            "reference_instant": context.reference_instant.isoformat(),
             "timezone": context.timezone,
             "plans": [plan.model_dump(mode="json") for plan in context.plans],
             "preferences": [item.model_dump(mode="json") for item in context.preferences],

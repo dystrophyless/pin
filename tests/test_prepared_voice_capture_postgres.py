@@ -3,9 +3,10 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import replace
-from datetime import UTC, date, datetime, time, timedelta
+from datetime import UTC, datetime, time, timedelta
 from pathlib import Path
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 import pytest
 from alembic import command
@@ -73,9 +74,11 @@ def prepared_voice_database():
 class _Transport:
     def __init__(self):
         self.calls = 0
+        self.payloads: list[dict[str, object]] = []
 
-    async def complete(self, payload):
+    async def complete(self, payload: dict[str, object]) -> dict[str, object]:
         self.calls += 1
+        self.payloads.append(payload)
         assert "transcript" in payload["messages"][1]["content"]
         return {
             "id": f"gen-prepared-{uuid4()}",
@@ -98,7 +101,7 @@ class _Transport:
         }
 
 
-async def _seed(sessions, now):
+async def _seed(sessions, now, *, received_at=None):
     bot_id, user_id = uuid4().int % 1_000_000 + 1, uuid4().int % 1_000_000_000 + 1
     resolver = PostgresTelegramOwnerResolver()
     async with sessions() as session, session.begin():
@@ -145,6 +148,7 @@ async def _seed(sessions, now):
             session,
             bot_id=bot_id,
             owner_resolver=resolver,
+            received_at=received_at,
             payload={
                 "update_id": update_id,
                 "message": {
@@ -188,13 +192,15 @@ async def _seed(sessions, now):
 
 
 def _context(owner, key, now):
+    reference_instant = now.astimezone(UTC)
     return ConversationContext(
         owner_id=owner,
         request_id=key,
         language=SourceLanguage.EN,
         input_kind=InputKind.TRANSCRIPT,
         text="Schedule a meeting tomorrow",
-        reference_date=date(2026, 10, 14),
+        reference_date=reference_instant.astimezone(ZoneInfo("Asia/Almaty")).date(),
+        reference_instant=reference_instant,
         timezone="Asia/Almaty",
     )
 
@@ -281,7 +287,12 @@ def test_capture_and_speech_completion_commit_atomically_after_replay(prepared_v
         sessions = create_session_factory(engine)
         now = datetime.now(UTC)
         try:
-            owner, inbox_id, claim, key = await _seed(sessions, now)
+            zone = ZoneInfo("Asia/Almaty")
+            receipt_local = datetime.combine(
+                now.astimezone(zone).date() - timedelta(days=1), time(23, 30), tzinfo=zone
+            )
+            received_at = receipt_local.astimezone(UTC)
+            owner, inbox_id, claim, key = await _seed(sessions, now, received_at=received_at)
             async with sessions() as session, session.begin():
                 session.add(
                     SpeechRequestRecord(
@@ -294,7 +305,7 @@ def test_capture_and_speech_completion_commit_atomically_after_replay(prepared_v
                         declared_duration_seconds=2,
                         actual_size_bytes=100,
                         decoded_duration_seconds=3.5,
-                        transcript="Schedule a meeting tomorrow",
+                        transcript="Create a task in 2 hours",
                         language="en",
                         created_at=now,
                         updated_at=now,
@@ -302,7 +313,7 @@ def test_capture_and_speech_completion_commit_atomically_after_replay(prepared_v
                 )
             transport = _Transport()
             assistant = _assistant(sessions, transport, now)
-            transcript = TranscribedCapture(inbox_id, "Schedule a meeting tomorrow", 4)
+            transcript = TranscribedCapture(inbox_id, "Create a task in 2 hours", 4)
 
             async def fail_after_mark(session, current_claim, at):
                 await SqlAlchemySpeechRequestStore().mark_continued(session, current_claim, at=at)
@@ -346,6 +357,18 @@ def test_capture_and_speech_completion_commit_atomically_after_replay(prepared_v
                 now=now,
             )
             assert transport.calls == 1
+            request_messages = transport.payloads[0]["messages"]
+            assert isinstance(request_messages, list)
+            context_payload = json.loads(request_messages[1]["content"])
+            assert context_payload["text"].endswith(
+                "Current user turn:\nCreate a task in 2 hours"
+            )
+            assert context_payload["reference_instant"] == received_at.isoformat()
+            assert (
+                context_payload["reference_date"]
+                == received_at.astimezone(zone).date().isoformat()
+            )
+            assert context_payload["timezone"] == "Asia/Almaty"
             async with sessions() as session:
                 speech = await session.get(SpeechRequestRecord, claim.job_id)
                 assert speech.state == "continued" and speech.transcript is None

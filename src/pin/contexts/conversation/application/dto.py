@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, time
+from datetime import UTC, date, datetime, time
 from typing import Annotated, Literal
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -57,6 +57,7 @@ class ConversationContext(StrictModel):
     input_kind: InputKind
     text: Annotated[str, Field(min_length=1, max_length=8_000)]
     reference_date: date
+    reference_instant: datetime
     timezone: Annotated[str, Field(min_length=1, max_length=64)]
     plans: Annotated[tuple[PlanSnapshot, ...], Field(max_length=50)] = ()
     preferences: Annotated[tuple[PreferenceSnapshot, ...], Field(max_length=32)] = ()
@@ -66,6 +67,20 @@ class ConversationContext(StrictModel):
     @classmethod
     def valid_timezone(cls, value: str) -> str:
         return _validate_timezone(value)
+
+    @field_validator("reference_instant")
+    @classmethod
+    def aware_reference_instant(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("reference_instant must be timezone-aware")
+        return value.astimezone(UTC)
+
+    @model_validator(mode="after")
+    def reference_date_matches_instant(self) -> ConversationContext:
+        local_date = self.reference_instant.astimezone(ZoneInfo(self.timezone)).date()
+        if self.reference_date != local_date:
+            raise ValueError("reference_date must match reference_instant in the profile timezone")
+        return self
 
     @model_validator(mode="after")
     def unique_owned_ids(self) -> ConversationContext:

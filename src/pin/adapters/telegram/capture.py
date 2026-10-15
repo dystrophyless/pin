@@ -294,10 +294,20 @@ async def _process_capture_job(
                 at=at,
                 context_factory=lambda draft, key, current_text: (
                     _conversation_context(
-                        draft, key, current_text, confirmed_preferences, at
+                        draft,
+                        key,
+                        current_text,
+                        confirmed_preferences,
+                        inbound.inbox.received_at,
                     ).model_copy(update={"input_kind": InputKind.TRANSCRIPT})
                     if transcript is not None
-                    else _conversation_context(draft, key, current_text, confirmed_preferences, at)
+                    else _conversation_context(
+                        draft,
+                        key,
+                        current_text,
+                        confirmed_preferences,
+                        inbound.inbox.received_at,
+                    )
                 ),
             )
             if isinstance(interpretation_or_reply, CaptureTurnReply):
@@ -662,9 +672,11 @@ def _conversation_context(
     request_key: str,
     current_text: str,
     preferences: PreferencesSnapshot,
-    now: datetime,
+    reference_instant: datetime,
 ) -> ConversationContext:
     """Build the strict bounded prompt from owned draft history and confirmed preferences."""
+    if reference_instant.tzinfo is None or reference_instant.utcoffset() is None:
+        raise ValueError("reference instant must be timezone-aware")
     pending = json.dumps(draft.normalized_actions, ensure_ascii=False, separators=(",", ":"))
     messages = list(draft.messages[:-1])
     while True:
@@ -703,7 +715,8 @@ def _conversation_context(
         language=SourceLanguage(preferences.language),
         input_kind=InputKind.TEXT,
         text=context_text,
-        reference_date=now.astimezone(ZoneInfo(preferences.home_zone)).date(),
+        reference_date=reference_instant.astimezone(ZoneInfo(preferences.home_zone)).date(),
+        reference_instant=reference_instant,
         timezone=preferences.home_zone,
         preferences=tuple(
             PreferenceSnapshot(key=key, value=str(value)) for key, value in profile_values

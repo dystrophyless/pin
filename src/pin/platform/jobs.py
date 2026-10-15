@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import Any
 from uuid import UUID, uuid4
@@ -145,12 +145,16 @@ async def receive_update(
     owner_id: UUID,
     update_type: str,
     payload: dict[str, Any],
+    received_at: datetime | None = None,
     lane: JobLane = JobLane.APPLICATION,
     conversation_ordered: bool = True,
     priority: int = 0,
     max_attempts: int = 8,
 ) -> InboxResult:
     """Persist a transport receipt and its work item atomically in the caller's UoW."""
+    receipt_instant = received_at or datetime.now(UTC)
+    if receipt_instant.tzinfo is None or receipt_instant.utcoffset() is None:
+        raise ValueError("received_at must be timezone-aware")
     if bot_id < 1 or update_id < 0:
         raise ValueError("bot_id and update_id are outside Telegram's valid range")
     if not update_type.strip() or len(update_type) > 80:
@@ -163,6 +167,7 @@ async def receive_update(
             owner_id=owner_id,
             update_type=update_type,
             payload=payload,
+            received_at=receipt_instant,
         )
         .on_conflict_do_nothing(constraint="uq_platform_inbox_bot_update")
         .returning(InboxUpdate.id)

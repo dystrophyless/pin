@@ -495,6 +495,7 @@ async def _ready_mixed_capture(
             input_kind=InputKind.TEXT,
             text=text,
             reference_date=now.date(),
+            reference_instant=now,
             timezone="UTC",
         )
 
@@ -935,6 +936,7 @@ def test_truncated_model_failure_is_a_durable_clarification_with_no_plan_rows(
                 input_kind=InputKind.TEXT,
                 text=text,
                 reference_date=now.date(),
+                reference_instant=now,
                 timezone="UTC",
             )
 

@@ -455,6 +455,7 @@ def _processing_correction(
         input_kind=InputKind.TEXT,
         text="Pending normalized plan proposals: [two items]. Current user turn: change the first.",
         reference_date=NOW.date(),
+        reference_instant=NOW,
         timezone="Asia/Qyzylorda",
     )
     return processing, CaptureInterpretation(processing, "capture-correction", context)
@@ -658,6 +659,7 @@ async def test_advice_only_keeps_capture_collecting_without_plan_preview_or_conf
             input_kind=InputKind.TEXT,
             text="Current user turn: What should I do next?",
             reference_date=NOW.date(),
+            reference_instant=NOW,
             timezone="Asia/Qyzylorda",
         ),
     )
