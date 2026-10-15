@@ -10,8 +10,18 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import delete, event, select, text, update
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
+from pin.adapters.telegram.application_worker import (
+    claim_application_job,
+    process_application_job,
+)
+from pin.adapters.telegram.delivery_worker import process_delivery_iteration
+from pin.adapters.telegram.ingress import (
+    PostgresTelegramOwnerResolver,
+    TelegramOwnerRecord,
+    persist_update,
+)
 from pin.contexts.billing.infrastructure.models import (
     AccessAccountRecord,
     AccessPeriodRecord,
@@ -20,7 +30,20 @@ from pin.contexts.billing.infrastructure.models import (
     PaymentRefundRecord,
     UsageReservationRecord,
 )
+from pin.contexts.conversation.application.service import (
+    BoundedPlanningAssistant,
+    ProviderHTTPError,
+)
 from pin.contexts.conversation.infrastructure.models import ProviderCallRecord
+from pin.contexts.conversation.infrastructure.usage import (
+    SqlAlchemyProviderUsageRecorder,
+    SqlAlchemyTurnAllowance,
+)
+from pin.contexts.notifications.application.delivery import (
+    ReminderSend,
+    TelegramReplySend,
+    UnknownDeliveryFailure,
+)
 from pin.contexts.notifications.infrastructure.models import DeliveryAttemptRecord
 from pin.contexts.retention.api import read_operational_progress
 from pin.contexts.retention.infrastructure.models import (
@@ -31,7 +54,7 @@ from pin.contexts.speech.infrastructure.models import SpeechRequestRecord
 from pin.entrypoints.operations import _snapshot
 from pin.persistence import create_engine, create_session_factory, run_local_async
 from pin.platform.jobs import JobLane, claim_job, enqueue_job, fail_job
-from pin.platform.models import Job, WorkerHeartbeat
+from pin.platform.models import InboxUpdate, Job, OutboxEvent, WorkerHeartbeat
 from pin.platform.operations import read_operational_snapshot
 from pin.platform.worker_heartbeat import write_worker_heartbeat
 
@@ -111,6 +134,7 @@ def test_worker_heartbeat_and_snapshot_migration_roundtrip(
             await engine.dispose()
 
     run_local_async(scenario)
+
     command.downgrade(config, "billing_payments_0001")
     command.upgrade(config, "head")
     command.check(config)
@@ -897,6 +921,287 @@ def test_context_fault_snapshot_is_redacted_bounded_and_read_only(
                 await session.execute(
                     delete(SpeechRequestRecord).where(SpeechRequestRecord.job_id.in_(speech_ids))
                 )
+            await engine.dispose()
+
+    run_local_async(scenario)
+
+class _UnknownCompletionTransport:
+    def __init__(self, private_error: str) -> None:
+        self.private_error = private_error
+        self.calls = 0
+
+    async def complete(self, _payload: dict[str, object]) -> dict[str, object]:
+        self.calls += 1
+        raise ProviderHTTPError(self.private_error)
+
+
+class _LocalReplyTransport:
+    def __init__(self) -> None:
+        self.fail_unknown = False
+        self.reply_attempts = 0
+
+    async def resolve_destination(self, session: AsyncSession, owner_id: UUID) -> int | None:
+        destination = await session.scalar(
+            select(TelegramOwnerRecord.telegram_user_id).where(
+                TelegramOwnerRecord.owner_id == owner_id
+            )
+        )
+        return int(destination) if destination is not None else None
+
+    async def send_reply(self, _message: TelegramReplySend) -> str:
+        self.reply_attempts += 1
+        if self.fail_unknown:
+            raise UnknownDeliveryFailure("local_transport_outcome_unknown")
+        return f"local-reply-{self.reply_attempts}"
+
+    async def send_reminder(self, _message: ReminderSend) -> str:
+        raise AssertionError("this scenario should not create reminder sends")
+
+
+async def _submit_operations_text(
+    sessions: async_sessionmaker[AsyncSession],
+    *,
+    bot_id: int,
+    user_id: int,
+    text_value: str,
+    at: datetime,
+    assistant: BoundedPlanningAssistant | None = None,
+) -> tuple[UUID, Job, dict[str, object]]:
+    update_id = uuid4().int % 9_000_000_000_000_000
+    payload: dict[str, object] = {
+        "update_id": update_id,
+        "message": {
+            "from": {"id": user_id, "is_bot": False, "first_name": "Fixture"},
+            "chat": {"id": user_id, "type": "private"},
+            "date": int(at.timestamp()),
+            "text": text_value,
+        },
+    }
+    async with sessions() as session, session.begin():
+        receipt = await persist_update(
+            session,
+            bot_id=bot_id,
+            payload=payload,
+            owner_resolver=PostgresTelegramOwnerResolver(),
+        )
+        assert receipt is not None and receipt.accepted
+        inbox = await session.scalar(
+            select(InboxUpdate).where(
+                InboxUpdate.bot_id == bot_id,
+                InboxUpdate.update_id == update_id,
+            )
+        )
+        assert inbox is not None and inbox.owner_id is not None
+        owner_id = inbox.owner_id
+
+    claim = await claim_application_job(sessions, worker_id=f"issue22-fault-{uuid4().hex[:12]}")
+    assert claim is not None and claim.owner_id == owner_id
+    await process_application_job(sessions, claim, now=at, assistant=assistant)
+    async with sessions() as session:
+        reply_event = await session.scalar(
+            select(OutboxEvent).where(
+                OutboxEvent.event_type == "telegram.reply.requested",
+                OutboxEvent.causation_id == claim.job_id,
+            )
+        )
+        assert reply_event is not None
+        assert isinstance(reply_event.payload.get("payload"), dict)
+        job = await session.get(Job, claim.job_id)
+        assert job is not None
+        return owner_id, job, reply_event.payload["payload"]
+
+
+def test_real_provider_and_delivery_fault_producers_reach_operations_snapshot(
+    operations_database: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Exercise local producer failures end to end; only external transports are faked."""
+    bot_id = 6_200_000_000 + uuid4().int % 100_000_000
+    user_id = 6_300_000_000 + uuid4().int % 100_000_000
+    private_request = f"private-provider-input-{uuid4()}"
+    private_provider_error = f"private-provider-error-{uuid4()}"
+    provider_transport = _UnknownCompletionTransport(private_provider_error)
+    telegram_transport = _LocalReplyTransport()
+    provider_call_id: str | None = None
+    delivery_attempt_id: UUID | None = None
+
+    async def scenario() -> None:
+        nonlocal provider_call_id, delivery_attempt_id
+        engine = create_engine(operations_database)
+        sessions = create_session_factory(engine)
+        try:
+            async def drain_successful_replies() -> None:
+                for _ in range(100):
+                    if not await process_delivery_iteration(
+                        sessions,
+                        telegram_transport,
+                        worker_id=f"issue22-fault-drain-{uuid4().hex[:8]}",
+                        now=lambda: datetime.now(UTC) + timedelta(seconds=1),
+                    ):
+                        return
+                raise AssertionError("delivery worker did not become idle within bounded drain")
+
+            for text_value in (
+                "/start",
+                "en",
+                "Asia/Almaty",
+                "suggested",
+                "suggested",
+                "confirm",
+            ):
+                at = datetime.now(UTC)
+                _, _, reply = await _submit_operations_text(
+                    sessions,
+                    bot_id=bot_id,
+                    user_id=user_id,
+                    text_value=text_value,
+                    at=at,
+                )
+                assert reply.get("plain_text")
+                await drain_successful_replies()
+
+            assistant = BoundedPlanningAssistant(
+                transport=provider_transport,
+                usage=SqlAlchemyProviderUsageRecorder(sessions),
+                allowance=SqlAlchemyTurnAllowance(sessions),
+                now=lambda: datetime.now(UTC),
+            )
+            at = datetime.now(UTC)
+            owner_id, application_job, failure_reply = await _submit_operations_text(
+                sessions,
+                bot_id=bot_id,
+                user_id=user_id,
+                text_value=f"Help with this private reminder: {private_request}",
+                at=at,
+                assistant=assistant,
+            )
+            assert application_job.status == "succeeded"
+            assert provider_transport.calls == 1
+            assert failure_reply.get("plain_text")
+
+            async with sessions() as session:
+                provider_calls = list(
+                    await session.scalars(
+                        select(ProviderCallRecord).where(
+                            ProviderCallRecord.owner_id == owner_id
+                        )
+                    )
+                )
+                assert len(provider_calls) == 1
+                assert provider_calls[0].state == "unknown"
+                assert provider_calls[0].call_id is not None
+                provider_call_id = str(provider_calls[0].call_id)
+                reply_event = await session.scalar(
+                    select(OutboxEvent).where(
+                        OutboxEvent.event_type == "telegram.reply.requested",
+                        OutboxEvent.causation_id == application_job.id,
+                    )
+                )
+                assert reply_event is not None
+
+            successful_reply_attempts = telegram_transport.reply_attempts
+            telegram_transport.fail_unknown = True
+            assert await process_delivery_iteration(
+                sessions,
+                telegram_transport,
+                worker_id=f"issue22-fault-unknown-{uuid4().hex[:8]}",
+                now=lambda: datetime.now(UTC) + timedelta(seconds=1),
+            )
+            assert not await process_delivery_iteration(
+                sessions,
+                telegram_transport,
+                worker_id=f"issue22-fault-no-retry-{uuid4().hex[:8]}",
+                now=lambda: datetime.now(UTC) + timedelta(seconds=1),
+            )
+            assert telegram_transport.reply_attempts == successful_reply_attempts + 1
+
+            async with sessions() as session:
+                attempts = list(
+                    await session.scalars(
+                        select(DeliveryAttemptRecord).where(
+                            DeliveryAttemptRecord.reply_event_id == reply_event.id
+                        )
+                    )
+                )
+                assert len(attempts) == 1
+                assert attempts[0].outcome == "unknown"
+                delivery_attempt_id = attempts[0].id
+
+            async def read_fault_facts() -> tuple[tuple[str, str], ...]:
+                async with sessions() as session:
+                    provider_rows = list(
+                        await session.execute(
+                            select(ProviderCallRecord.call_id, ProviderCallRecord.state).where(
+                                ProviderCallRecord.owner_id == owner_id
+                            )
+                        )
+                    )
+                    attempt_rows = list(
+                        await session.execute(
+                            select(DeliveryAttemptRecord.id, DeliveryAttemptRecord.outcome).where(
+                                DeliveryAttemptRecord.reply_event_id == reply_event.id
+                            )
+                        )
+                    )
+                    return tuple(
+                        sorted(
+                            [(str(row.call_id), row.state) for row in provider_rows]
+                            + [(str(row.id), row.outcome) for row in attempt_rows]
+                        )
+                    )
+
+            persisted_before = await read_fault_facts()
+            statements: list[str] = []
+            original_create_engine = create_engine
+
+            def observe_snapshot_engine(database_url: str) -> AsyncEngine:
+                observed_engine = original_create_engine(database_url)
+
+                def guard_read_only(
+                    _connection: object,
+                    _cursor: object,
+                    statement: str,
+                    _parameters: object,
+                    _context: object,
+                    _executemany: bool,
+                ) -> None:
+                    normalized = statement.lstrip().upper()
+                    statements.append(normalized)
+                    if not normalized.startswith(("SELECT", "SHOW")):
+                        raise AssertionError("the operations snapshot issued non-read SQL")
+
+                event.listen(
+                    observed_engine.sync_engine,
+                    "before_cursor_execute",
+                    guard_read_only,
+                )
+                return observed_engine
+
+            monkeypatch.setattr(
+                "pin.entrypoints.operations.create_engine", observe_snapshot_engine
+            )
+            snapshot, ready = await _snapshot(operations_database)
+            assert ready is True
+            assert statements and all(
+                statement.startswith(("SELECT", "SHOW")) for statement in statements
+            )
+            assert await read_fault_facts() == persisted_before
+
+            delivery = snapshot["contexts"]["delivery"]
+            assert delivery["outcomes"]["unknown"] == 1
+            assert str(delivery_attempt_id) in delivery["unknown_attempt_ids"]
+            provider = snapshot["contexts"]["provider"]
+            assert provider["states"] == {"unknown": 1}
+            assert provider_call_id in provider["unknown_call_ids"]
+            snapshot_text = repr(snapshot)
+            for private_value in (
+                str(owner_id),
+                str(user_id),
+                private_request,
+                private_provider_error,
+            ):
+                assert private_value not in snapshot_text
+        finally:
             await engine.dispose()
 
     run_local_async(scenario)
