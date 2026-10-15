@@ -31,7 +31,11 @@ from pin.adapters.telegram.home_zone_runtime import (
     pending_home_zone_text_reply,
     stale_home_zone_action,
 )
-from pin.adapters.telegram.ingress import PostgresTelegramOwnerResolver, private_actor
+from pin.adapters.telegram.ingress import (
+    PostgresTelegramOwnerResolver,
+    TelegramOwnerRecord,
+    private_actor,
+)
 from pin.adapters.telegram.onboarding import (
     DispatchDisposition,
     PrivateMessageResult,
@@ -68,6 +72,7 @@ from pin.contexts.billing.api import (
 )
 from pin.contexts.identity.application.onboarding import OnboardingResult
 from pin.contexts.identity.infrastructure.store import SqlAlchemyIdentityStore
+from pin.contexts.notifications.application.delivery import DELETED_ACCOUNT_DENIAL_TEXT
 from pin.contexts.notifications.infrastructure.outbox_consumer import (
     SqlAlchemyNotificationScheduleEventConsumer,
 )
@@ -118,8 +123,69 @@ async def process_application_job(
     if await process_capture_application_job(sessions, claim, now=now, assistant=assistant):
         return
     async with sessions() as session, session.begin():
-        lifecycle = await SqlAlchemyAccessUsageStore(session).lock_account_lifecycle(claim.owner_id)
-        if lifecycle is not AccountLifecycle.PRESENT:
+        billing = SqlAlchemyAccessUsageStore(session)
+        lifecycle = await billing.lock_account_lifecycle(claim.owner_id)
+        # New Telegram owners have no Billing row until trial activation. Only
+        # a persisted deletion tombstone fences onboarding/application work.
+        if lifecycle is AccountLifecycle.DELETED:
+            receipt = await record_job_effect_once(
+                session,
+                claim,
+                effect_key="private_text_applied",
+                result={"status": "deleted_account_denial"},
+            )
+            inbox_id = _uuid_field(claim.payload.get("inbox_id"))
+            inbox = await session.get(InboxUpdate, inbox_id)
+            deleted_at = await billing.lock_account_deletion_at(claim.owner_id)
+            if (
+                receipt.first_application
+                and inbox is not None
+                and inbox.owner_id == claim.owner_id
+                and deleted_at is not None
+                and inbox.received_at > deleted_at
+            ):
+                actor = private_actor(inbox.payload)
+                callback = inbox.payload.get("callback_query")
+                message = (
+                    callback.get("message")
+                    if isinstance(callback, dict)
+                    else inbox.payload.get("message")
+                )
+                if actor is not None and isinstance(message, dict):
+                    telegram_user_id, _, _ = actor
+                    chat = message.get("chat")
+                    mapping = await session.get(
+                        TelegramOwnerRecord, (inbox.bot_id, telegram_user_id)
+                    )
+                    if (
+                        isinstance(chat, dict)
+                        and chat.get("id") == telegram_user_id
+                        and mapping is not None
+                        and mapping.owner_id == claim.owner_id
+                    ):
+                        denial = DELETED_ACCOUNT_DENIAL_TEXT
+                        await add_outbox_event(
+                            session,
+                            EventEnvelope(
+                                id=uuid4(),
+                                event_type="telegram.reply.requested",
+                                schema_version=1,
+                                aggregate_id=claim.owner_id,
+                                aggregate_version=max(1, claim.conversation_sequence or 1),
+                                owner_id=claim.owner_id,
+                                occurred_at=now.astimezone(UTC),
+                                causation_id=claim.job_id,
+                                payload={
+                                    "chat_id": telegram_user_id,
+                                    "markdown": denial,
+                                    "plain_text": denial,
+                                    "handling": "denied",
+                                    "safe_deleted_account_denial": True,
+                                    "source_job_id": str(claim.job_id),
+                                },
+                            ),
+                            claim=claim,
+                        )
             await complete_job(session, claim)
             return
         receipt = await record_job_effect_once(

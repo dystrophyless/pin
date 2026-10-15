@@ -32,25 +32,45 @@ async def consume_delivery_outcomes(
             AccountabilityOutcomeReceiptRecord.event_id == OutboxEvent.id,
         )
     )
-    events = list(
+    candidates = list(
         (
-            await session.scalars(
-                select(OutboxEvent)
+            await session.execute(
+                select(OutboxEvent.id, OutboxEvent.owner_id)
                 .where(
                     OutboxEvent.event_type == "notifications.delivery_attempt_outcome",
                     ~receipt_exists,
                 )
                 .order_by(OutboxEvent.created_at, OutboxEvent.id)
                 .limit(limit)
-                .with_for_update(skip_locked=True)
             )
         ).all()
     )
-    for event in events:
-        lifecycle = await SqlAlchemyAccessUsageStore(session).lock_account_lifecycle(
-            event.owner_id
+    consumed = 0
+    lifecycle_by_owner = {}
+    for owner_id in sorted({owner_id for _, owner_id in candidates}, key=lambda value: value.int):
+        lifecycle_by_owner[owner_id] = (
+            await SqlAlchemyAccessUsageStore(session).lock_account_lifecycle(owner_id)
         )
-        if lifecycle is not AccountLifecycle.PRESENT:
+    for event_id, owner_id in candidates:
+        lifecycle = lifecycle_by_owner[owner_id]
+        if lifecycle is AccountLifecycle.DELETED:
+            continue
+        event = await session.scalar(
+            select(OutboxEvent)
+            .where(OutboxEvent.id == event_id)
+            .with_for_update(skip_locked=True)
+        )
+        if event is None:
+            continue
+        if (
+            await session.scalar(
+                select(AccountabilityOutcomeReceiptRecord.id).where(
+                    AccountabilityOutcomeReceiptRecord.owner_id == owner_id,
+                    AccountabilityOutcomeReceiptRecord.event_id == event_id,
+                )
+            )
+            is not None
+        ):
             continue
         try:
             envelope = EventEnvelope.from_dict(event.payload)
@@ -108,4 +128,5 @@ async def consume_delivery_outcomes(
                 )
             )
         await session.flush()
-    return len(events)
+        consumed += 1
+    return consumed

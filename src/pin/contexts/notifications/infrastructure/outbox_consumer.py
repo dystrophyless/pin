@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from uuid import UUID
 
 from sqlalchemy import exists, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -61,11 +62,19 @@ class SqlAlchemyNotificationScheduleEventConsumer:
         )
         intents = SqlAlchemyNotificationsStore(self._session)
         consumed = 0
-        for event_id, owner_id in candidates:
-            lifecycle = await SqlAlchemyAccessUsageStore(self._session).lock_account_lifecycle(
-                owner_id
+        lifecycle_by_owner: dict[UUID, AccountLifecycle] = {}
+        for owner_id in sorted(
+            {owner_id for _, owner_id in candidates if owner_id is not None},
+            key=lambda value: value.int,
+        ):
+            lifecycle_by_owner[owner_id] = (
+                await SqlAlchemyAccessUsageStore(self._session).lock_account_lifecycle(owner_id)
             )
-            if lifecycle is not AccountLifecycle.PRESENT:
+        for event_id, owner_id in candidates:
+            if owner_id is None:
+                continue
+            lifecycle = lifecycle_by_owner[owner_id]
+            if lifecycle is AccountLifecycle.DELETED:
                 continue
             row = await self._session.scalar(
                 select(OutboxEvent)

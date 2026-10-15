@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, time, timedelta
 from typing import Protocol, cast
@@ -32,6 +32,7 @@ from pin.contexts.notifications.application.delivery import (
     ReplyPreparation,
     TelegramReplySend,
     UnknownDeliveryFailure,
+    is_deleted_account_denial,
 )
 from pin.contexts.notifications.domain.delivery import (
     DeliveryAttemptOutcome,
@@ -62,7 +63,7 @@ from pin.platform.jobs import (
     fail_job,
     lock_job_for_effects,
 )
-from pin.platform.models import Job, OutboxEvent
+from pin.platform.models import InboxUpdate, Job, OutboxEvent
 
 DELIVERY_JOB_KIND = "notifications.deliver_reminder"
 DELIVERY_REPLY_JOB_KIND = "notifications.deliver_reply"
@@ -688,13 +689,23 @@ async def deliver_reply_job(
                 await complete_job(session, claim)
                 return None
             payload = envelope.payload
+            safe_deleted_denial = is_deleted_account_denial(payload)
             requested_target = _positive_int(payload.get("chat_id"))
             destination = await transport.resolve_destination(session, event.owner_id)
             access_store = SqlAlchemyAccessUsageStore(session)
             lifecycle = await access_store.lock_account_lifecycle(event.owner_id)
+            if lifecycle is AccountLifecycle.DELETED:
+                deleted_at = await access_store.lock_account_deletion_at(event.owner_id)
+                safe_deleted_denial = (
+                    safe_deleted_denial
+                    and deleted_at is not None
+                    and await _is_post_deletion_denial_source(
+                        session, event, payload, deleted_at=deleted_at
+                    )
+                )
             # The persisted identity mapping is authoritative. A copied or stale
             # payload cannot redirect another owner's text to a different chat.
-            if lifecycle is AccountLifecycle.DELETED:
+            if lifecycle is AccountLifecycle.DELETED and not safe_deleted_denial:
                 immediate = await _record_reply_outcome(
                     session,
                     event,
@@ -762,7 +773,10 @@ async def deliver_reply_job(
                             await before_attempt_authorization()
                         await lock_job_for_effects(session, claim)
                         latest_lifecycle = await access_store.lock_account_lifecycle(event.owner_id)
-                        if latest_lifecycle is AccountLifecycle.DELETED:
+                        if (
+                            latest_lifecycle is AccountLifecycle.DELETED
+                            and not safe_deleted_denial
+                        ):
                             immediate = await _record_reply_outcome(
                                 session,
                                 event,
@@ -776,16 +790,21 @@ async def deliver_reply_job(
                             )
                             await complete_job(session, claim)
                         else:
-                            message, immediate = await _prepare_reply_message(
-                                session,
-                                claim,
-                                event,
-                                envelope,
-                                TelegramReplySend(destination, markdown, plain_text, markup),
-                                prepare_reply=prepare_reply,
-                                now=now,
-                            )
-                            if message is not None:
+                            fallback = TelegramReplySend(destination, markdown, plain_text, markup)
+                            if safe_deleted_denial:
+                                final_message: TelegramReplySend | None = fallback
+                                immediate = None
+                            else:
+                                final_message, immediate = await _prepare_reply_message(
+                                    session,
+                                    claim,
+                                    event,
+                                    envelope,
+                                    fallback,
+                                    prepare_reply=prepare_reply,
+                                    now=now,
+                                )
+                            if final_message is not None:
                                 attempt_number = await _next_reply_attempt_number(
                                     session, event.id, destination
                                 )
@@ -807,7 +826,7 @@ async def deliver_reply_job(
                                     event.owner_id,
                                     destination,
                                     attempt_number,
-                                    message,
+                                    final_message,
                                 )
 
     if prepared is None:
@@ -1203,6 +1222,34 @@ def _event_envelope(event: OutboxEvent) -> EventEnvelope | None:
     if envelope.id != event.id or envelope.event_type != event.event_type:
         return None
     return envelope
+
+
+async def _is_post_deletion_denial_source(
+    session: AsyncSession,
+    event: OutboxEvent,
+    payload: Mapping[str, object],
+    *,
+    deleted_at: datetime,
+) -> bool:
+    if event.causation_id is None or payload.get("source_job_id") != str(event.causation_id):
+        return False
+    source_job = await session.get(Job, event.causation_id)
+    if (
+        source_job is None
+        or source_job.owner_id != event.owner_id
+        or source_job.lane != "application"
+    ):
+        return False
+    try:
+        inbox_id = UUID(str(source_job.payload["inbox_id"]))
+    except (KeyError, TypeError, ValueError):
+        return False
+    inbox = await session.get(InboxUpdate, inbox_id)
+    return (
+        inbox is not None
+        and inbox.owner_id == event.owner_id
+        and inbox.received_at > deleted_at
+    )
 
 
 def _reply_job_key(event_id: UUID) -> str:

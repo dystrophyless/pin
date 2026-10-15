@@ -195,9 +195,10 @@ async def _process_capture_job(
 
     async with sessions() as session, session.begin():
         lifecycle = await SqlAlchemyAccessUsageStore(session).lock_account_lifecycle(claim.owner_id)
-        if lifecycle is not AccountLifecycle.PRESENT:
-            await complete_job(session, claim)
-            return True
+        if lifecycle is AccountLifecycle.DELETED:
+            # Let the general application worker emit its static, owner-bound
+            # denial response without interpreting or persisting this update.
+            return False
         inbound = await _capture_inbound(session, claim)
         if inbound is None:
             return False
@@ -324,7 +325,7 @@ async def _process_capture_job(
             lifecycle = await SqlAlchemyAccessUsageStore(session).lock_account_lifecycle(
                 interpretation.draft.owner_id
             )
-            if lifecycle is not AccountLifecycle.PRESENT:
+            if lifecycle is AccountLifecycle.DELETED:
                 await complete_job(session, claim)
                 return True
             already_applied = await record_job_effect_once(
@@ -555,9 +556,8 @@ async def _process_capture_callback_job(
             lifecycle = await SqlAlchemyAccessUsageStore(session).lock_account_lifecycle(
                 claim.owner_id
             )
-            if lifecycle is not AccountLifecycle.PRESENT:
-                await complete_job(session, claim)
-                return True
+            if lifecycle is AccountLifecycle.DELETED:
+                return False
             current = await _capture_inbound(session, claim)
             if current is None or current.callback_data != inbound.callback_data:
                 raise InvalidCallbackToken("capture callback changed during processing")

@@ -656,6 +656,15 @@ class SqlAlchemyAccessUsageStore(AccessUsageStore):
     async def lock_account_lifecycle(self, owner_id: UUID) -> AccountLifecycle:
         return await self._account_lifecycle(owner_id, lock=True)
 
+    async def lock_account_deletion_at(self, owner_id: UUID) -> datetime | None:
+        account_record = await self._session.scalar(
+            select(AccessAccountRecord)
+            .where(AccessAccountRecord.owner_id == owner_id)
+            .execution_options(populate_existing=True)
+            .with_for_update()
+        )
+        return account_record.deleted_at if account_record is not None else None
+
     async def _account_lifecycle(self, owner_id: UUID, *, lock: bool) -> AccountLifecycle:
         query = (
             select(AccessAccountRecord)

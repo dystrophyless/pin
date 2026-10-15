@@ -33,7 +33,9 @@ from pin.adapters.telegram.ingress import (
     TelegramOwnerRecord,
     persist_update,
 )
+from pin.contexts.accountability.infrastructure.delivery_events import consume_delivery_outcomes
 from pin.contexts.accountability.infrastructure.models import CheckInCycleRecord
+from pin.contexts.accountability.infrastructure.planning_events import consume_planning_cycle_events
 from pin.contexts.billing.api import (
     AccountLifecycle,
     RestoreReturningPaidAccess,
@@ -78,6 +80,8 @@ from pin.contexts.retention.infrastructure.store import (
 from pin.contexts.speech.infrastructure.files import PrivateAudioFiles
 from pin.contexts.speech.infrastructure.models import SpeechRequestRecord
 from pin.persistence.models import ActionReceipt, Base
+from pin.platform.contracts import EventEnvelope
+from pin.platform.events import add_outbox_event
 from pin.platform.jobs import JobLane, claim_job
 from pin.platform.models import InboxUpdate, OutboxEvent
 
@@ -672,6 +676,75 @@ async def test_stale_schedule_outbox_cannot_recreate_deleted_owner_state(
 
 
 @pytest.mark.asyncio
+async def test_outbox_consumers_lock_oppositely_ordered_owners_consistently(
+    sessions: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    low_owner, high_owner = sorted((uuid4(), uuid4()), key=lambda owner: owner.int)
+    now = datetime(2026, 10, 15, 12, tzinfo=UTC)
+    try:
+        async with sessions() as session, session.begin():
+            for event_type in (
+                "planning.plan_created",
+                "notifications.delivery_attempt_outcome",
+            ):
+                # Candidate event order is intentionally high owner then low owner.
+                for offset, owner_id in enumerate((high_owner, low_owner)):
+                    event_id = uuid4()
+                    occurred_at = now + timedelta(seconds=offset)
+                    envelope = EventEnvelope(
+                        id=event_id,
+                        event_type=event_type,
+                        schema_version=1,
+                        aggregate_id=uuid4(),
+                        aggregate_version=1,
+                        owner_id=owner_id,
+                        occurred_at=occurred_at,
+                        payload={},
+                    )
+                    await add_outbox_event(session, envelope)
+                    await session.flush()
+                    event_record = await session.get(OutboxEvent, event_id)
+                    assert event_record is not None
+                    event_record.created_at = occurred_at
+
+        lifecycle_locks: list[UUID] = []
+
+        async def record_lifecycle_lock(_store, owner_id: UUID) -> AccountLifecycle:
+            lifecycle_locks.append(owner_id)
+            return AccountLifecycle.PRESENT
+
+        monkeypatch.setattr(
+            SqlAlchemyAccessUsageStore,
+            "lock_account_lifecycle",
+            record_lifecycle_lock,
+        )
+
+        class NoCurrentOccurrence:
+            async def get_current_occurrence(self, _owner_id: UUID, _occurrence_id: UUID):
+                return None
+
+        async with sessions() as session, session.begin():
+            assert (
+                await consume_planning_cycle_events(
+                    session,
+                    current_occurrences=NoCurrentOccurrence(),
+                    at=now,
+                )
+                == 2
+            )
+        expected_order = [low_owner, high_owner]
+        assert lifecycle_locks == expected_order
+
+        lifecycle_locks.clear()
+        async with sessions() as session, session.begin():
+            assert await consume_delivery_outcomes(session, at=now) == 2
+        assert lifecycle_locks == expected_order
+    finally:
+        await _clean_owner(sessions, low_owner)
+        await _clean_owner(sessions, high_owner)
+
+
+@pytest.mark.asyncio
 async def test_telegram_delete_account_callbacks_and_scheduled_maintenance(
     sessions: async_sessionmaker[AsyncSession], tmp_path: Path
 ) -> None:
@@ -817,6 +890,52 @@ async def test_telegram_delete_account_callbacks_and_scheduled_maintenance(
                 sessions, blocked_claim, transport, now=lambda: datetime.now(UTC)
             )
         assert len(transport.sent) == sent_before_deleted_reply
+
+        stale_update = await message(91_005, "/today")
+        async with sessions() as session, session.begin():
+            stale_receipt = await persist_update(
+                session,
+                bot_id=bot_id,
+                payload=stale_update,
+                owner_resolver=PostgresTelegramOwnerResolver(),
+            )
+            assert stale_receipt is not None and stale_receipt.accepted
+        stale_claim = await claim_application_job(
+            sessions, worker_id=f"retention-stale-app-{uuid4().hex[:8]}"
+        )
+        assert stale_claim is not None
+        stale_inbox_id = UUID(str(stale_claim.payload["inbox_id"]))
+        async with sessions() as session, session.begin():
+            stale_inbox = await session.get(InboxUpdate, stale_inbox_id)
+            assert stale_inbox is not None
+            stale_inbox.received_at = now - timedelta(seconds=1)
+        await process_application_job(sessions, stale_claim, now=now)
+        async with sessions() as session:
+            stale_reply = await session.scalar(
+                select(OutboxEvent).where(OutboxEvent.causation_id == stale_claim.job_id)
+            )
+            assert stale_reply is None
+
+        # A new owner-authenticated request after deletion gets only the fixed
+        # denial. Old, unmarked reply requests above remain suppressed.
+        denied_owner, denial_payload = await _dispatch_telegram_update(
+            sessions, bot_id=bot_id, update=await message(91_006, "/today"), now=now
+        )
+        assert denied_owner == owner_id
+        assert denial_payload.get("safe_deleted_account_denial") is True
+        async with sessions() as session, session.begin():
+            assert await enqueue_due_reply_jobs(session, now=datetime.now(UTC)) == 1
+        async with sessions() as session, session.begin():
+            denial_claim = await claim_job(
+                session,
+                lane=JobLane.DELIVERY,
+                worker_id=f"retention-denial-delivery-{uuid4().hex[:8]}",
+                lease_for=timedelta(seconds=45),
+            )
+            assert denial_claim is not None and denial_claim.kind == DELIVERY_REPLY_JOB_KIND
+        await deliver_reply_job(sessions, denial_claim, transport, now=lambda: datetime.now(UTC))
+        assert len(transport.sent) == sent_before_deleted_reply + 1
+        assert transport.sent[-1].plain_text == "Account data is unavailable. Данные недоступны."
 
         result = await run_retention_once(
             sessions,
