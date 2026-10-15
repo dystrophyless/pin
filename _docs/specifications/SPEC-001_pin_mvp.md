@@ -374,6 +374,7 @@ Approval evidence: the user's request to decompose the “approved Pin MVP speci
 
 ### Choices explicitly selected by the user
 
+- **Owner scope amendment, 2026-10-15:** actual Telegram Stars payment testing (including Test Server top-up, actual checkout/receipt, renewal/cancellation and refund transactions) is removed from required verification and acceptance, not deferred to a later gate. This supersedes payment-test/provider-payment-proof requirements elsewhere in this specification and tasks #20, #26 and #28. Keep the Stars payment feature and validate its application logic locally using synthetic trusted transport events and PostgreSQL, including receipt validation/idempotency, access periods, refunds, quotas and expiry. Such evidence must be labelled synthetic; it does not establish actual provider operation. This change does not authorize real payments or deployment and does not remove unrelated legal, model-provider or hosting requirements.
 - Preview **every change**, including Done, cancellation, editing, and creation; persist only after confirmation. Multiple tasks use one editable, fully clarified, atomic batch. Cancelling a draft has no plan effect.
 - “One day before” means the same local time on the preceding calendar day; “24 hours before” is an elapsed offset.
 - Onboarding reminder suggestions: one calendar day and one hour before timed plans, editable by the user.
