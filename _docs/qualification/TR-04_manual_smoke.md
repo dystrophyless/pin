@@ -2,12 +2,12 @@
 
 Owner scope:2026-10-16, SPEC-001v0.17. One original audio sample from the owner inRU and one inEN; no200-recording collection or400-request run. The approved reference library and recording kit are optional preparation only.
 
-Status: **SELECTED-LANGUAGE RETRY COMPLETED: BOTH ORIGINALS TRANSCRIBED.** The earlier automatic-English failure remains recorded below. No downstream model proposal or saved plan exists.
+Status: **SELECTED-LANGUAGE TRANSCRIPTION COMPLETED; BOTH BOUNDED PROVIDER INTERPRETATIONS FAILED.** The earlier automatic-English failure remains recorded below. No plan or reminder was saved.
 
 | Case | Source | Audio/hash | Local speech result | Downstream interpretation |
 |---|---|---|---|---|
-| OWNER-RU-01 | Owner, Russian | Original ending 02-02-50 | Selected `ru`; «Завтра напомни, сходить мне в аптеку.» (4.865s) | Not run |
-| OWNER-EN-01 | Owner, English | Original ending 02-02-46 | Selected `en`; “Remind me to go to the drugstore tomorrow, 2pm” (5.091s) | Not run |
+| OWNER-RU-01 | Owner, Russian | Original ending 02-02-50 | Selected `ru`; «Завтра напомни, сходить мне в аптеку.» (4.865s) | Schema-valid but semantically unsupported: added an unrequested explicit one-day-before reminder. |
+| OWNER-EN-01 | Owner, English | Original ending 02-02-46 | Selected `en`; “Remind me to go to the drugstore tomorrow, 2pm” (5.091s) | Invalid output: fabricated appointment duration/fold and an invalid calendar-day/hour reminder; rejected before normalization. |
 
 Use one clear task with a date/time in each recording. The owner may read the same request in both languages. Preserve the actual original audio and stable per-sample receipt/reference metadata; explicitly record the test timezone and reference calendar for relative phrases. Do not infer a production home zone from the language. Declared test context is not proof of Telegram upstream arrival time.
 
@@ -52,3 +52,9 @@ Exactly two calls were attempted; no retries occurred. Total recorded spend was 
 | EN | `gen-1792099842-xCrzycYGnNYoSl0xKUBc` | 3,405 prompt + 184 completion tokens; $0.0000566605; 2,250ms | Invalid output. The provider returned 2026-10-17 14:00 in Asia/Qyzylorda but invented a 30-minute duration and `fold=later`; its `calendar_day` / `hour` relative reminder failed DTO validation. No normalized proposal was produced. |
 
 These outcomes do not count as successful interpretation: RU is schema-valid but semantically unsupported; EN is rejected by validation. The declared test context resolves only the requested date and does not authorize adding a reminder. The allowance was held in memory only (RU settled; EN refunded after validation failure); no plan or reminder was saved. This two-sample check is not an accuracy or MVP qualification, and the earlier eight-call authorization remains exhausted.
+
+## Offline prompt correction after observed failures
+
+The conversation system prompt now distinguishes a task's requested date/time from a separate event-relative reminder. “Remind me tomorrow to go” means the task is scheduled tomorrow; an unrequested before-event offset is omitted so the profile defaults apply. An ordinary action at a requested date/time is a timed task, while appointments remain duration-bearing and their duration/end must not be invented. The typed validator was not weakened or changed; the observed `calendar_day`/`hour` output remains rejected.
+
+Offline verification: the production adapter test accepts the timed-task shape with omitted reminders, asserts these grounding rules are present in the actual system prompt, and rejects the observed invalid reminder shape. `tests/test_model_adapter.py` passes 46/46; Ruff and mypy for the changed production module pass. The unchanged eight-call/$0.01 smoke limits remain in force; the updated prompt's conservative bound is 31,972 max input tokens (under the 32,000-token tier gate) and $0.00820576 worst-case exposure. No live model retest occurred; these prompt instructions do not prove provider behavior or reverse either failed sample.

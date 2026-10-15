@@ -506,7 +506,7 @@ async def test_english_create_works_without_any_existing_plan_or_target() -> Non
     proposal_schema = json.loads(_RESULT_SCHEMA_JSON)["$defs"]["ActionProposal"]
     assert "target_id" not in proposal_schema["required"]
     assert "expected_version" not in proposal_schema["required"]
-    assert '"operation":"propose_create_plan","fields":{"title":"Project review"' in (system_prompt)
+    assert "IDs and versions are only for non-create operations" in system_prompt
 
 
 @pytest.mark.asyncio
@@ -1177,6 +1177,86 @@ def test_proposal_time_and_repeat_contract_keeps_calendar_elapsed_and_dst_fields
                         "timezone": "America/New_York",
                         "duration_minutes": 30,
                     }
+                }
+            ),
+            strict=True,
+        )
+
+
+@pytest.mark.asyncio
+async def test_timed_task_and_default_reminders_are_grounded_in_request() -> None:
+    content = json.dumps(
+        {
+            "kind": "proposal",
+            "language": "en",
+            "operation": "propose_create_plan",
+            "fields": {
+                "title": "Go to the drugstore",
+                "schedule": {
+                    "kind": "task",
+                    "local_date": "2026-10-17",
+                    "local_time": "14:00:00",
+                    "timezone": "Asia/Qyzylorda",
+                    "timing": "timed",
+                },
+            },
+        }
+    )
+    context = _context(
+        language=SourceLanguage.EN,
+        input_kind=InputKind.TRANSCRIPT,
+        text="Remind me to go to the drugstore tomorrow, 2pm",
+    )
+    transport = FakeTransport(_provider_response(content))
+    assistant, _, _ = _assistant(transport)
+
+    outcome = await assistant.interpret(context, at=NOW)
+
+    assert isinstance(outcome, ModelSuccess)
+    assert isinstance(outcome.result, ActionProposal)
+    schedule = outcome.result.fields.schedule
+    assert isinstance(schedule, TaskSchedule)
+    assert schedule.timing == "timed"
+    assert schedule.local_date == date(2026, 10, 17)
+    assert schedule.local_time == time(14, 0)
+    assert outcome.result.fields.reminders is None
+
+    messages = transport.payloads[0]["messages"]
+    assert isinstance(messages, list) and isinstance(messages[0], dict)
+    system_prompt = messages[0].get("content")
+    assert isinstance(system_prompt, str)
+    assert (
+        "'remind me tomorrow to go' / «завтра напомни сходить» sets the task date"
+        in system_prompt
+    )
+    assert "otherwise omit reminders so profile defaults apply" in system_prompt
+    assert "ordinary action at a requested date/time is a timed task" in system_prompt
+    assert "tasks have no duration" in system_prompt
+
+
+def test_observed_invalid_calendar_day_hour_reminder_stays_rejected() -> None:
+    from pin.contexts.conversation.application.dto import ProposalFields
+
+    with pytest.raises(ValueError, match="calendar days and elapsed"):
+        ProposalFields.model_validate_json(
+            json.dumps(
+                {
+                    "schedule": {
+                        "kind": "appointment",
+                        "local_start": "2026-10-17T14:00:00",
+                        "timezone": "Asia/Qyzylorda",
+                        "duration_minutes": 30,
+                        "fold": "later",
+                    },
+                    "reminders": [
+                        {
+                            "kind": "relative",
+                            "basis": "calendar_day",
+                            "amount": 1,
+                            "unit": "hour",
+                            "provenance": "default",
+                        }
+                    ],
                 }
             ),
             strict=True,
