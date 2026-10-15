@@ -5,7 +5,7 @@ Updated: 2026-10-15 (Asia/Qyzylorda). This is a current entry point, not a backl
 ## Repository and entry points
 
 - Actual checkout: `D:\Program\python\pin`; branch `main`; origin `https://github.com/dystrophyless/pin.git`.
-- Root verified local and remote `main` at `454dbaefdbefc3a63092c8f705c25fe188028bdd` before this documentation update. Inspect Git for later commits.
+- Root verified local and remote `main` at `993412de4c4cfba04d136a84484b938418f81f21` before this documentation update. Inspect Git for later commits.
 - Read [AGENTS.md](../AGENTS.md), [SDD workflow](sdd/README.md), and [orchestration](orchestration.md).
 - Requirements: [brainstorm](PROJECT_BRAINSTORM.md). Approved behavior: [SPEC-001 v0.6](specifications/SPEC-001_pin_mvp.md). Technical design: [architecture](ARCHITECTURE.md). The [task index](specifications/SPEC-001_pin_mvp_tasks.md) links the authoritative GitHub Issues.
 - Use project-local Ponytail full; never Superpowers. Executors/Publishers use exact GPT-6 Luna with explicit effort. No implementation Reviewer: the Orchestrator verifies acceptance criteria and raw evidence directly. Do not repeatedly nudge working executors.
@@ -20,7 +20,7 @@ The owner selected `https://t.me/pin_appbot` for both the local landing's Telegr
 
 ## Verified local state
 
-Latest full candidate `12aa6b5` is **FAIL: 547/549 passed**, two core RU/EN failures, zero errors/skips. Each leaves an activation recovery-summary job delayed into a later slot; the core test's reference time comes from the host clock. No product bug is established. All other qualification gates passed, including p95 2.225s, offline Whisper and configured landing. All36fixtures were cleaned and the exact174non-template catalog restored; root checked the independent audit and live catalog. [Failed qualification](evidence/local-integration-12aa6b5.md) and raw packet retain the diagnostics. Focused passes below do not override this full-run finding.
+Latest full frozen qualification `993412d` is **PASS549/549**, zero failures/errors/skips, JUnit303.036s. Ruff, mypy219, architecture, migrations/drift, configured landing and cached offline Whisper RU/EN/silence pass. Injected-transport 50-owner dispatch-start p95 is2.091s. Root independently checked all452 frozen file hashes, raw JUnit (both core cases have zero outstanding delivery jobs), cleanup audit and live catalog: all36 fixtures absent, exact174 baseline restored, protected3present. [Current qualification](evidence/local-integration-993412d.md). Earlier [failed12aa qualification](evidence/local-integration-12aa6b5.md) remains unchanged; its quiet-hours fixture problem was corrected only by fixing the core reference instant, preserving strict assertions and product source.
 
 Issues 1–20 are accepted/closed for Windows local development. Latest: [#20 acceptance](https://github.com/dystrophyless/pin/issues/20#issuecomment-6191790583), [contract audit](evidence/issue-20-local-acceptance.md), and [support proof](evidence/issue-20-support-local.md). Acceptance of a local feature is not release acceptance.
 
@@ -37,7 +37,7 @@ The [AC evidence matrix](evidence/local-mvp-acceptance-matrix.md) distinguishes 
 
 ## Active assignment
 
-The core reference-clock correction is complete: fixed `2026-10-13T09:00:00Z` (14:00 Almaty), assertions unchanged, native2/2 with zero errors/skips and zero final outstanding delivery jobs in both JUnit cases. Root checked sourceSHA `8b6976222aaaca3d45b577abab9c9fafa930e2ce9f93266219a1161a60a3d608`, JUnit and cleanup, and independently passed Ruff/mypy. No product source changed. Root is committing this correction and resuming the same frozen qualifier on the new exact revision; no full-suite PASS is asserted before that result. Failed12aa evidence remains unchanged. Root owns Git, handoff and acceptance; Publisher transfers decisions. Check live handles and do not overlap writers.
+The new full frozen result is complete and root-verified; root is recording/publishing the durable evidence and reconciling current issue metadata without accepting unproved whole-task gates. Publisher owns only GitHub body reconciliation and the three-case #26 progress update. Root owns Git, handoff, evidence matrix and acceptance. Revalidate live handles before dispatch; do not overlap writers. Product source remains unchanged from5464eec. Remaining real gates include hosted/deployment/recovery work outside the local phase, Kazakhstan financial-retention applicability, TR-04 and selected host/provider qualification, complete integrated scenario coverage and final acceptance.
 
 Untracked `output/` is unrelated mascot work. Preserve it and all other unrelated edits; stage explicit in-scope paths only. There is no pending Stars-payment user action or missing landing support choice.
 
