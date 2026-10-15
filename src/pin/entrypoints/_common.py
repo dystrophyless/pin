@@ -9,7 +9,11 @@ from collections.abc import Sequence
 
 from pin.bootstrap.composition import build_runtime
 from pin.bootstrap.config import ProcessRole, SettingsError
-from pin.observability import configure_logging
+from pin.observability import (
+    configure_logging,
+    log_speech_dependencies_missing,
+    log_startup_configuration_rejection,
+)
 
 logger = logging.getLogger("pin.runtime")
 
@@ -26,15 +30,17 @@ def main_for(role: ProcessRole, argv: Sequence[str] | None = None) -> int:
     try:
         build_runtime(role)
     except SettingsError as error:
-        logger.error("startup_rejected: %s", error)
+        log_startup_configuration_rejection(
+            logger, error.diagnostic_category, error.diagnostic_fields
+        )
         return 2
     if role is ProcessRole.SPEECH_WORKER:
         try:
             from pin.bootstrap.speech import require_speech_runtime
 
             require_speech_runtime()
-        except RuntimeError as error:
-            logger.error("startup_rejected: %s", error)
+        except RuntimeError:
+            log_speech_dependencies_missing(logger)
             return 2
     logger.info("startup_ready: role=%s", role.value)
     if not args.check:
@@ -45,4 +51,3 @@ def main_for(role: ProcessRole, argv: Sequence[str] | None = None) -> int:
 
 def run(role: ProcessRole) -> None:
     raise SystemExit(main_for(role, sys.argv[1:]))
-

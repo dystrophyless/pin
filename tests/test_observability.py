@@ -64,6 +64,59 @@ def test_approved_static_event_is_preserved() -> None:
     assert json.loads(rendered)["message"] == "telegram_poll_persist_failed"
 
 
+def test_startup_configuration_diagnostics_keep_allowlisted_fields() -> None:
+    rendered = JsonFormatter().format(
+        _record(
+            "startup_rejected: configuration category=%s fields=%s",
+            "invalid_configuration",
+            ("PIN_DATABASE_URL", "PIN_BOT_TOKEN"),
+        )
+    )
+
+    assert json.loads(rendered)["message"] == (
+        "startup_rejected: configuration category=invalid_configuration "
+        "fields=PIN_DATABASE_URL, PIN_BOT_TOKEN"
+    )
+
+
+def test_startup_configuration_diagnostic_redacts_unclassified_fields() -> None:
+    secret = "TOKEN-SECRET"
+    rendered = JsonFormatter().format(
+        _record(
+            "startup_rejected: configuration category=%s fields=%s",
+            "invalid_configuration",
+            ("PIN_DATABASE_URL", secret),
+        )
+    )
+
+    assert secret not in rendered
+    assert json.loads(rendered)["message"] == (
+        "startup_rejected: configuration category=invalid_configuration fields=<redacted>"
+    )
+
+    untrusted_category = JsonFormatter().format(
+        _record(
+            "startup_rejected: configuration category=%s fields=%s",
+            "private_prompt_SECRET",
+            ("PIN_DATABASE_URL",),
+        )
+    )
+    assert "private_prompt_SECRET" not in untrusted_category
+    assert json.loads(untrusted_category)["message"] == (
+        "startup_rejected: configuration category=<redacted> fields=PIN_DATABASE_URL"
+    )
+
+
+def test_startup_speech_dependency_diagnostic_is_an_exact_static_event() -> None:
+    message = "startup_rejected: Speech dependencies are missing; install the `speech` extra."
+    rendered = JsonFormatter().format(_record(message))
+
+    assert json.loads(rendered)["message"] == message
+    freeform = JsonFormatter().format(_record(f"{message} TOKEN-SECRET"))
+    assert "TOKEN-SECRET" not in freeform
+    assert json.loads(freeform)["message"] == "unclassified_log_message_redacted"
+
+
 def test_telegram_identifiers_are_not_safe_operational_log_fields() -> None:
     rendered = JsonFormatter().format(_record("telegram_event: chat_id=%s", 123456789))
 

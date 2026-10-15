@@ -17,7 +17,7 @@ from pin.contexts.conversation.infrastructure.usage import (
     SqlAlchemyProviderUsageRecorder,
     SqlAlchemyTurnAllowance,
 )
-from pin.observability import configure_logging
+from pin.observability import configure_logging, log_startup_configuration_rejection
 from pin.persistence import create_engine, create_session_factory, run_local_async
 from pin.platform.worker_heartbeat import worker_heartbeat
 
@@ -32,7 +32,9 @@ def main() -> None:
     try:
         settings = load_settings(ProcessRole.APP_WORKER)
     except SettingsError as error:
-        logger.error("startup_rejected: %s", error)
+        log_startup_configuration_rejection(
+            logger, error.diagnostic_category, error.diagnostic_fields
+        )
         raise SystemExit(2) from None
     logger.info("startup_ready: role=%s", ProcessRole.APP_WORKER.value)
     if args.check:
