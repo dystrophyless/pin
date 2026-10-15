@@ -10,7 +10,7 @@ The authoritative current combined local packet is [`local-integration-5464eec.m
 
 ## Owner scope correction — 2026-10-15
 
-Current full-candidate finding: [frozen12aa qualification](local-integration-12aa6b5.md) is FAIL547/549, with both core-language cases leaving delayed activation recovery-summary jobs. The core reference-clock correction is in progress; no new full-suite PASS or release acceptance follows from earlier focused results. All36fixtures were cleaned, protected data preserved and the exact174non-template catalog restored.
+Current full-candidate finding: [frozen12aa qualification](local-integration-12aa6b5.md) is FAIL547/549, with both core-language cases leaving delayed activation recovery-summary jobs. A deterministic reference-clock correction now passes both focused cases with assertions unchanged ([evidence](issue-25-core-local-integration.md)); the new full frozen qualification remains required. No full-suite PASS or release acceptance follows from the focused result. All36failed-run fixtures and the new focused fixture were cleaned, protected data preserved and the exact174non-template catalog restored.
 
 The final focused #26 file passed3/3, zero failures/errors/skips (JUnit57.068s), adding a real PostgreSQL renewal/old-period-settlement/dispatch race and an owner-confirmed deletion fence across an already-started send. Operational purge and refund/replay assertions preserve financial audit without restoring access or plans. [Evidence](issue-26-paid-local-integration.md) distinguishes these local synthetic inputs from missing full staging/release evidence. Root is preparing the final full frozen qualification; no new full-suite total is asserted yet.
 

@@ -37,7 +37,7 @@ The [AC evidence matrix](evidence/local-mvp-acceptance-matrix.md) distinguishes 
 
 ## Active assignment
 
-The frozen12aa qualifier completed and cleaned its fixtures. `/root/paid_local_integration` (same GPT-6 Luna High Executor) now owns only the core lifecycle test and its issue25 evidence for a deterministic reference-clock correction, preserving the completion/no-active-campaign assertions. Native fixture creation was released after root's cleanup audit. No product-source edit is authorized without a finding. Root will commit the focused correction and qualify that new frozen revision; the failed12aa packet remains unchanged. Root owns Git, handoff and acceptance; Publisher transfers decisions. Check live handles and do not overlap writers.
+The core reference-clock correction is complete: fixed `2026-10-13T09:00:00Z` (14:00 Almaty), assertions unchanged, native2/2 with zero errors/skips and zero final outstanding delivery jobs in both JUnit cases. Root checked sourceSHA `8b6976222aaaca3d45b577abab9c9fafa930e2ce9f93266219a1161a60a3d608`, JUnit and cleanup, and independently passed Ruff/mypy. No product source changed. Root is committing this correction and resuming the same frozen qualifier on the new exact revision; no full-suite PASS is asserted before that result. Failed12aa evidence remains unchanged. Root owns Git, handoff and acceptance; Publisher transfers decisions. Check live handles and do not overlap writers.
 
 Untracked `output/` is unrelated mascot work. Preserve it and all other unrelated edits; stage explicit in-scope paths only. There is no pending Stars-payment user action or missing landing support choice.
 
