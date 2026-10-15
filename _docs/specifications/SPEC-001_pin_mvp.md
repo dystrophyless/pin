@@ -1,13 +1,15 @@
 # SPEC-001: Pin overall MVP
 
 Status: **approved**
-Version: 0.5
+Version: 0.6
 Created: 2026-10-13 (Asia/Qyzylorda)
 Owner: Pin product owner (the user)
 Requirements source: [PROJECT_BRAINSTORM.md](../PROJECT_BRAINSTORM.md)
 Technical reference: [proposed DDD architecture](../ARCHITECTURE.md)
 Approval: the user referred to this as the approved MVP specification and requested resolving missing decisions through user-input questions on 2026-10-13. Section 11 records the answers and routine implementation details. Amendment v0.3 records the additional TR-01, bounded TR-02, and TR-03 owner decisions supplied on 2026-10-13. Amendment v0.4 records the current local-development phase boundary authorized on 2026-10-13. Amendment v0.5 records the owner's N-interval reanchoring decision supplied on 2026-10-13. Local foundation acceptance is recorded in the linked issues; overall MVP/release acceptance remains pending.
 Issue package: [published MVP issue index](SPEC-001_pin_mvp_tasks.md); 28 GitHub Issues linked in section 12. Publication: 2026-10-13 (Asia/Qyzylorda); publication itself did not imply task implementation or acceptance. Live issues own subsequent execution and acceptance evidence.
+
+Amendment v0.6, 2026-10-15: the owner removed actual Stars payment testing from required verification/acceptance. Section 11 records the scope change; payment functionality and local synthetic-event/database checks remain required.
 
 ## 1. Purpose, authority, and evidence boundary
 
