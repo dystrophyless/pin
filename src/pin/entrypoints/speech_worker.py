@@ -20,7 +20,11 @@ from pin.contexts.conversation.infrastructure.usage import (
     SqlAlchemyProviderUsageRecorder,
     SqlAlchemyTurnAllowance,
 )
-from pin.observability import configure_logging
+from pin.observability import (
+    configure_logging,
+    log_speech_dependencies_missing,
+    log_startup_configuration_rejection,
+)
 from pin.persistence import create_engine, create_session_factory, run_local_async
 from pin.platform.worker_heartbeat import worker_heartbeat
 
@@ -36,7 +40,12 @@ def main() -> None:
         settings = load_settings(ProcessRole.SPEECH_WORKER)
         require_speech_runtime()
     except (SettingsError, RuntimeError) as error:
-        logger.error("startup_rejected: %s", error)
+        if isinstance(error, SettingsError):
+            log_startup_configuration_rejection(
+                logger, error.diagnostic_category, error.diagnostic_fields
+            )
+        else:
+            log_speech_dependencies_missing(logger)
         raise SystemExit(2) from None
     logger.info("startup_ready: role=%s", ProcessRole.SPEECH_WORKER.value)
     if args.check:

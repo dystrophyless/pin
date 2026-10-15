@@ -7,6 +7,7 @@ import logging
 import re
 from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
+from typing import Literal
 from uuid import UUID
 
 _SAFE_FIELD = re.compile(r"([_a-z]+)=%s")
@@ -18,6 +19,7 @@ _SAFE_STATIC_EVENTS = frozenset(
         "telegram_pre_checkout_answer_deadline_exhausted",
         "telegram_pre_checkout_answer_rejected",
         "telegram_stars_receipt_rejected",
+        "startup_rejected: Speech dependencies are missing; install the `speech` extra.",
     }
 )
 _SAFE_TEMPLATES = frozenset(
@@ -31,7 +33,7 @@ _SAFE_TEMPLATES = frozenset(
         "speech_job_failure_record_failed: job_id=%s",
         "stars_refund_outcome_unknown error=%s",
         "startup_ready: role=%s",
-        "startup_rejected: %s",
+        "startup_rejected: configuration category=%s fields=%s",
         "telegram_callback_ack_failed error=%s",
         "telegram_poll_request_failed error=%s",
         "telegram_pre_checkout_answer_unknown error=%s",
@@ -44,6 +46,7 @@ _SAFE_UUID = re.compile(
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
 )
 _SAFE_EXCEPTION = re.compile(r"^[A-Za-z][A-Za-z0-9]*(?:Error|Exception|Lost|Conflict|Failure)$")
+_SAFE_STARTUP_CATEGORIES = frozenset({"invalid_configuration", "missing_configuration"})
 _SAFE_ENUMS = {
     "gateway",
     "app-worker",
@@ -56,6 +59,17 @@ _SAFE_ENUMS = {
     "confirmed",
     "failed",
 }
+_SAFE_CONFIGURATION_FIELDS = frozenset(
+    {
+        "PIN_DATABASE_URL",
+        "PIN_BOT_TOKEN",
+        "PIN_WEBHOOK_SECRET",
+        "PIN_TELEGRAM_INGRESS_MODE",
+        "PIN_OPENROUTER_API_KEY",
+        "PIN_PAYMENT_SUPPORT_CONTACT",
+        "PIN_TEST_CHAT_ID",
+    }
+)
 
 
 def _safe_argument(field: str | None, value: object) -> str:
@@ -65,6 +79,15 @@ def _safe_argument(field: str | None, value: object) -> str:
         return value
     if field == "role" and isinstance(value, str) and value in _SAFE_ENUMS:
         return value
+    if field == "category" and isinstance(value, str) and value in _SAFE_STARTUP_CATEGORIES:
+        return value
+    if (
+        field == "fields"
+        and isinstance(value, tuple)
+        and value
+        and all(isinstance(item, str) and item in _SAFE_CONFIGURATION_FIELDS for item in value)
+    ):
+        return ", ".join(value)
     if field == "error" and isinstance(value, str) and _SAFE_EXCEPTION.fullmatch(value):
         return value
     return "<redacted>"
@@ -117,3 +140,15 @@ def configure_logging() -> None:
     root.handlers.clear()
     root.addHandler(handler)
     root.setLevel(logging.INFO)
+
+
+def log_startup_configuration_rejection(
+    logger: logging.Logger,
+    category: Literal["invalid_configuration", "missing_configuration"],
+    fields: tuple[str, ...],
+) -> None:
+    logger.error("startup_rejected: configuration category=%s fields=%s", category, fields)
+
+
+def log_speech_dependencies_missing(logger: logging.Logger) -> None:
+    logger.error("startup_rejected: Speech dependencies are missing; install the `speech` extra.")

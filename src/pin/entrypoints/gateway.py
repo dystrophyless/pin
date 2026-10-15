@@ -13,7 +13,7 @@ from aiohttp import web
 from pin.adapters.telegram.polling import poll_updates
 from pin.adapters.telegram.webhook import create_webhook_app
 from pin.bootstrap.config import ProcessRole, SettingsError, load_settings
-from pin.observability import configure_logging
+from pin.observability import configure_logging, log_startup_configuration_rejection
 from pin.persistence import create_engine, create_session_factory, run_local_async
 from pin.platform.worker_heartbeat import worker_heartbeat
 
@@ -32,7 +32,9 @@ def main() -> None:
     try:
         settings = load_settings(ProcessRole.GATEWAY)
     except SettingsError as error:
-        logger.error("startup_rejected: %s", error)
+        log_startup_configuration_rejection(
+            logger, error.diagnostic_category, error.diagnostic_fields
+        )
         raise SystemExit(2) from None
     logger.info("startup_ready: role=%s", ProcessRole.GATEWAY.value)
     if args.check:

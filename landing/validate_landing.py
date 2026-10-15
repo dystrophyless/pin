@@ -50,7 +50,9 @@ def validate(config_path: Path, site: Path) -> list[str]:
             issues.append(f"cannot read page: {page}")
             continue
         for target in parser.targets:
-            if target.startswith(("https://", "http://", "mailto:", "tel:")) or target.startswith("#"):
+            if target.startswith(("https://", "http://", "mailto:", "tel:")) or target.startswith(
+                "#"
+            ):
                 continue
             local_path = target.split("#", maxsplit=1)[0].split("?", maxsplit=1)[0]
             if local_path and not (site / local_path).is_file():
@@ -68,7 +70,10 @@ def validate_telegram(value: object) -> str | None:
         return "must be an HTTPS Telegram t.me bot link"
     if not re.fullmatch(r"/[A-Za-z][A-Za-z0-9_]{4,31}/?", parsed.path):
         return "must identify a bot username without a token or placeholder"
-    if parsed.fragment or any(key.lower() in {"token", "key", "api_key", "bot_token"} for key, _ in parse_qsl(parsed.query)):
+    if parsed.fragment or any(
+        key.lower() in {"token", "key", "api_key", "bot_token"}
+        for key, _ in parse_qsl(parsed.query)
+    ):
         return "must not contain a credential or fragment"
     if any(word in parsed.path.lower() for word in ("placeholder", "yourbot", "example")):
         return "placeholder bot links cannot be published"
@@ -85,7 +90,10 @@ def validate_support(value: object) -> str | None:
         return "placeholder support destinations cannot be published"
     if any(word in value.lower() for word in ("placeholder", "your-support", "changeme")):
         return "placeholder support destinations cannot be published"
-    if any(key.lower() in {"token", "key", "api_key", "bot_token"} for key, _ in parse_qsl(parsed.query)):
+    if any(
+        key.lower() in {"token", "key", "api_key", "bot_token"}
+        for key, _ in parse_qsl(parsed.query)
+    ):
         return "must not contain a credential"
     return None
 
@@ -102,7 +110,10 @@ def main() -> int:
             print(f"- {issue}")
         return 1
     print("Configuration and local page links are structurally valid.")
-    print("This check does not verify provider eligibility, live reachability, legal compliance, or staging navigation.")
+    print(
+        "This check does not verify provider eligibility, live reachability, legal compliance, "
+        "or staging navigation."
+    )
     return 0
 
 

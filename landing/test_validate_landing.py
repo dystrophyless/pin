@@ -16,7 +16,9 @@ class LandingValidationTests(unittest.TestCase):
         self.assertIn("navPlan: 'Тарифы'", app)
         self.assertIn("navPlan: 'Plans'", app)
         self.assertIn('data-copy="previewNote"', page)
-        self.assertIn("Обработка каждого голосового сообщения расходует одно AI-взаимодействие", app)
+        self.assertIn(
+            "Обработка каждого голосового сообщения расходует одно AI-взаимодействие", app
+        )
         self.assertIn("Processing each voice message uses one AI interaction", app)
         self.assertIn("не более 3 минут", app)
         self.assertIn("up to 3 minutes", app)
@@ -53,10 +55,15 @@ class LandingValidationTests(unittest.TestCase):
             for page in ("index.html", "privacy.html", "terms.html"):
                 (root / page).write_text('<a href="privacy.html">Privacy</a>', encoding="utf-8")
             config = root / "config.json"
-            config.write_text(json.dumps({
-                "telegram_url": "https://t.me/pinassistant",
-                "support_url": "https://support.pin.example.invalid/contact",
-            }), encoding="utf-8")
+            config.write_text(
+                json.dumps(
+                    {
+                        "telegram_url": "https://t.me/pinassistant",
+                        "support_url": "https://support.pin.example.invalid/contact",
+                    }
+                ),
+                encoding="utf-8",
+            )
             self.assertEqual(validate(config, root), [])
             (root / "terms.html").write_text('<a href="missing.html">Broken</a>', encoding="utf-8")
             self.assertIn("broken local link in terms.html: missing.html", validate(config, root))

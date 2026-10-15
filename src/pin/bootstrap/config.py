@@ -24,6 +24,19 @@ class ProcessRole(StrEnum):
 class SettingsError(ValueError):
     """A configuration error whose message contains field names, never values."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        diagnostic_category: Literal["invalid_configuration", "missing_configuration"] = (
+            "invalid_configuration"
+        ),
+        diagnostic_fields: tuple[str, ...] = (),
+    ) -> None:
+        super().__init__(message)
+        self.diagnostic_category = diagnostic_category
+        self.diagnostic_fields = diagnostic_fields
+
 
 @dataclass(frozen=True, slots=True)
 class SmokeSettings:
@@ -137,11 +150,18 @@ def load_settings(
     try:
         settings = Settings.model_validate(values)
     except ValidationError as error:
+        validation_errors = error.errors(include_input=False, include_context=False)
         failures = ", ".join(
             f"{names.get(str(item['loc'][0]), str(item['loc'][0]))} ({item['type']})"
-            for item in error.errors(include_input=False, include_context=False)
+            for item in validation_errors
         )
-        raise SettingsError(f"Invalid configuration: {failures}") from None
+        raise SettingsError(
+            f"Invalid configuration: {failures}",
+            diagnostic_category="invalid_configuration",
+            diagnostic_fields=tuple(
+                names.get(str(item["loc"][0]), "") for item in validation_errors
+            ),
+        ) from None
 
     required_by_role = {
         ProcessRole.GATEWAY: ("bot_token",),
@@ -156,12 +176,24 @@ def load_settings(
         or not getattr(settings, field).get_secret_value().strip()
     ]
     if missing:
-        raise SettingsError(f"Missing required configuration: {', '.join(missing)}")
+        raise SettingsError(
+            f"Missing required configuration: {', '.join(missing)}",
+            diagnostic_category="missing_configuration",
+            diagnostic_fields=tuple(missing),
+        )
     if role is ProcessRole.GATEWAY and settings.telegram_ingress_mode == "webhook":
         if settings.webhook_secret is None:
-            raise SettingsError("Missing required configuration: PIN_WEBHOOK_SECRET")
+            raise SettingsError(
+                "Missing required configuration: PIN_WEBHOOK_SECRET",
+                diagnostic_category="missing_configuration",
+                diagnostic_fields=("PIN_WEBHOOK_SECRET",),
+            )
     if settings.webhook_secret and len(settings.webhook_secret.get_secret_value()) < 32:
-        raise SettingsError("Invalid configuration: PIN_WEBHOOK_SECRET (too_short)")
+        raise SettingsError(
+            "Invalid configuration: PIN_WEBHOOK_SECRET (too_short)",
+            diagnostic_category="invalid_configuration",
+            diagnostic_fields=("PIN_WEBHOOK_SECRET",),
+        )
     return settings
 
 
@@ -190,15 +222,28 @@ def load_smoke_settings(
     token = source.get("PIN_BOT_TOKEN") or local_values.get("PIN_BOT_TOKEN")
     chat_value = source.get("PIN_TEST_CHAT_ID") or local_values.get("PIN_TEST_CHAT_ID")
     if not token or not chat_value:
-        raise SettingsError("configure PIN_BOT_TOKEN and PIN_TEST_CHAT_ID in .env.local")
+        raise SettingsError(
+            "configure PIN_BOT_TOKEN and PIN_TEST_CHAT_ID in .env.local",
+            diagnostic_category="missing_configuration",
+            diagnostic_fields=("PIN_BOT_TOKEN", "PIN_TEST_CHAT_ID"),
+        )
     if any(character.isspace() for character in token):
-        raise SettingsError("PIN_BOT_TOKEN has an invalid format")
+        raise SettingsError(
+            "PIN_BOT_TOKEN has an invalid format",
+            diagnostic_fields=("PIN_BOT_TOKEN",),
+        )
     try:
         chat_id = int(chat_value)
     except ValueError:
-        raise SettingsError("PIN_TEST_CHAT_ID must be a private-chat numeric ID") from None
+        raise SettingsError(
+            "PIN_TEST_CHAT_ID must be a private-chat numeric ID",
+            diagnostic_fields=("PIN_TEST_CHAT_ID",),
+        ) from None
     if chat_id == 0:
-        raise SettingsError("PIN_TEST_CHAT_ID must be a non-zero private-chat numeric ID")
+        raise SettingsError(
+            "PIN_TEST_CHAT_ID must be a non-zero private-chat numeric ID",
+            diagnostic_fields=("PIN_TEST_CHAT_ID",),
+        )
     return SmokeSettings(SecretStr(token), chat_id)
 
 

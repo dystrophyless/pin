@@ -16,7 +16,7 @@ from pin.contexts.billing.api import (
     RequestStarsRefund,
     SqlAlchemyStarsPaymentStore,
 )
-from pin.observability import configure_logging
+from pin.observability import configure_logging, log_startup_configuration_rejection
 from pin.persistence import create_engine, create_session_factory, run_local_async
 
 logger = logging.getLogger("pin.billing.refund")
@@ -68,7 +68,9 @@ def main() -> None:
     try:
         settings = load_settings(ProcessRole.DELIVERY_WORKER)
     except SettingsError as error:
-        logger.error("startup_rejected: %s", error)
+        log_startup_configuration_rejection(
+            logger, error.diagnostic_category, error.diagnostic_fields
+        )
         raise SystemExit(2) from None
     if settings.bot_token is None:
         raise SystemExit(2)
