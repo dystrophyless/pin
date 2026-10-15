@@ -11,6 +11,11 @@ from uuid import UUID, uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from pin.adapters.telegram.account_deletion import (
+    apply_account_deletion_callback,
+    begin_account_deletion,
+    current_deletion_preview_version,
+)
 from pin.adapters.telegram.agenda import (
     agenda_command,
     handle_agenda_callback,
@@ -50,6 +55,7 @@ from pin.adapters.telegram.presentation.subscription import render_subscription_
 from pin.adapters.telegram.presentation.tokens import SqlAlchemyCallbackTokenStore
 from pin.contexts.billing.api import (
     AcceptPaymentTerms,
+    AccountLifecycle,
     CreateStarsOrder,
     PaymentRejected,
     ReadSubscriptionStatus,
@@ -107,9 +113,15 @@ async def process_application_job(
     """Apply one fenced work item and persist its reply request atomically."""
     if now.tzinfo is None or now.utcoffset() is None:
         raise ValueError("application worker clock must be timezone-aware")
+    if claim.owner_id is None:
+        raise RuntimeError("application job has no owner")
     if await process_capture_application_job(sessions, claim, now=now, assistant=assistant):
         return
     async with sessions() as session, session.begin():
+        lifecycle = await SqlAlchemyAccessUsageStore(session).lock_account_lifecycle(claim.owner_id)
+        if lifecycle is not AccountLifecycle.PRESENT:
+            await complete_job(session, claim)
+            return
         receipt = await record_job_effect_once(
             session,
             claim,
@@ -250,6 +262,26 @@ async def process_application_job(
                     DispatchDisposition.HANDLED,
                     OnboardingResult("unhandled", preferences=command_profile),
                     payment_reply,
+                )
+            elif command.casefold() == "/delete_account":
+                if len(words) != 1:
+                    deletion_reply = OnboardingReply(
+                        escape_markdown_v2(
+                            "Use /delete_account to open a preview, then choose one of its buttons."
+                        ),
+                        "Use /delete_account to open a preview, then choose one of its buttons.",
+                    )
+                else:
+                    deletion_reply = await begin_account_deletion(
+                        session,
+                        owner_id=inbox.owner_id,
+                        language=command_profile.language if command_profile else "en",
+                        now=now.astimezone(UTC),
+                    )
+                result = PrivateMessageResult(
+                    DispatchDisposition.HANDLED,
+                    OnboardingResult("unhandled", preferences=command_profile),
+                    deletion_reply,
                 )
             elif subscription and profile is not None:
                 status = await SqlAlchemyAccessUsageStore(session).read_subscription_status(
@@ -483,6 +515,7 @@ async def _handle_callback(
         else "en"
     )
     callbacks = CallbackTokens(SqlAlchemyCallbackTokenStore(session))
+    deletion_version = await current_deletion_preview_version(session, owner_id=owner_id, now=now)
     try:
         if not isinstance(data, str):
             raise InvalidCallbackToken("missing callback data")
@@ -495,6 +528,8 @@ async def _handle_callback(
                 "settings": profile_version,
                 "answer": onboarding_version,
                 "cancel": onboarding_version,
+                "deletion.confirm": deletion_version,
+                "deletion.cancel": deletion_version,
                 **{action: onboarding_version for action in HOME_ZONE_ACTIONS},
             },
             now=now,
@@ -537,6 +572,24 @@ async def _handle_callback(
                     reply=None,
                 ),
                 agenda_reply,
+            )
+        if binding.action in {"deletion.confirm", "deletion.cancel"}:
+            deletion_reply = await apply_account_deletion_callback(
+                session,
+                owner_id=owner_id,
+                action=binding.action,
+                preview_id=binding.target_id,
+                expected_version=binding.target_version,
+                language=language,
+                now=now,
+            )
+            return (
+                PrivateMessageResult(
+                    DispatchDisposition.HANDLED,
+                    OnboardingResult("unhandled", preferences=profile),
+                    deletion_reply,
+                ),
+                None,
             )
         if (
             binding.action == "settings"
@@ -648,24 +701,28 @@ async def _reply_markup(
     rows: list[list[dict[str, str]]] = []
     row: list[dict[str, str]] = []
     for button in reply.buttons:
-        version = (
-            profile.version
-            if button.action.startswith("agenda_") and profile
-            else active_draft.version
-            if button.action in HOME_ZONE_ACTIONS and active_draft
-            else profile.version
-            if button.action == "settings" and profile
-            else active_draft.version
-            if active_draft
-            else 0
-        )
         target_id = button.value
-        await remember_agenda_navigation(
-            session,
-            owner_id=owner_id,
-            action=button.action,
-            target_id=target_id,
-        )
+        if button.action in {"deletion.confirm", "deletion.cancel"}:
+            version = await current_deletion_preview_version(session, owner_id=owner_id, now=now)
+        else:
+            version = (
+                profile.version
+                if button.action.startswith("agenda_") and profile
+                else active_draft.version
+                if button.action in HOME_ZONE_ACTIONS and active_draft
+                else profile.version
+                if button.action == "settings" and profile
+                else active_draft.version
+                if active_draft
+                else 0
+            )
+            if button.action.startswith("agenda_"):
+                await remember_agenda_navigation(
+                    session,
+                    owner_id=owner_id,
+                    action=button.action,
+                    target_id=target_id,
+                )
         if active_draft is not None and button.action in {"answer", "cancel"}:
             target_id = f"{active_draft.draft_id}|{button.value}"
         token = await callbacks.issue(

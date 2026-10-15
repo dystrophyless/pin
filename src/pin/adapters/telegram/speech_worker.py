@@ -114,6 +114,12 @@ async def process_speech_job(
     async with _maintain_lease(sessions, claim):
         try:
             async with sessions() as session, session.begin():
+                lifecycle = await SqlAlchemyAccessUsageStore(session).lock_account_lifecycle(
+                    claim.owner_id
+                )
+                if lifecycle is not AccountLifecycle.PRESENT:
+                    await complete_job(session, claim)
+                    return
                 inbound = await _load_private_voice(session, claim)
                 if inbound is None:
                     await complete_job(session, claim)
@@ -243,8 +249,18 @@ async def process_speech_job(
                     bot,
                     file_id=attachment.file_id or "",
                     files=private_files,
+                    owner_id=claim.owner_id,
                 )
                 downloaded_path = downloaded.path
+                async with sessions() as session, session.begin():
+                    lifecycle = await SqlAlchemyAccessUsageStore(
+                        session
+                    ).lock_account_lifecycle(claim.owner_id)
+                    if lifecycle is not AccountLifecycle.PRESENT:
+                        private_files.remove(downloaded.path)
+                        downloaded_path = None
+                        await complete_job(session, claim)
+                        return
                 decoded = await audio_decoder.decode(
                     downloaded.path, size_bytes=downloaded.size_bytes
                 )
@@ -285,6 +301,12 @@ async def process_speech_job(
             try:
                 async with SqlAlchemyUnitOfWork(sessions) as uow:
                     await lock_job_for_effects(uow.session, claim)
+                    lifecycle = await SqlAlchemyAccessUsageStore(
+                        uow.session
+                    ).lock_account_lifecycle(claim.owner_id)
+                    if lifecycle is not AccountLifecycle.PRESENT:
+                        await complete_job(uow.session, claim)
+                        return
                     await speech_store.store_facts(
                         uow.session, claim, audio=decoded.facts, at=datetime.now(UTC)
                     )

@@ -4,6 +4,7 @@ import io
 import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from uuid import UUID
 
 import pytest
 
@@ -69,3 +70,23 @@ def test_crash_cleanup_scheduling_margin_meets_24_hour_bound(tmp_path: Path) -> 
     assert files.cleanup_crash_leftovers(now=now) == 1
     assert not stale.exists()
     assert fresh.exists()
+
+
+def test_account_deletion_removes_only_that_owners_audio(tmp_path: Path) -> None:
+    files = PrivateAudioFiles(tmp_path / "audio")
+    owner = UUID("8ad80c42-91d1-4ad7-a326-40871c14e30f")
+    other = UUID("318dd0ab-1e61-4682-8ee8-491c633637a6")
+    owner_path, owner_file = files.create(owner_id=owner)
+    owner_file.write(b"owner audio")
+    owner_file.close()
+    other_path, other_file = files.create(owner_id=other)
+    other_file.write(b"other audio")
+    other_file.close()
+    legacy_path, legacy_file = files.create()
+    legacy_file.write(b"unattributed legacy audio")
+    legacy_file.close()
+
+    assert files.remove_owner(owner) == 1
+    assert not owner_path.exists()
+    assert other_path.exists()
+    assert legacy_path.exists()

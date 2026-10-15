@@ -113,6 +113,11 @@ async def schedule_access_notices(
     async def materialize(db: AsyncSession, event: EventEnvelope) -> None:
         if event.owner_id is None or event.schema_version != 1:
             raise ValueError("invalid access notice envelope")
+        from pin.contexts.billing.api import AccountLifecycle, SqlAlchemyAccessUsageStore
+
+        lifecycle = await SqlAlchemyAccessUsageStore(db).lock_account_lifecycle(event.owner_id)
+        if lifecycle is not AccountLifecycle.PRESENT:
+            return
         notice_id = UUID(str(event.payload["notice_id"]))
         period_id = event.payload["period_id"]
         if not isinstance(period_id, str) or not period_id:

@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from pin.contexts.accountability.infrastructure.models import AccountabilityOutcomeReceiptRecord
 from pin.contexts.accountability.infrastructure.scheduler import apply_delivery_outcome
+from pin.contexts.billing.api import AccountLifecycle, SqlAlchemyAccessUsageStore
 from pin.platform.contracts import EventEnvelope
 from pin.platform.models import OutboxEvent
 
@@ -46,6 +47,11 @@ async def consume_delivery_outcomes(
         ).all()
     )
     for event in events:
+        lifecycle = await SqlAlchemyAccessUsageStore(session).lock_account_lifecycle(
+            event.owner_id
+        )
+        if lifecycle is not AccountLifecycle.PRESENT:
+            continue
         try:
             envelope = EventEnvelope.from_dict(event.payload)
         except (KeyError, TypeError, ValueError) as error:
