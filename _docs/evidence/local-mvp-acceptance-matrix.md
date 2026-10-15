@@ -22,6 +22,10 @@ Actual Telegram Stars payment testing is **removed from required acceptance, not
 
 Additional local #22 proof after the frozen run: [operations fault scenario](issue-22-faults-local.md) passed3/3 native cases (zero failures/errors/skips,16.967s), adding actual all-lane queue/dead/expired-lease and worker-state diagnostics, bounded IDs, payload redaction and read-only projection assertions. Root checked source/JUnit/catalog receipts, Ruff/mypy and live cleanup. This is not a new whole-suite total or host-alert/restore proof.
 
+## Current blocking local finding
+
+The added recurring composed scenario exposed a genuine delivery defect on `e477a4b` with unchanged product source: a queued dispatchv1 processed after re-versioning records `skipped/stale_intent_version` against currentv2. The legitimatev2 job then finds that terminal attempt and sends nothing. Before-fix packet `C:/Users/roman/AppData/Local/Temp/pin-issue25-recurring-20261015_e477a4b_r8` retains failing JUnit, source hash and read-only correlation: both oldv1 and newv2 jobs succeeded against one skippedv2 attempt; transport stayed4 instead of5. Root inspected these artifacts and authorized the bounded version-identity fix. Exact174-database baseline was restored. This finding is not contradicted by the earlier green549 suite; the new scenario was absent from that suite. Fixed/frozen qualification is pending.
+
 ## AC01–AC20
 
 | AC | Approved observable result | Local implemented | Local native evidence (rerun in frozen `993412d`) | Live provider/host evidence | Missing verdict |
