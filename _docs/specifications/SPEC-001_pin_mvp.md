@@ -1,7 +1,7 @@
 # SPEC-001: Pin overall MVP
 
 Status: **approved**
-Version: 0.7
+Version: 0.8
 Created: 2026-10-13 (Asia/Qyzylorda)
 Owner: Pin product owner (the user)
 Requirements source: [PROJECT_BRAINSTORM.md](../PROJECT_BRAINSTORM.md)
@@ -12,6 +12,8 @@ Issue package: [published MVP issue index](SPEC-001_pin_mvp_tasks.md); 28 GitHub
 Amendment v0.6, 2026-10-15: the owner removed actual Stars payment testing from required verification/acceptance. Section 11 records the scope change; payment functionality and local synthetic-event/database checks remain required.
 
 Amendment v0.7, 2026-10-16: the owner selected a date/time interpretation error ceiling of one error per 100 unambiguous requests before manual correction. Section 11 records this partial TR-04 decision; the remaining evaluation rubric and actual qualification are still pending.
+
+Amendment v0.8, 2026-10-16: the owner confirmed that the date/time accuracy threshold applies separately to Russian and English; aggregate performance cannot hide a failing language.
 
 ## 1. Purpose, authority, and evidence boundary
 
@@ -408,9 +410,11 @@ Additional owner clarification, 2026-10-15: Pin's intended legal operating juris
 
 ### Partial TR-04 owner decision — 2026-10-16
 
-The owner selected **no more than one date/time error per 100 unambiguous requests**, assessed on the assistant's proposed plan before the user corrects or confirms it (at least99% correct date/time interpretation in the evaluated set). This is an acceptance target, not a measured result or a statistical guarantee about all future requests. Existing ambiguity-clarification requirements remain unchanged.
+The owner selected **no more than one date/time error per 100 unambiguous requests**, assessed on the assistant's proposed plan before the user corrects or confirms it (at least 99% correct date/time interpretation in the evaluated set). This is an acceptance target, not a measured result or a statistical guarantee about all future requests. Existing ambiguity-clarification requirements remain unchanged.
 
-This answer does not approve a particular corpus or sample size merely because the question used100requests as an example. Whether the threshold applies separately to Russian and English, text/voice strata, scoring of unnecessary clarification/missing proposals, reference clocks/zones, ambiguity/error grading, representative workload/bursts and cold/warm runs still need an explicit evaluation protocol and owner suitability approval. No quality, cost, capacity or whole TR-04 PASS is implied. Additional model spend and actual-host/deployment work remain outside the current local-only authorization.
+Follow-up owner decision, 2026-10-16: apply this ceiling **separately to Russian and English**. Each language must meet at least 99% date/time correctness; a combined RU/EN average cannot compensate for either language failing. Whether text and voice receive separate scores is not yet selected.
+
+This answer does not approve a particular corpus or sample size merely because the question used 100 requests as an example. Text/voice strata, scoring of unnecessary clarification/missing proposals, reference clocks/zones, ambiguity/error grading, representative workload/bursts and cold/warm runs still need an explicit evaluation protocol and owner suitability approval. No quality, cost, capacity or whole TR-04 PASS is implied. Additional model spend and actual-host/deployment work remain outside the current local-only authorization.
 
 ### Routine details selected by the executor within the requested scope
 
