@@ -35,6 +35,7 @@ def _interpretation(owner_id):
             input_kind=InputKind.TEXT,
             text="Current user turn: What should I do next?",
             reference_date=now.date(),
+            reference_instant=now,
             timezone="Asia/Almaty",
         ),
     )

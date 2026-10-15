@@ -196,6 +196,7 @@ async def test_overlong_provider_advice_is_invalid_output_and_refunds_without_re
         input_kind=InputKind.TEXT,
         text="What should I do next?",
         reference_date=date(2026, 10, 13),
+        reference_instant=datetime(2026, 10, 13, 7, tzinfo=UTC),
         timezone="Asia/Qyzylorda",
     )
 

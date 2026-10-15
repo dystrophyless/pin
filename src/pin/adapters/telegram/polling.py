@@ -70,10 +70,10 @@ async def poll_updates(
                     logger.error("telegram_poll_request_failed error=%s", type(error).__name__)
                     await sleep(1)
                     continue
-                batch_received_at = asyncio.get_running_loop().time()
+                batch_received_at = datetime.now(UTC)
+                batch_received_monotonic = asyncio.get_running_loop().time()
                 retry_batch = False
                 for update in updates:
-                    received_at = batch_received_at
                     payload = validate_update(update, bot)
                     update_id = payload.get("update_id")
                     if (
@@ -88,7 +88,7 @@ async def poll_updates(
                     try:
                         if is_pre_checkout:
                             persist_budget = (
-                                received_at
+                                batch_received_monotonic
                                 + PRECHECKOUT_DEADLINE_SECONDS
                                 - asyncio.get_running_loop().time()
                                 - PRECHECKOUT_ANSWER_RESERVE_SECONDS
@@ -111,6 +111,7 @@ async def poll_updates(
                                     bot_id=bot_id,
                                     payload=payload,
                                     owner_resolver=resolver,
+                                    received_at=batch_received_at,
                                 )
                                 if receipt is not None:
                                     callback_id = receipt.callback_query_id
@@ -143,7 +144,7 @@ async def poll_updates(
                                 bot_id=bot_id,
                                 update=payload,
                                 now=datetime.now(UTC),
-                                received_at=received_at,
+                                received_at=batch_received_monotonic,
                             )
                         except PreCheckoutOutcomeUnknown:
                             logger.warning("telegram_pre_checkout_answer_deferred")

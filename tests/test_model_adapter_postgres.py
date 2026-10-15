@@ -103,6 +103,7 @@ def _context(request_id: str) -> ConversationContext:
         input_kind=InputKind.TEXT,
         text="Создай задачу на завтра.",
         reference_date=date(2026, 10, 13),
+        reference_instant=datetime(2026, 10, 13, 7, tzinfo=UTC),
         timezone="Asia/Qyzylorda",
     )
 

@@ -6,6 +6,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import cast
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 import httpx
 import pytest
@@ -40,6 +41,7 @@ from pin.contexts.conversation.application.service import (
     MAX_OUTPUT_TOKENS,
     ROUTE,
     BoundedPlanningAssistant,
+    _serialize_context,
     bounded_target_snapshot,
 )
 from pin.contexts.conversation.domain.proposals import (
@@ -128,6 +130,7 @@ class FakeAllowance:
     def __init__(self, status: ReservationStatus = ReservationStatus.RESERVED) -> None:
         self.status = status
         self.reserved: list[tuple[UUID, str]] = []
+        self.reserved_at: list[datetime] = []
         self.settled: list[tuple[UUID, str]] = []
         self.refunded: list[tuple[UUID, str]] = []
 
@@ -135,6 +138,7 @@ class FakeAllowance:
         self, *, owner_id: UUID, request_id: str, at: datetime, claim: object | None = None
     ) -> ReservationStatus:
         self.reserved.append((owner_id, request_id))
+        self.reserved_at.append(at)
         return self.status
 
     async def settle(
@@ -149,17 +153,25 @@ class FakeAllowance:
 
 
 def _context(
-    *, language: SourceLanguage = SourceLanguage.RU, input_kind: InputKind = InputKind.TEXT
+    *,
+    language: SourceLanguage = SourceLanguage.RU,
+    input_kind: InputKind = InputKind.TEXT,
+    reference_instant: datetime = NOW,
+    text: str | None = None,
 ) -> ConversationContext:
     return ConversationContext(
         owner_id=OWNER,
         request_id="turn-1",
         language=language,
         input_kind=input_kind,
-        text=(
-            "Перенеси задачу на завтра" if language is SourceLanguage.RU else "Move it to tomorrow"
+        text=text
+        or (
+            "Перенеси задачу на завтра"
+            if language is SourceLanguage.RU
+            else "Move it to tomorrow"
         ),
-        reference_date=date(2026, 10, 13),
+        reference_date=reference_instant.astimezone(ZoneInfo("Asia/Qyzylorda")).date(),
+        reference_instant=reference_instant,
         timezone="Asia/Qyzylorda",
         plans=(
             PlanSnapshot(
@@ -368,6 +380,71 @@ async def test_valid_ru_and_en_inputs_settle_one_turn_and_record_actual_usage(
     assert "or relative with basis=calendar_day" in prompt
     assert "basis=calendar_day" in prompt
     assert "provenance=default|explicit" in prompt
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("language", "input_kind"),
+    [
+        (SourceLanguage.RU, InputKind.TEXT),
+        (SourceLanguage.EN, InputKind.TRANSCRIPT),
+    ],
+)
+async def test_outbound_request_carries_receipt_instant_and_receipt_local_date(
+    language: SourceLanguage, input_kind: InputKind
+) -> None:
+    received_at = datetime(2026, 10, 16, 19, 30, tzinfo=UTC)
+    processing_at = received_at + timedelta(hours=3)
+    response = _provider_response(
+        json.dumps({"kind": "reply", "language": language.value, "text": "Please clarify."})
+    )
+    transport = FakeTransport(response)
+    assistant, _, allowance = _assistant(transport)
+    context = _context(
+        language=language,
+        input_kind=input_kind,
+        reference_instant=received_at,
+        text=(
+            "Current user turn:\nПеренеси задачу через 2 часа"
+            if language is SourceLanguage.RU
+            else "Current user turn:\nCreate a task in 2 hours"
+        ),
+    )
+
+    outcome = await assistant.interpret(context, at=processing_at)
+
+    assert isinstance(outcome, ModelSuccess)
+    request = transport.payloads[0]
+    messages = cast(list[dict[str, object]], request["messages"])
+    payload = json.loads(cast(str, messages[1]["content"]))
+    assert payload["text"].endswith(
+        "Current user turn:\nПеренеси задачу через 2 часа"
+        if language is SourceLanguage.RU
+        else "Current user turn:\nCreate a task in 2 hours"
+    )
+    assert payload["reference_instant"] == "2026-10-16T19:30:00+00:00"
+    assert payload["reference_date"] == "2026-10-17"
+    assert payload["timezone"] == "Asia/Qyzylorda"
+    assert allowance.reserved_at == [processing_at]
+
+    same_day_later = _context(
+        language=language,
+        input_kind=input_kind,
+        reference_instant=received_at + timedelta(hours=2),
+        text=context.text,
+    )
+    assert same_day_later.reference_date == context.reference_date
+    assert _serialize_context(same_day_later) != _serialize_context(context)
+
+
+def test_reference_instant_rejects_naive_and_mismatched_profile_date() -> None:
+    with pytest.raises(ValueError, match="reference_instant must be timezone-aware"):
+        _context(reference_instant=datetime(2026, 10, 13, 10))
+
+    payload = _context(reference_instant=datetime(2026, 10, 16, 19, 30, tzinfo=UTC)).model_dump()
+    payload["reference_date"] = date(2026, 10, 16)
+    with pytest.raises(ValueError, match="reference_date must match reference_instant"):
+        ConversationContext.model_validate(payload)
 
 
 @pytest.mark.asyncio

@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 from aiogram import Bot
 from aiogram.types import Update
 
-from pin.adapters.telegram.ingress import private_actor, validate_update
+from pin.adapters.telegram import polling
+from pin.adapters.telegram.ingress import IngressReceipt, private_actor, validate_update
 from pin.bootstrap.config import ProcessRole, SettingsError, load_settings
 
 BOT_TOKEN = "712345678:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijk"
@@ -136,3 +139,88 @@ def test_update_model_can_validate_with_transport_bot_fixture() -> None:
         assert isinstance(Update.model_validate(callback, context={"bot": bot}), Update)
     finally:
         asyncio.run(bot.session.close())
+
+
+@pytest.mark.asyncio
+async def test_polling_persists_aware_batch_receipt_instant(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class LockConnection:
+        async def __aenter__(self) -> LockConnection:
+            return self
+
+        async def __aexit__(self, *_: object) -> None:
+            return None
+
+        async def scalar(self, *_: object, **__: object) -> bool:
+            return True
+
+        async def commit(self) -> None:
+            return None
+
+    class Session:
+        def __init__(self) -> None:
+            self.record = SimpleNamespace(mode="polling", next_update_offset=0)
+
+        async def __aenter__(self) -> Session:
+            return self
+
+        async def __aexit__(self, *_: object) -> None:
+            return None
+
+        def begin(self) -> Session:
+            return self
+
+        async def scalar(self, *_: object, **__: object) -> object:
+            return self.record
+
+    class Engine:
+        def connect(self) -> LockConnection:
+            return LockConnection()
+
+    class SessionFactory:
+        def __call__(self) -> Session:
+            return Session()
+
+    class FakeBot:
+        async def get_updates(self, **_: object) -> list[dict[str, object]]:
+            stop.set()
+            return [_message_update(41, 42, text="Create a task in 2 hours")]
+
+    stop = asyncio.Event()
+    receipt_instants: list[datetime] = []
+
+    async def select_mode(_session: object, *, bot_id: int, mode: str) -> object:
+        assert bot_id == 123456 and mode == "polling"
+        return SimpleNamespace(mode=mode, next_update_offset=0)
+
+    async def persist(
+        _session: object,
+        *,
+        bot_id: int,
+        payload: dict[str, object],
+        owner_resolver: object,
+        received_at: datetime,
+    ) -> IngressReceipt:
+        assert bot_id == 123456
+        assert owner_resolver is not None
+        receipt_instants.append(received_at)
+        return IngressReceipt(True, int(payload["update_id"]))
+
+    monkeypatch.setattr(polling, "select_ingress_mode", select_mode)
+    monkeypatch.setattr(polling, "validate_update", lambda update, _bot: update)
+    monkeypatch.setattr(polling, "persist_update", persist)
+    before = datetime.now(UTC)
+    await polling.poll_updates(
+        engine=Engine(),  # type: ignore[arg-type]
+        sessions=SessionFactory(),  # type: ignore[arg-type]
+        bot=FakeBot(),  # type: ignore[arg-type]
+        bot_id=123456,
+        stop=stop,
+    )
+    after = datetime.now(UTC)
+
+    assert len(receipt_instants) == 1
+    assert before <= receipt_instants[0] <= after
+    assert receipt_instants[0].tzinfo is not None
+    assert receipt_instants[0].utcoffset() == UTC.utcoffset(receipt_instants[0])

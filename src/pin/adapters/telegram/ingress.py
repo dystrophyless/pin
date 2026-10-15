@@ -219,7 +219,11 @@ async def persist_update(
     bot_id: int,
     payload: Mapping[str, Any],
     owner_resolver: TelegramOwnerResolver,
+    received_at: datetime | None = None,
 ) -> IngressReceipt | None:
+    receipt_instant = received_at or datetime.now(UTC)
+    if receipt_instant.tzinfo is None or receipt_instant.utcoffset() is None:
+        raise ValueError("received_at must be timezone-aware")
     update_id = _positive_or_zero_id(payload.get("update_id"))
     if update_id is None:
         raise ValueError("Telegram update has no valid update_id")
@@ -240,6 +244,7 @@ async def persist_update(
         owner_id=owner_id,
         update_type=update_type,
         payload=dict(payload),
+        received_at=receipt_instant,
         lane=JobLane.SPEECH if speech else JobLane.APPLICATION,
         conversation_ordered=not fast_path,
         priority=100 if fast_path else 0,

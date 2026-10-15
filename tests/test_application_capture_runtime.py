@@ -125,6 +125,7 @@ async def test_capture_runtime_calls_injected_provider_between_short_transaction
         input_kind=InputKind.TEXT,
         text="Current user turn:\nClean the kitchen",
         reference_date=date(2026, 10, 14),
+        reference_instant=datetime(2026, 10, 14, 7, tzinfo=UTC),
         timezone="Asia/Almaty",
     )
     interpretation = CaptureInterpretation(draft, context.request_id, context)

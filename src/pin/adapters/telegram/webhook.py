@@ -68,7 +68,8 @@ def create_webhook_app(
         return web.json_response({"status": "ready"})
 
     async def receive(request: web.Request) -> web.Response:
-        received_at = asyncio.get_running_loop().time()
+        received_at = datetime.now(UTC)
+        received_monotonic = asyncio.get_running_loop().time()
         if not secrets.compare_digest(request.headers.get(SECRET_HEADER, ""), webhook_secret):
             raise web.HTTPUnauthorized()
         if request.content_type != "application/json":
@@ -90,7 +91,7 @@ def create_webhook_app(
         try:
             if pre_checkout_query(update) is not None:
                 persist_budget = (
-                    received_at
+                    received_monotonic
                     + PRECHECKOUT_DEADLINE_SECONDS
                     - asyncio.get_running_loop().time()
                     - PRECHECKOUT_ANSWER_RESERVE_SECONDS
@@ -104,6 +105,7 @@ def create_webhook_app(
                             bot_id=bot_id,
                             payload=update,
                             owner_resolver=resolver,
+                            received_at=received_at,
                         )
             else:
                 async with sessions() as session, session.begin():
@@ -112,6 +114,7 @@ def create_webhook_app(
                         bot_id=bot_id,
                         payload=update,
                         owner_resolver=resolver,
+                        received_at=received_at,
                     )
         except TimeoutError:
             raise web.HTTPServiceUnavailable(text="payment ingress persistence timed out") from None
@@ -128,7 +131,7 @@ def create_webhook_app(
                     bot_id=bot_id,
                     update=update,
                     now=datetime.now(UTC),
-                    received_at=received_at,
+                    received_at=received_monotonic,
                 )
             except PreCheckoutOutcomeUnknown:
                 raise web.HTTPServiceUnavailable(text="payment decision outcome unknown") from None
