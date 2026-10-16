@@ -115,6 +115,27 @@ def _write_secret(path: Path, value: str) -> None:
     os.chmod(path, 0o600)
 
 
+def _write_private_key(path: Path, value: str) -> None:
+    _write_secret(path, value)
+    try:
+        result = subprocess.run(
+            ["ssh-keygen", "-y", "-P", "", "-f", str(path)],
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            stdin=subprocess.DEVNULL,
+        )
+        public_key = result.stdout.strip()
+        if not public_key or "\n" in public_key or "\r" in public_key:
+            raise ValueError
+        _write_secret(Path(f"{path}.pub"), public_key)
+    except (OSError, subprocess.CalledProcessError, ValueError) as error:
+        path.unlink(missing_ok=True)
+        Path(f"{path}.pub").unlink(missing_ok=True)
+        raise ValueError("could not derive temporary SSH public key") from error
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("response", type=Path)
@@ -127,7 +148,7 @@ def main() -> int:
     host, username, private_key, certificate, known_hosts = prepare_access(
         payload, datetime.now(UTC)
     )
-    _write_secret(args.private_key, private_key)
+    _write_private_key(args.private_key, private_key)
     _write_secret(args.certificate, certificate)
     _write_secret(args.known_hosts, known_hosts)
     print(f"{host}\t{username}")

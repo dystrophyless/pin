@@ -126,7 +126,7 @@ jobs:
           finish_deploy() {
             local result=$?
             close_runner_rule || result=$?
-            rm -f "$access_json" "$ssh_key" "$ssh_cert" "$known_hosts"
+            rm -f "$access_json" "$ssh_key" "$ssh_key.pub" "$ssh_cert" "$known_hosts"
             return "$result"
           }
           trap 'finish_deploy' EXIT
