@@ -36,11 +36,13 @@ from pin.contexts.conversation.application.dto import (
 )
 from pin.contexts.conversation.application.service import (
     _RESULT_SCHEMA_JSON,
+    _SYSTEM,
     CAPTURE_MAX_OUTPUT_TOKENS,
     MAX_CALLS,
     MAX_OUTPUT_TOKENS,
     ROUTE,
     BoundedPlanningAssistant,
+    _parse_result,
     _serialize_context,
     bounded_target_snapshot,
 )
@@ -164,11 +166,13 @@ def _context(
         request_id="turn-1",
         language=language,
         input_kind=input_kind,
-        text=text
-        or (
-            "Перенеси задачу на завтра"
-            if language is SourceLanguage.RU
-            else "Move it to tomorrow"
+        text=(
+            text
+            or (
+                "Перенеси задачу на завтра"
+                if language is SourceLanguage.RU
+                else "Move it to tomorrow"
+            )
         ),
         reference_date=reference_instant.astimezone(ZoneInfo("Asia/Qyzylorda")).date(),
         reference_instant=reference_instant,
@@ -293,12 +297,14 @@ async def test_structured_ru_en_advice_is_bounded_and_contains_explicit_handoff_
     assert replay_transport.payloads == []
     assert replay_allowance.settled == [(OWNER, context.request_id)]
     system_prompt = str(transport.payloads[0]["messages"][0]["content"])
-    assert "Agenda gaps are not verified free time" in system_prompt
-    assert "no tools or external calendar" in system_prompt
-    assert "latest prior advice" in system_prompt
-    assert "add tasks from advice alone" in system_prompt
-    assert "Clarify conflicting requested times" in system_prompt
-    assert "create-only proposal_batch" in system_prompt
+    assert "no tools, calendar, or external access" in system_prompt
+    assert "target id/version" in system_prompt
+    assert "Complete/cancel use fields={}" in system_prompt
+    assert "all-or-none" in system_prompt
+    assert "explicitly selected prior advice steps" in system_prompt
+    assert "conflicting requested times" in system_prompt
+    assert "agenda gap is not proof of free time" in system_prompt
+    assert "output is strictly validated" in system_prompt
     assert str(OWNER) not in str(transport.payloads[0]["messages"])
 
 
@@ -377,9 +383,9 @@ async def test_valid_ru_and_en_inputs_settle_one_turn_and_record_actual_usage(
     assert "2026-10-13" in prompt
     assert "propose_change_occurrence" in prompt
     assert "propose_complete" in prompt
-    assert "or relative with basis=calendar_day" in prompt
-    assert "basis=calendar_day" in prompt
-    assert "provenance=default|explicit" in prompt
+    assert "Relative intent is" in prompt
+    assert "basis:calendar_day|elapsed" in prompt
+    assert "provenance:explicit" in prompt
 
 
 @pytest.mark.asyncio
@@ -502,7 +508,7 @@ async def test_english_create_works_without_any_existing_plan_or_target() -> Non
     assert isinstance(outcome.result.fields.schedule, AppointmentSchedule)
     system_prompt = str(transport.payloads[0]["messages"][0]["content"])
     assert "does not require any existing plan or target" in system_prompt
-    assert _RESULT_SCHEMA_JSON in system_prompt
+    assert _RESULT_SCHEMA_JSON not in system_prompt
     proposal_schema = json.loads(_RESULT_SCHEMA_JSON)["$defs"]["ActionProposal"]
     assert "target_id" not in proposal_schema["required"]
     assert "expected_version" not in proposal_schema["required"]
@@ -1184,7 +1190,7 @@ def test_proposal_time_and_repeat_contract_keeps_calendar_elapsed_and_dst_fields
 
 
 @pytest.mark.asyncio
-async def test_timed_task_and_default_reminders_are_grounded_in_request() -> None:
+async def test_timed_task_and_default_reminder_example_is_in_prompt() -> None:
     content = json.dumps(
         {
             "kind": "proposal",
@@ -1225,13 +1231,19 @@ async def test_timed_task_and_default_reminders_are_grounded_in_request() -> Non
     assert isinstance(messages, list) and isinstance(messages[0], dict)
     system_prompt = messages[0].get("content")
     assert isinstance(system_prompt, str)
-    assert (
-        "'remind me tomorrow to go' / «завтра напомни сходить» sets the task date"
-        in system_prompt
-    )
-    assert "otherwise omit reminders so profile defaults apply" in system_prompt
-    assert "ordinary action at a requested date/time is a timed task" in system_prompt
-    assert "tasks have no duration" in system_prompt
+    assert "task date, not a one-day reminder offset" in system_prompt
+    assert "timed task, not an appointment" in system_prompt
+    assert "duration or reminder was requested" in system_prompt
+    assert '"duration_minutes":45' in system_prompt
+    assert '"basis":"calendar_day","amount":1,"unit":"day"' in system_prompt
+    assert "Ask for duration or end; do not invent it" in system_prompt
+    assert '"target_id":"00000000-0000-4000-8000-000000000001"' in system_prompt
+    assert '"expected_version":3' in system_prompt
+    assert "Decision check (do not output)" in system_prompt
+    assert "add no explanation or reasoning field" in system_prompt
+    assert "Canonical output JSON Schema" not in system_prompt
+    assert len(system_prompt) < 6_500
+    assert transport.payloads[0].get("response_format") == {"type": "json_object"}
 
 
 def test_observed_invalid_calendar_day_hour_reminder_stays_rejected() -> None:
@@ -1261,6 +1273,73 @@ def test_observed_invalid_calendar_day_hour_reminder_stays_rejected() -> None:
             ),
             strict=True,
         )
+
+
+def test_every_prompt_few_shot_example_passes_strict_result_validation() -> None:
+    decoder = json.JSONDecoder()
+    examples: list[dict[str, object]] = []
+    offset = 0
+    while (start := _SYSTEM.find('{"kind":', offset)) != -1:
+        example, end = decoder.raw_decode(_SYSTEM, start)
+        assert isinstance(example, dict)
+        examples.append(example)
+        offset = end
+
+    assert len(examples) == 5
+    results = []
+    for example in examples:
+        language_value = example.get("language")
+        assert isinstance(language_value, str)
+        language = SourceLanguage(language_value)
+        context = _context(language=language)
+        if example.get("operation") == "propose_complete":
+            context = context.model_copy(
+                update={
+                    "targets": (
+                        TargetSnapshot(
+                            id=UUID("00000000-0000-4000-8000-000000000001"),
+                            version=3,
+                            kind="occurrence",
+                            title="Pick up the parcel",
+                        ),
+                    )
+                }
+            )
+        result = _parse_result(json.dumps(example, ensure_ascii=False), context)
+        results.append(result)
+
+    date_only_result = results[0]
+    assert isinstance(date_only_result, ActionProposal)
+    assert isinstance(date_only_result.fields.schedule, TaskSchedule)
+    assert date_only_result.fields.schedule.timing == "unspecified"
+    assert date_only_result.fields.schedule.local_date == date(2026, 10, 17)
+    assert date_only_result.fields.reminders is None
+
+    timed_task_result = results[1]
+    assert isinstance(timed_task_result, ActionProposal)
+    assert isinstance(timed_task_result.fields.schedule, TaskSchedule)
+    assert timed_task_result.fields.schedule.timing == "timed"
+    assert timed_task_result.fields.schedule.local_time == time(14)
+    assert timed_task_result.fields.reminders is None
+
+    appointment_result = results[2]
+    assert isinstance(appointment_result, ActionProposal)
+    assert isinstance(appointment_result.fields.schedule, AppointmentSchedule)
+    assert appointment_result.fields.schedule.duration_minutes == 45
+    assert appointment_result.fields.reminders is not None
+    assert appointment_result.fields.reminders[0].provenance == "explicit"
+    assert appointment_result.fields.reminders[0].basis == "calendar_day"
+    assert appointment_result.fields.reminders[0].amount == 1
+
+    clarification_result = results[3]
+    assert isinstance(clarification_result, Reply)
+    assert clarification_result.text.endswith("?")
+
+    edit_result = results[4]
+    assert isinstance(edit_result, ActionProposal)
+    assert edit_result.operation.value == "propose_complete"
+    assert edit_result.target_id == UUID("00000000-0000-4000-8000-000000000001")
+    assert edit_result.expected_version == 3
 
 
 def test_context_validation_rejects_invalid_zone_and_owner_id_in_plan_row() -> None:
