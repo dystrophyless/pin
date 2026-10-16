@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import subprocess
+import tempfile
 import unittest
 from datetime import UTC, datetime
 from pathlib import Path
@@ -7,7 +9,7 @@ from subprocess import CalledProcessError, CompletedProcess
 from typing import Any
 from unittest.mock import patch
 
-from lightsail_access import prepare_access
+from lightsail_access import _write_private_key, prepare_access
 
 
 class LightsailAccessTests(unittest.TestCase):
@@ -43,6 +45,53 @@ class LightsailAccessTests(unittest.TestCase):
                 ],
             }
         }
+
+    @patch("lightsail_access.subprocess.run")
+    def test_writes_public_sidecar_derived_from_temporary_private_key(
+        self, run: Any
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            private_key = Path(directory) / "temporary-key"
+            run.return_value = CompletedProcess(
+                args=["ssh-keygen", "-y"],
+                returncode=0,
+                stdout="ecdsa-sha2-nistp256 AAAA derived-public-key\n",
+                stderr="",
+            )
+
+            _write_private_key(private_key, "temporary private key")
+
+            self.assertEqual(
+                run.call_args.args[0],
+                ["ssh-keygen", "-y", "-P", "", "-f", str(private_key)],
+            )
+            self.assertIs(run.call_args.kwargs["stdin"], subprocess.DEVNULL)
+            self.assertEqual(
+                Path(f"{private_key}.pub").read_text(encoding="utf-8"),
+                "ecdsa-sha2-nistp256 AAAA derived-public-key\n",
+            )
+
+    @patch("lightsail_access.subprocess.run")
+    def test_public_key_derivation_failure_is_generic_and_cleans_files(
+        self, run: Any
+    ) -> None:
+        sensitive_output = "sensitive private key diagnostic"
+        run.side_effect = CalledProcessError(
+            returncode=1,
+            cmd=["ssh-keygen", "-y"],
+            stderr=sensitive_output,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            private_key = Path(directory) / "temporary-key"
+
+            with self.assertRaisesRegex(
+                ValueError, "could not derive temporary SSH public key"
+            ) as error:
+                _write_private_key(private_key, "temporary private key")
+
+            self.assertNotIn(sensitive_output, str(error.exception))
+            self.assertFalse(private_key.exists())
+            self.assertFalse(Path(f"{private_key}.pub").exists())
 
     @patch("lightsail_access.subprocess.run")
     def test_accepts_observed_response_without_optional_expires_at(
