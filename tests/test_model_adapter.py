@@ -1231,7 +1231,7 @@ async def test_timed_task_and_default_reminder_example_is_in_prompt() -> None:
     assert isinstance(messages, list) and isinstance(messages[0], dict)
     system_prompt = messages[0].get("content")
     assert isinstance(system_prompt, str)
-    assert "task date, not a one-day reminder offset" in system_prompt
+    assert "task date, not a reminder offset" in system_prompt
     assert "timed task, not an appointment" in system_prompt
     assert "duration or reminder was requested" in system_prompt
     assert '"duration_minutes":45' in system_prompt
@@ -1276,6 +1276,12 @@ def test_observed_invalid_calendar_day_hour_reminder_stays_rejected() -> None:
 
 
 def test_every_prompt_few_shot_example_passes_strict_result_validation() -> None:
+    assert "untimed has no time and needs an explicit user choice" in _SYSTEM
+    assert "including a prior clarification" in _SYSTEM
+    assert "If no hour or untimed choice was specified, use unspecified" in _SYSTEM
+    assert "time/untimed choice" in _SYSTEM
+    assert "Examples assume reference_date=2026-10-16" in _SYSTEM
+
     decoder = json.JSONDecoder()
     examples: list[dict[str, object]] = []
     offset = 0
