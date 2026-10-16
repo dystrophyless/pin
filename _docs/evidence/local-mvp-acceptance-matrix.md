@@ -1,5 +1,12 @@
 # Local MVP acceptance evidence matrix
 
+
+## Latest current-source local qualification — 2026-10-17
+
+Frozen source `9c474cf` passed **569 tests, zero failures/errors/skips**, with static, migration, landing and cached offline speech checks passing. [Current evidence](local-integration-9c474cf.md). Root independently checked raw JUnit, all478 tracked Git/frozen-source hashes, and unchanged post-cleanup catalog. The prior `d0972d3` full run failed two stale-test-clock cases and one style check; its report is retained. The clock correction preserves the no-extra-replies assertion. Older557/551/549 full-run counts below are historical, not the current qualification.
+
+This is local regression evidence only. The current execution remains local without Docker/deployment. No new provider/Telegram/Stars calls were made in qualification. Host alerts/off-host recovery, legal financial-retention applicability, larger actual-host/model/economics qualification and complete live integration/owner acceptance remain outstanding; no overall MVP acceptance or issue closure follows.
+
 Status: **local evidence inventory; no overall MVP acceptance**. This maps the approved SPEC-001 section 9 acceptance criteria to the current frozen local qualification and the prior real Telegram evidence that is still compatible with those criteria. It does not amend SPEC-001 or close any issue.
 
 ## Evidence boundary
