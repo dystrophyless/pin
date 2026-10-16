@@ -343,7 +343,10 @@ def test_private_core_lifecycle_runs_through_real_producers_and_consumers(
     async def scenario() -> None:
         engine = create_engine(core_lifecycle_database)
         sessions = create_session_factory(engine)
-        at = datetime(2026, 10, 13, 9, 0, tzinfo=UTC)
+        wall_clock = datetime.now(UTC)
+        at = wall_clock.replace(hour=9, minute=0, second=0, microsecond=0)
+        if at <= wall_clock:
+            at += timedelta(days=1)
         clock = _Clock(at)
         suffix = uuid4().int % 800_000_000
         bot_id = BOT_BASE + suffix

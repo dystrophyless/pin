@@ -118,16 +118,17 @@ _SYSTEM = "\n".join(
         "offset was separately requested, task versus appointment, and unchanged edit fields. "
         "Output only the required JSON; add no explanation or reasoning field. Match the source "
         "language.",
-        "Examples assume reference_date=2026-10-16 and timezone=Asia/Qyzylorda; use context values:",
+        "Examples assume reference_date=2026-10-16 and "
+        "timezone=Asia/Qyzylorda; use context values:",
         "RU: «Завтра напомни забрать посылку.» Tomorrow is the task date, not a reminder "
         "offset. No hour: keep timing unspecified for Capture's time/untimed choice. Omit "
         "reminders for profile defaults. "
         '{"kind":"proposal","language":"ru","operation":"propose_create_plan",'
         '"fields":{"title":"Забрать посылку","schedule":{"kind":"task",'
         '"local_date":"2026-10-17","timing":"unspecified"}}}',
-        "EN: ‘Pick up the parcel tomorrow at 2 pm.’ If reference_date=2026-10-16 and the "
-        "context timezone is Asia/Qyzylorda, this is a timed task, not an appointment; no "
-        "duration or reminder was requested. "
+        "EN: ‘Pick up the parcel tomorrow at 2 pm.’ If reference_date=2026-10-16 and "
+        "the context timezone is Asia/Qyzylorda, this is a timed task, not an appointment; "
+        "no duration or reminder was requested. "
         '{"kind":"proposal","language":"en","operation":"propose_create_plan",'
         '"fields":{"title":"Pick up the parcel","schedule":{"kind":"task",'
         '"local_date":"2026-10-17","local_time":"14:00:00",'
