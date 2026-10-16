@@ -71,7 +71,7 @@ def prepare_access(
     certificate = details.get("certKey")
     if not isinstance(private_key, str) or not private_key.strip():
         raise ValueError("missing temporary SSH private key")
-    if not isinstance(certificate, str) or not certificate.startswith("ssh-"):
+    if not isinstance(certificate, str) or not certificate.strip():
         raise ValueError("missing temporary SSH certificate")
     starts_at, expires_at = _certificate_validity(certificate)
     if starts_at > current_time:
