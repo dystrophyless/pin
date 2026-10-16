@@ -7,21 +7,51 @@ import ipaddress
 import json
 import os
 import re
+import subprocess
 import sys
+import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+_CERTIFICATE_VALIDITY = re.compile(
+    r"^\s*Valid: from (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}) "
+    r"to (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})\s*$",
+    re.MULTILINE,
+)
 
-def _timestamp(value: Any) -> datetime:
-    if isinstance(value, (int, float)):
-        return datetime.fromtimestamp(value, UTC)
-    if isinstance(value, str):
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        if parsed.tzinfo is None:
-            raise ValueError("timestamp has no timezone")
-        return parsed.astimezone(UTC)
-    raise ValueError("timestamp must be an epoch value or an ISO timestamp")
+
+def _certificate_validity(certificate: str) -> tuple[datetime, datetime]:
+    with tempfile.NamedTemporaryFile(
+        mode="w", encoding="utf-8", suffix="-cert.pub", delete=False
+    ) as stream:
+        certificate_path = Path(stream.name)
+        stream.write(certificate.rstrip() + "\n")
+
+    environment = os.environ.copy()
+    environment.update({"LC_ALL": "C", "TZ": "UTC"})
+    try:
+        result = subprocess.run(
+            ["ssh-keygen", "-L", "-f", str(certificate_path)],
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            env=environment,
+        )
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise ValueError("could not inspect temporary SSH certificate") from error
+    finally:
+        certificate_path.unlink(missing_ok=True)
+
+    matches = _CERTIFICATE_VALIDITY.findall(result.stdout)
+    if len(matches) != 1:
+        raise ValueError("temporary SSH certificate has no valid UTC interval")
+    starts_at, expires_at = (
+        datetime.strptime(value, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=UTC)
+        for value in matches[0]
+    )
+    return starts_at, expires_at
 
 
 def prepare_access(
@@ -30,12 +60,7 @@ def prepare_access(
     details = payload.get("accessDetails")
     if not isinstance(details, dict):
         raise ValueError("missing Lightsail access details")
-    expiry = _timestamp(details.get("expiresAt"))
     current_time = now.astimezone(UTC)
-    if expiry <= current_time:
-        raise ValueError("temporary SSH credentials are expired")
-    if (expiry - current_time).total_seconds() <= 30:
-        raise ValueError("temporary SSH credentials are too close to expiry")
 
     host = str(ipaddress.IPv4Address(details["ipAddress"]))
     username = details["username"]
@@ -48,6 +73,13 @@ def prepare_access(
         raise ValueError("missing temporary SSH private key")
     if not isinstance(certificate, str) or not certificate.startswith("ssh-"):
         raise ValueError("missing temporary SSH certificate")
+    starts_at, expires_at = _certificate_validity(certificate)
+    if starts_at > current_time:
+        raise ValueError("temporary SSH certificate is not yet valid")
+    if expires_at <= current_time:
+        raise ValueError("temporary SSH certificate is expired")
+    if (expires_at - current_time).total_seconds() <= 30:
+        raise ValueError("temporary SSH certificate is too close to expiry")
 
     host_keys = details.get("hostKeys")
     if not isinstance(host_keys, list):
