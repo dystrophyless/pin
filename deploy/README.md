@@ -2,6 +2,8 @@
 
 ## First release
 
+Use the repository's actual OIDC `sub_claim_prefix` from GitHub's repository OIDC settings API, followed by `:environment:production`, in the AWS role trust. New repositories can include immutable owner/repository IDs in this prefix; do not assume the older name-only subject format. Keep the production environment restricted to `main`.
+
 Copy `.env.example` to `/opt/pin/shared/runtime.env`, fill the required secrets and destination values, and set its permissions to `0600`. Keep `COMPOSE_PROFILES=landing-http` while no domain is configured. The first main-branch deployment needs the production variable `LIGHTSAIL_INITIALIZE_EMPTY_DB=true`; the initializer still verifies that no application table contains rows both before and after migrations. Switch the variable to `false` after it succeeds. A present deletion-ledger marker is never recreated by a regular release.
 
 The HTTP landing container publishes port 80 and serves the reviewed `landing/` files. The Lightsail firewall must allow public TCP 80. The landing keeps its preview and offer-availability wording until those product checks are accepted.
