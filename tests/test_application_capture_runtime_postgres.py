@@ -48,7 +48,7 @@ from pin.contexts.conversation.infrastructure.usage import (
     SqlAlchemyTurnAllowance,
 )
 from pin.contexts.identity.infrastructure.models import OnboardingRecord, PreferencesRecord
-from pin.contexts.planning.infrastructure.models import PlanItemRecord
+from pin.contexts.planning.infrastructure.models import OccurrenceRecord, PlanItemRecord
 from pin.persistence import run_local_async
 from pin.persistence.db import create_engine as create_async_engine
 from pin.persistence.db import create_session_factory
@@ -139,6 +139,8 @@ async def _seed_profile(
     bot_id: int,
     telegram_user_id: int,
     at: datetime,
+    language: str = "en",
+    home_zone: str = "Asia/Almaty",
 ) -> UUID:
     async with sessions() as session, session.begin():
         owner_id = await PostgresTelegramOwnerResolver().resolve(
@@ -147,8 +149,8 @@ async def _seed_profile(
         session.add(
             PreferencesRecord(
                 owner_id=owner_id,
-                language="en",
-                home_zone="Asia/Almaty",
+                language=language,
+                home_zone=home_zone,
                 reminder_calendar_days=1,
                 reminder_elapsed_hours=1,
                 quiet_start=time(22),
@@ -185,7 +187,12 @@ async def _seed_profile(
 
 
 async def _send_private_text(
-    sessions: async_sessionmaker[AsyncSession], *, bot_id: int, user_id: int, text: str
+    sessions: async_sessionmaker[AsyncSession],
+    *,
+    bot_id: int,
+    user_id: int,
+    text: str,
+    received_at: datetime | None = None,
 ) -> tuple[UUID, UUID, int]:
     update_id = uuid4().int % 9_000_000_000_000_000
     payload: dict[str, object] = {
@@ -193,7 +200,7 @@ async def _send_private_text(
         "message": {
             "from": {"id": user_id, "is_bot": False, "first_name": "Test"},
             "chat": {"id": user_id, "type": "private"},
-            "date": int(datetime.now(UTC).timestamp()),
+            "date": int((received_at or datetime.now(UTC)).timestamp()),
             "text": text,
         },
     }
@@ -203,6 +210,7 @@ async def _send_private_text(
             bot_id=bot_id,
             payload=payload,
             owner_resolver=PostgresTelegramOwnerResolver(),
+            received_at=received_at,
         )
         assert receipt is not None and receipt.accepted
         inbox = await session.scalar(
@@ -857,6 +865,200 @@ def test_runtime_unknown_provider_attempt_is_never_resubmitted(
                     )
                 )
                 assert started_call is not None and started_call.state == "started"
+        finally:
+            await engine.dispose()
+
+    run_local_async(scenario)
+
+
+def test_observed_tr04_proposals_reach_capture_choices_and_unsaved_preview(
+    capture_runtime_database: str,
+) -> None:
+    async def scenario() -> None:
+        engine = create_async_engine(capture_runtime_database)
+        sessions = create_session_factory(engine)
+        at = datetime(2026, 10, 15, 21, 5, tzinfo=UTC)
+        suffix = uuid4().int % 1_000_000_000
+        bot_id = 10_000_000_000 + suffix
+        ru_user_id = 11_000_000_000 + suffix
+        en_user_id = 12_000_000_000 + suffix
+        try:
+            ru_owner_id = await _seed_profile(
+                sessions,
+                bot_id=bot_id,
+                telegram_user_id=ru_user_id,
+                at=at,
+                language="ru",
+                home_zone="Asia/Qyzylorda",
+            )
+            _, _, _ = await _send_private_text(
+                sessions,
+                bot_id=bot_id,
+                user_id=ru_user_id,
+                text="Offline replay of the recorded Russian proposal",
+                received_at=at,
+            )
+            ru_proposal: dict[str, object] = {
+                "kind": "proposal",
+                "language": "ru",
+                "operation": "propose_create_plan",
+                "fields": {
+                    "title": "Сходить в аптеку",
+                    "schedule": {
+                        "kind": "task",
+                        "local_date": "2026-10-17",
+                        "timing": "unspecified",
+                    },
+                },
+            }
+            ru_transport = _FakeTransport(
+                _provider_response(ru_proposal, "gen-1792130796-rlXAAcGoGqk43o89uXhM")
+            )
+            ru_assistant = _assistant(sessions, ru_transport, at)
+            ru_claim = await _process_next(sessions, at=at, assistant=ru_assistant)
+            ru_reply = await _reply_payload(sessions, claim=ru_claim)
+            assert ru_transport.calls == 1
+            assert "Указать время или оставить задачу без времени?" in str(
+                ru_reply["plain_text"]
+            )
+            markup = cast(dict[str, object], ru_reply["reply_markup"])
+            rows = cast(list[list[dict[str, object]]], markup["inline_keyboard"])
+            untimed_callback = next(
+                str(button["callback_data"])
+                for row in rows
+                for button in row
+                if button.get("text") == "Оставить без времени"
+            )
+            async with sessions() as session:
+                ru_draft = await session.scalar(
+                    select(CaptureDraftRecord).where(
+                        CaptureDraftRecord.owner_id == ru_owner_id
+                    )
+                )
+                assert ru_draft is not None and ru_draft.state == "collecting"
+                assert ru_draft.normalized_actions == [ru_proposal]
+                assert await session.scalar(
+                    select(func.count()).select_from(PlanItemRecord).where(
+                        PlanItemRecord.owner_id == ru_owner_id
+                    )
+                ) == 0
+                assert await session.scalar(
+                    select(func.count()).select_from(OccurrenceRecord).where(
+                        OccurrenceRecord.owner_id == ru_owner_id
+                    )
+                ) == 0
+
+            await _send_callback(
+                sessions,
+                bot_id=bot_id,
+                user_id=ru_user_id,
+                callback_data=untimed_callback,
+            )
+            ru_choice_claim = await _process_next(sessions, at=at, assistant=ru_assistant)
+            ru_preview_reply = await _reply_payload(sessions, claim=ru_choice_claim)
+            assert ru_transport.calls == 1
+            assert "Предварительный просмотр" in str(ru_preview_reply["plain_text"])
+            async with sessions() as session:
+                ru_draft = await session.scalar(
+                    select(CaptureDraftRecord).where(
+                        CaptureDraftRecord.owner_id == ru_owner_id
+                    )
+                )
+                assert ru_draft is not None and ru_draft.state == "ready"
+                assert ru_draft.preview is not None
+                ru_item = cast(
+                    dict[str, object], cast(list[object], ru_draft.preview["items"])[0]
+                )
+                ru_details = cast(dict[str, object], ru_item["details"])
+                assert ru_details["local_date"] == "2026-10-17"
+                assert ru_details["local_time"] is None
+                assert ru_details["kind"] == "untimed"
+                assert await session.scalar(
+                    select(func.count()).select_from(PlanItemRecord).where(
+                        PlanItemRecord.owner_id == ru_owner_id
+                    )
+                ) == 0
+                assert await session.scalar(
+                    select(func.count()).select_from(OccurrenceRecord).where(
+                        OccurrenceRecord.owner_id == ru_owner_id
+                    )
+                ) == 0
+
+            en_owner_id = await _seed_profile(
+                sessions,
+                bot_id=bot_id,
+                telegram_user_id=en_user_id,
+                at=at,
+                language="en",
+                home_zone="Asia/Qyzylorda",
+            )
+            _, _, _ = await _send_private_text(
+                sessions,
+                bot_id=bot_id,
+                user_id=en_user_id,
+                text="Offline replay of the recorded English proposal",
+                received_at=at,
+            )
+            en_proposal: dict[str, object] = {
+                "kind": "proposal",
+                "language": "en",
+                "operation": "propose_create_plan",
+                "fields": {
+                    "title": "Go to the drugstore",
+                    "schedule": {
+                        "kind": "task",
+                        "local_date": "2026-10-17",
+                        "local_time": "14:00:00",
+                        "timezone": "Asia/Qyzylorda",
+                        "timing": "timed",
+                    },
+                },
+            }
+            en_transport = _FakeTransport(
+                _provider_response(en_proposal, "gen-1792130475-UqVUDi8C952PMtLl9XMv")
+            )
+            en_assistant = _assistant(sessions, en_transport, at)
+            en_claim = await _process_next(sessions, at=at, assistant=en_assistant)
+            en_reply = await _reply_payload(sessions, claim=en_claim)
+            assert en_transport.calls == 1
+            assert "Plan preview" in str(en_reply["plain_text"])
+            async with sessions() as session:
+                en_draft = await session.scalar(
+                    select(CaptureDraftRecord).where(
+                        CaptureDraftRecord.owner_id == en_owner_id
+                    )
+                )
+                assert en_draft is not None and en_draft.state == "ready"
+                assert en_draft.preview is not None
+                item = cast(
+                    dict[str, object], cast(list[object], en_draft.preview["items"])[0]
+                )
+                details = cast(dict[str, object], item["details"])
+                assert details["title"] == "Go to the drugstore"
+                assert details["kind"] == "task"
+                assert details["event_zone"] == "Asia/Qyzylorda"
+                assert details["local_date"] == "2026-10-17"
+                assert details["local_time"] == "14:00:00"
+                assert details["starts_at"] == "2026-10-17T09:00:00+00:00"
+                assert details["duration_seconds"] is None
+                reminders = cast(list[dict[str, object]], details["reminders"])
+                assert sorted(
+                    (item["offset_kind"], item["amount"], item["source"])
+                    for item in reminders
+                ) == [
+                    ("calendar_days", 1, "default"),
+                    ("elapsed_seconds", 3600, "default"),
+                ]
+                assert await session.scalar(
+                    select(func.count()).select_from(PlanItemRecord).where(
+                        PlanItemRecord.owner_id == en_owner_id
+                    )
+                ) == 0
+                assert await session.scalar(
+                    select(func.count()).select_from(OccurrenceRecord).where(
+                        OccurrenceRecord.owner_id == en_owner_id
+                    )
+                ) == 0
         finally:
             await engine.dispose()
 
