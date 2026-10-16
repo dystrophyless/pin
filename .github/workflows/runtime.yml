@@ -71,6 +71,19 @@ jobs:
           : "${LIGHTSAIL_INSTANCE_NAME:?Configure LIGHTSAIL_INSTANCE_NAME in the production environment}"
           : "${AWS_REGION:?Configure AWS_REGION in the production environment}"
 
+          if ! jq -ne '
+            [
+              {portStates:[{fromPort:22,toPort:22,protocol:"tcp",cidrs:["0.0.0.0/0"]}]},
+              {portStates:[{fromPort:22,toPort:22,protocol:"tcp",ipv6Cidrs:["::/0"]}]},
+              {portStates:[{fromPort:22,toPort:22,protocol:"tcp",cidrs:["lightsail-connect"]}]}
+            ]
+            | [ .[] | any(.portStates[]?; .fromPort <= 22 and .toPort >= 22 and .protocol == "tcp" and any((.cidrs[]?, .ipv6Cidrs[]?); . == "0.0.0.0/0" or . == "::/0")) ]
+            == [true, true, false]
+          ' >/dev/null; then
+            echo "SSH firewall guard self-check failed" >&2
+            exit 1
+          fi
+
           runner_ip="$(curl --fail --silent --show-error --max-time 10 https://checkip.amazonaws.com | tr -d '\r\n')"
           python3 -c 'import ipaddress,sys; ipaddress.IPv4Address(sys.argv[1])' "$runner_ip"
           runner_cidr="${runner_ip}/32"
@@ -90,7 +103,7 @@ jobs:
             aws lightsail get-instance-port-states \
               --instance-name "$LIGHTSAIL_INSTANCE_NAME" --output json > "$ports"
             if jq -e --arg cidr "$runner_cidr" \
-              'any(.portStates[]?; .fromPort == 22 and .toPort == 22 and .protocol == "tcp" and any(.cidrs[]?; . == $cidr))' \
+              'any(.portStates[]?; .fromPort == 22 and .toPort == 22 and .protocol == "tcp" and any((.cidrs[]?, .ipv6Cidrs[]?); . == $cidr))' \
               "$ports" >/dev/null; then
               aws lightsail close-instance-public-ports \
                 --instance-name "$LIGHTSAIL_INSTANCE_NAME" \
@@ -100,7 +113,7 @@ jobs:
               aws lightsail get-instance-port-states \
                 --instance-name "$LIGHTSAIL_INSTANCE_NAME" --output json > "$remaining"
               if ! jq -e --arg cidr "$runner_cidr" \
-                'any(.portStates[]?; .fromPort == 22 and .toPort == 22 and .protocol == "tcp" and any(.cidrs[]?; . == $cidr))' \
+                'any(.portStates[]?; .fromPort == 22 and .toPort == 22 and .protocol == "tcp" and any((.cidrs[]?, .ipv6Cidrs[]?); . == $cidr))' \
                 "$remaining" >/dev/null; then
                 opened=false
                 return 0
@@ -124,13 +137,13 @@ jobs:
             --instance-name "$LIGHTSAIL_INSTANCE_NAME" --output json \
             > "$RUNNER_TEMP/pin-lightsail-ports-before.json"
           if jq -e \
-            'any(.portStates[]?; .fromPort <= 22 and .toPort >= 22 and .protocol == "tcp" and any(.cidrs[]?; . == "0.0.0.0/0" or . == "::/0"))' \
+            'any(.portStates[]?; .fromPort <= 22 and .toPort >= 22 and .protocol == "tcp" and any((.cidrs[]?, .ipv6Cidrs[]?); . == "0.0.0.0/0" or . == "::/0"))' \
             "$RUNNER_TEMP/pin-lightsail-ports-before.json" >/dev/null; then
             echo "refusing deployment while SSH is open to every IPv4 or IPv6 address" >&2
             exit 1
           fi
           if jq -e --arg cidr "$runner_cidr" \
-            'any(.portStates[]?; .fromPort == 22 and .toPort == 22 and .protocol == "tcp" and any(.cidrs[]?; . == $cidr))' \
+            'any(.portStates[]?; .fromPort == 22 and .toPort == 22 and .protocol == "tcp" and any((.cidrs[]?, .ipv6Cidrs[]?); . == $cidr))' \
             "$RUNNER_TEMP/pin-lightsail-ports-before.json" >/dev/null; then
             echo "refusing to alter an SSH rule that existed before this deployment" >&2
             exit 1
@@ -149,14 +162,14 @@ jobs:
               --instance-name "$LIGHTSAIL_INSTANCE_NAME" --output json \
               > "$RUNNER_TEMP/pin-lightsail-ports-open.json"
             if jq -e --arg cidr "$runner_cidr" \
-              'any(.portStates[]?; .fromPort == 22 and .toPort == 22 and .protocol == "tcp" and any(.cidrs[]?; . == $cidr))' \
+              'any(.portStates[]?; .fromPort == 22 and .toPort == 22 and .protocol == "tcp" and any((.cidrs[]?, .ipv6Cidrs[]?); . == $cidr))' \
               "$RUNNER_TEMP/pin-lightsail-ports-open.json" >/dev/null; then
               break
             fi
             sleep 2
           done
           if ! jq -e --arg cidr "$runner_cidr" \
-            'any(.portStates[]?; .fromPort == 22 and .toPort == 22 and .protocol == "tcp" and any(.cidrs[]?; . == $cidr))' \
+            'any(.portStates[]?; .fromPort == 22 and .toPort == 22 and .protocol == "tcp" and any((.cidrs[]?, .ipv6Cidrs[]?); . == $cidr))' \
             "$RUNNER_TEMP/pin-lightsail-ports-open.json" >/dev/null; then
             echo "temporary SSH firewall rule did not become active" >&2
             exit 1
@@ -209,7 +222,7 @@ jobs:
           aws lightsail get-instance-port-states \
             --instance-name "$LIGHTSAIL_INSTANCE_NAME" --output json > "$ports"
           if jq -e --arg cidr "$RUNNER_CIDR" \
-            'any(.portStates[]?; .fromPort == 22 and .toPort == 22 and .protocol == "tcp" and any(.cidrs[]?; . == $cidr))' \
+            'any(.portStates[]?; .fromPort == 22 and .toPort == 22 and .protocol == "tcp" and any((.cidrs[]?, .ipv6Cidrs[]?); . == $cidr))' \
             "$ports" >/dev/null; then
             aws lightsail close-instance-public-ports \
               --instance-name "$LIGHTSAIL_INSTANCE_NAME" \
@@ -219,7 +232,7 @@ jobs:
             aws lightsail get-instance-port-states \
               --instance-name "$LIGHTSAIL_INSTANCE_NAME" --output json > "$ports"
             if ! jq -e --arg cidr "$RUNNER_CIDR" \
-              'any(.portStates[]?; .fromPort == 22 and .toPort == 22 and .protocol == "tcp" and any(.cidrs[]?; . == $cidr))' \
+              'any(.portStates[]?; .fromPort == 22 and .toPort == 22 and .protocol == "tcp" and any((.cidrs[]?, .ipv6Cidrs[]?); . == $cidr))' \
               "$ports" >/dev/null; then
               exit 0
             fi
