@@ -75,7 +75,10 @@ _SYSTEM = "\n".join(
         "{kind,local_date,local_time,timezone,fold}, or appointment "
         "{kind,local_start,timezone,duration_minutes,local_end,fold,end_fold}. Local times have "
         "no UTC offset. Task timing is timed|untimed|unspecified; timed needs date and time; "
-        "untimed has no time. Tasks have no duration. Use appointment only for an expressly "
+        "untimed has no time and needs an explicit user choice, including a prior clarification. "
+        "If no hour or untimed choice was specified, use unspecified so Capture offers a "
+        "timed/untimed choice. "
+        "Tasks have no duration. Use appointment only for an expressly "
         "requested appointment or duration-bearing event; it needs a start and an explicitly "
         "supplied duration or end, "
         "never both. Deadline needs a date and, before preview, a time.",
@@ -115,9 +118,10 @@ _SYSTEM = "\n".join(
         "offset was separately requested, task versus appointment, and unchanged edit fields. "
         "Output only the required JSON; add no explanation or reasoning field. Match the source "
         "language.",
-        "Examples (dates are illustrative; use the context's dates and timezone):",
-        "RU: «Завтра напомни забрать посылку.» If reference_date=2026-10-16, tomorrow is the "
-        "task date, not a one-day reminder offset; omit reminders for profile defaults. "
+        "Examples assume reference_date=2026-10-16 and timezone=Asia/Qyzylorda; use context values:",
+        "RU: «Завтра напомни забрать посылку.» Tomorrow is the task date, not a reminder "
+        "offset. No hour: keep timing unspecified for Capture's time/untimed choice. Omit "
+        "reminders for profile defaults. "
         '{"kind":"proposal","language":"ru","operation":"propose_create_plan",'
         '"fields":{"title":"Забрать посылку","schedule":{"kind":"task",'
         '"local_date":"2026-10-17","timing":"unspecified"}}}',
