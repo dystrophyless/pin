@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import stat
+import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime
@@ -20,7 +21,7 @@ _PROCESS_LOCKS_GUARD = Lock()
 
 
 def _set_private_mode(descriptor: int) -> None:
-    if os.name == "nt":
+    if sys.platform == "win32":
         return
     fchmod = getattr(os, "fchmod", None)
     if fchmod is None:
@@ -150,7 +151,7 @@ def _ledger_lock(path: Path) -> Iterator[None]:
     try:
         descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
         _set_private_mode(descriptor)
-        if os.name == "nt":
+        if sys.platform == "win32":
             import msvcrt
 
             if os.fstat(descriptor).st_size == 0:
@@ -165,7 +166,7 @@ def _ledger_lock(path: Path) -> Iterator[None]:
     finally:
         try:
             if descriptor is not None and locked:
-                if os.name == "nt":
+                if sys.platform == "win32":
                     import msvcrt
 
                     os.lseek(descriptor, 0, os.SEEK_SET)
