@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from datetime import UTC, datetime
 from pathlib import Path
-from subprocess import CompletedProcess
+from subprocess import CalledProcessError, CompletedProcess
 from typing import Any
 from unittest.mock import patch
 
@@ -20,7 +20,10 @@ class LightsailAccessTests(unittest.TestCase):
                 "ipv6Addresses": [],
                 "username": "ubuntu",
                 "privateKey": "private key contents",
-                "certKey": "ssh-rsa-cert-v01@openssh.com AAAAB3NzaC1yc2E temporary-cert",
+                "certKey": (
+                    "ecdsa-sha2-nistp256-cert-v01@openssh.com "
+                    "AAAAE2VjZHNhLXNoYTItbmlzdHAyNTY temporary-cert"
+                ),
                 "hostKeys": [
                     {
                         "algorithm": "ssh-ed25519",
@@ -119,6 +122,22 @@ class LightsailAccessTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "no valid UTC interval"):
             prepare_access(self._response(), now)
+
+    @patch("lightsail_access.subprocess.run")
+    def test_invalid_certificate_does_not_echo_tool_output(self, run: Any) -> None:
+        sensitive_output = "sensitive certificate diagnostic"
+        run.side_effect = CalledProcessError(
+            returncode=1,
+            cmd=["ssh-keygen", "-L"],
+            stderr=sensitive_output,
+        )
+        with self.assertRaisesRegex(
+            ValueError, "could not inspect temporary SSH certificate"
+        ) as error:
+            prepare_access(
+                self._response(), datetime(2026, 10, 17, 0, 0, tzinfo=UTC)
+            )
+        self.assertNotIn(sensitive_output, str(error.exception))
 
     @patch("lightsail_access.subprocess.run")
     def test_requires_at_least_one_ssh_host_key(self, run: Any) -> None:
