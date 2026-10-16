@@ -1,5 +1,12 @@
 # Pin handoff
 
+
+## Latest current-source local qualification — 2026-10-17
+
+Frozen source `9c474cf` passed **569 tests, zero failures/errors/skips**, with static, migration, landing and cached offline speech checks passing. [Current evidence](evidence/local-integration-9c474cf.md). Root independently checked raw JUnit, all478 tracked Git/frozen-source hashes, and unchanged post-cleanup catalog. The prior `d0972d3` full run failed two stale-test-clock cases and one style check; its report is retained. The clock correction preserves the no-extra-replies assertion. Older557/551/549 full-run counts below are historical, not the current qualification.
+
+This is local regression evidence only. The current execution remains local without Docker/deployment. No new provider/Telegram/Stars calls were made in qualification. Host alerts/off-host recovery, legal financial-retention applicability, larger actual-host/model/economics qualification and complete live integration/owner acceptance remain outstanding; no overall MVP acceptance or issue closure follows.
+
 Updated:2026-10-16 (Asia/Qyzylorda). Revalidate Git, issues and live handles before resuming.
 
 ## Repository and authority
