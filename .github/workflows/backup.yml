@@ -1,0 +1,210 @@
+name: Pin encrypted database backup
+
+on:
+  schedule:
+    - cron: "17 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backup:
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-24.04
+    environment: production
+    concurrency:
+      group: pin-production-mutation
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Configure temporary AWS credentials through OIDC
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: pin-backup-${{ github.run_id }}
+          mask-aws-account-id: true
+      - name: Create and upload an encrypted restore point
+        id: backup
+        env:
+          LIGHTSAIL_INSTANCE_NAME: ${{ vars.LIGHTSAIL_INSTANCE_NAME }}
+          PIN_BACKUP_BUCKET: ${{ vars.PIN_BACKUP_BUCKET }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          : "${LIGHTSAIL_INSTANCE_NAME:?Configure LIGHTSAIL_INSTANCE_NAME in the production environment}"
+          : "${PIN_BACKUP_BUCKET:?Configure PIN_BACKUP_BUCKET in the production environment}"
+          : "${AWS_REGION:?Configure AWS_REGION in the production environment}"
+
+          runner_ip="$(curl --fail --silent --show-error --max-time 10 https://checkip.amazonaws.com | tr -d '\r\n')"
+          python3 -c 'import ipaddress,sys; ipaddress.IPv4Address(sys.argv[1])' "$runner_ip"
+          runner_cidr="${runner_ip}/32"
+          echo "runner_cidr=$runner_cidr" >> "$GITHUB_OUTPUT"
+          port_info="$RUNNER_TEMP/pin-backup-ssh-port.json"
+          access_json="$RUNNER_TEMP/pin-backup-lightsail-access.json"
+          ssh_key="$RUNNER_TEMP/pin-backup-lightsail-key"
+          ssh_cert="$RUNNER_TEMP/pin-backup-lightsail-cert"
+          known_hosts="$RUNNER_TEMP/pin-backup-lightsail-known-hosts"
+          archive="$RUNNER_TEMP/pin-backup.tar.gz"
+          opened=false
+
+          close_runner_rule() {
+            if [[ "$opened" != true ]]; then return 0; fi
+            local ports="$RUNNER_TEMP/pin-backup-ports-close.json"
+            local remaining="$RUNNER_TEMP/pin-backup-ports-remaining.json"
+            aws lightsail get-instance-port-states \
+              --instance-name "$LIGHTSAIL_INSTANCE_NAME" --output json > "$ports"
+            if jq -e --arg cidr "$runner_cidr" \
+              'any(.portStates[]?; .fromPort == 22 and .toPort == 22 and .protocol == "tcp" and any(.cidrs[]?; . == $cidr))' \
+              "$ports" >/dev/null; then
+              aws lightsail close-instance-public-ports \
+                --instance-name "$LIGHTSAIL_INSTANCE_NAME" \
+                --port-info "file://$port_info" --no-cli-pager >/dev/null
+            fi
+            for attempt in {1..30}; do
+              aws lightsail get-instance-port-states \
+                --instance-name "$LIGHTSAIL_INSTANCE_NAME" --output json > "$remaining"
+              if ! jq -e --arg cidr "$runner_cidr" \
+                'any(.portStates[]?; .fromPort == 22 and .toPort == 22 and .protocol == "tcp" and any(.cidrs[]?; . == $cidr))' \
+                "$remaining" >/dev/null; then
+                opened=false
+                return 0
+              fi
+              sleep 2
+            done
+            echo "temporary SSH firewall rule remains open" >&2
+            return 1
+          }
+          finish_backup() {
+            local result=$?
+            close_runner_rule || result=$?
+            rm -f "$access_json" "$ssh_key" "$ssh_cert" "$known_hosts" "$archive"
+            return "$result"
+          }
+          trap 'finish_backup' EXIT
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
+
+          aws lightsail get-instance-port-states \
+            --instance-name "$LIGHTSAIL_INSTANCE_NAME" --output json \
+            > "$RUNNER_TEMP/pin-backup-ports-before.json"
+          if jq -e \
+            'any(.portStates[]?; .fromPort <= 22 and .toPort >= 22 and .protocol == "tcp" and any(.cidrs[]?; . == "0.0.0.0/0" or . == "::/0"))' \
+            "$RUNNER_TEMP/pin-backup-ports-before.json" >/dev/null; then
+            echo "refusing backup while SSH is open to every IPv4 or IPv6 address" >&2
+            exit 1
+          fi
+          if jq -e --arg cidr "$runner_cidr" \
+            'any(.portStates[]?; .fromPort == 22 and .toPort == 22 and .protocol == "tcp" and any(.cidrs[]?; . == $cidr))' \
+            "$RUNNER_TEMP/pin-backup-ports-before.json" >/dev/null; then
+            echo "refusing to alter an SSH rule that existed before this backup" >&2
+            exit 1
+          fi
+
+          jq -n --arg cidr "$runner_cidr" \
+            '{fromPort:22,toPort:22,protocol:"tcp",cidrs:[$cidr]}' > "$port_info"
+          opened=true
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          aws lightsail open-instance-public-ports \
+            --instance-name "$LIGHTSAIL_INSTANCE_NAME" \
+            --port-info "file://$port_info" --no-cli-pager >/dev/null
+          for attempt in {1..30}; do
+            aws lightsail get-instance-port-states \
+              --instance-name "$LIGHTSAIL_INSTANCE_NAME" --output json \
+              > "$RUNNER_TEMP/pin-backup-ports-open.json"
+            if jq -e --arg cidr "$runner_cidr" \
+              'any(.portStates[]?; .fromPort == 22 and .toPort == 22 and .protocol == "tcp" and any(.cidrs[]?; . == $cidr))' \
+              "$RUNNER_TEMP/pin-backup-ports-open.json" >/dev/null; then
+              break
+            fi
+            sleep 2
+          done
+          if ! jq -e --arg cidr "$runner_cidr" \
+            'any(.portStates[]?; .fromPort == 22 and .toPort == 22 and .protocol == "tcp" and any(.cidrs[]?; . == $cidr))' \
+            "$RUNNER_TEMP/pin-backup-ports-open.json" >/dev/null; then
+            echo "temporary SSH firewall rule did not become active" >&2
+            exit 1
+          fi
+
+          aws lightsail get-instance-access-details \
+            --instance-name "$LIGHTSAIL_INSTANCE_NAME" --protocol ssh --output json \
+            > "$access_json"
+          read -r host user < <(python3 deploy/lightsail_access.py \
+            "$access_json" "$ssh_key" "$ssh_cert" "$known_hosts")
+          target="${user}@${host}"
+          ssh_opts=(
+            -i "$ssh_key"
+            -o "CertificateFile=$ssh_cert"
+            -o "UserKnownHostsFile=$known_hosts"
+            -o GlobalKnownHostsFile=/dev/null
+            -o StrictHostKeyChecking=yes
+            -o IdentitiesOnly=yes
+            -o IdentityAgent=none
+            -o BatchMode=yes
+            -o ConnectTimeout=15
+            -o ServerAliveInterval=15
+            -o ServerAliveCountMax=2
+          )
+          backup_log="$(ssh "${ssh_opts[@]}" "$target" \
+            'sudo -n /bin/sh /opt/pin/current/deploy/backup.sh')"
+          remote_backup="$(printf '%s\n' "$backup_log" | sed -n 's/^backup=//p' | tail -n 1)"
+          if [[ ! "$remote_backup" =~ ^/var/backups/pin/pin-[0-9]{8}T[0-9]{6}Z$ ]]; then
+            echo "server did not return a valid backup directory" >&2
+            exit 1
+          fi
+          ssh "${ssh_opts[@]}" "$target" \
+            "sudo -n tar -czf - -C '$remote_backup' ." > "$archive"
+          test -s "$archive"
+          archive_bytes="$(stat -c '%s' "$archive")"
+          if (( archive_bytes > 2147483648 )); then
+            echo "backup archive exceeds the 2 GiB storage budget guard" >&2
+            exit 1
+          fi
+          backup_key="daily/$(date -u +%Y%m%dT%H%M%SZ)-${GITHUB_RUN_ID}.tar.gz"
+          aws s3api put-object \
+            --region "$AWS_REGION" \
+            --bucket "$PIN_BACKUP_BUCKET" \
+            --key "$backup_key" \
+            --body "$archive" \
+            --storage-class STANDARD \
+            --server-side-encryption AES256 \
+            --no-cli-pager >/dev/null
+          ssh "${ssh_opts[@]}" "$target" \
+            "sudo -n /bin/sh /opt/pin/current/deploy/backup.sh --mark-verified '$remote_backup'"
+          echo "uploaded encrypted backup object: $backup_key ($archive_bytes bytes)"
+      - name: Verify and close temporary SSH firewall access
+        if: ${{ always() && steps.backup.outputs.changed == 'true' }}
+        env:
+          LIGHTSAIL_INSTANCE_NAME: ${{ vars.LIGHTSAIL_INSTANCE_NAME }}
+          RUNNER_CIDR: ${{ steps.backup.outputs.runner_cidr }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          : "${RUNNER_CIDR:?Missing the opened runner CIDR}"
+          port_info="$RUNNER_TEMP/pin-backup-ssh-port.json"
+          ports="$RUNNER_TEMP/pin-backup-ports-final.json"
+          aws lightsail get-instance-port-states \
+            --instance-name "$LIGHTSAIL_INSTANCE_NAME" --output json > "$ports"
+          if jq -e --arg cidr "$RUNNER_CIDR" \
+            'any(.portStates[]?; .fromPort == 22 and .toPort == 22 and .protocol == "tcp" and any(.cidrs[]?; . == $cidr))' \
+            "$ports" >/dev/null; then
+            aws lightsail close-instance-public-ports \
+              --instance-name "$LIGHTSAIL_INSTANCE_NAME" \
+              --port-info "file://$port_info" --no-cli-pager >/dev/null
+          fi
+          for attempt in {1..30}; do
+            aws lightsail get-instance-port-states \
+              --instance-name "$LIGHTSAIL_INSTANCE_NAME" --output json > "$ports"
+            if ! jq -e --arg cidr "$RUNNER_CIDR" \
+              'any(.portStates[]?; .fromPort == 22 and .toPort == 22 and .protocol == "tcp" and any(.cidrs[]?; . == $cidr))' \
+              "$ports" >/dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "temporary SSH firewall rule remains open" >&2
+          exit 1

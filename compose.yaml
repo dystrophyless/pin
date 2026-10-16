@@ -1,0 +1,160 @@
+name: pin
+
+x-runtime: &runtime
+  image: ${PIN_IMAGE:-pin:local}
+  init: true
+  read_only: true
+  tmpfs:
+    - /tmp:mode=1777,size=128m
+  depends_on:
+    postgres:
+      condition: service_healthy
+  restart: unless-stopped
+  stop_grace_period: 60s
+  logging:
+    driver: local
+    options:
+      max-size: 10m
+      max-file: "3"
+  environment: &database-environment
+    PIN_DATABASE_URL: postgresql+psycopg://pin:${PIN_DB_PASSWORD:?Set PIN_DB_PASSWORD in the runtime environment}@postgres:5432/pin
+
+services:
+  postgres:
+    image: postgres:18.6-bookworm
+    restart: unless-stopped
+    stop_grace_period: 60s
+    logging:
+      driver: local
+      options:
+        max-size: 10m
+        max-file: "3"
+    environment:
+      POSTGRES_DB: pin
+      POSTGRES_USER: pin
+      POSTGRES_PASSWORD: ${PIN_DB_PASSWORD:?Set PIN_DB_PASSWORD in the runtime environment}
+    volumes:
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  gateway:
+    <<: *runtime
+    command: [pin-gateway]
+    environment:
+      <<: *database-environment
+      PIN_BOT_TOKEN: ${PIN_BOT_TOKEN:?Set PIN_BOT_TOKEN in the runtime environment}
+      PIN_TELEGRAM_INGRESS_MODE: polling
+
+  app-worker:
+    <<: *runtime
+    command: [pin-app-worker]
+    environment:
+      <<: *database-environment
+      PIN_OPENROUTER_API_KEY: ${PIN_OPENROUTER_API_KEY:?Set PIN_OPENROUTER_API_KEY in the runtime environment}
+      PIN_PAYMENT_SUPPORT_CONTACT: ${PIN_PAYMENT_SUPPORT_CONTACT:-}
+
+  delivery-worker:
+    <<: *runtime
+    command: [pin-delivery-worker]
+    environment:
+      <<: *database-environment
+      PIN_BOT_TOKEN: ${PIN_BOT_TOKEN:?Set PIN_BOT_TOKEN in the runtime environment}
+
+  speech-worker:
+    <<: *runtime
+    command: [pin-speech-worker]
+    environment:
+      <<: *database-environment
+      PIN_BOT_TOKEN: ${PIN_BOT_TOKEN:?Set PIN_BOT_TOKEN in the runtime environment}
+      PIN_OPENROUTER_API_KEY: ${PIN_OPENROUTER_API_KEY:?Set PIN_OPENROUTER_API_KEY in the runtime environment}
+      HF_HOME: /var/cache/huggingface
+      TMPDIR: /var/lib/pin/speech-tmp
+    volumes:
+      - whisper-cache:/var/cache/huggingface
+      - speech-temp:/var/lib/pin/speech-tmp
+
+  retention:
+    <<: *runtime
+    restart: unless-stopped
+    command:
+      - sh
+      - -ec
+      - while :; do if pin-retention run --artifact /var/lib/pin-retention/deletion-ledger.jsonl; then sleep 3600; else sleep 300; fi; done
+    environment: *database-environment
+    volumes:
+      - retention-ledger:/var/lib/pin-retention
+      - speech-temp:/var/lib/pin/speech-tmp
+
+  migrate:
+    <<: *runtime
+    profiles: [ops]
+    restart: "no"
+    command: [alembic, upgrade, head]
+    environment: *database-environment
+
+  operations:
+    <<: *runtime
+    profiles: [ops]
+    restart: "no"
+    command: [pin-operations]
+    environment: *database-environment
+
+  landing-http:
+    image: nginx:1.31.6-alpine3.24
+    profiles: [landing-http]
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /var/cache/nginx
+      - /var/run
+    ports:
+      - "80:80"
+    volumes:
+      - ./landing:/usr/share/nginx/html:ro
+    logging:
+      driver: local
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  landing-https:
+    image: caddy:2.11.4-alpine
+    profiles: [landing-https]
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777,size=32m
+    environment:
+      PIN_DOMAIN: ${PIN_DOMAIN:-}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./landing:/srv:ro
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    logging:
+      driver: local
+      options:
+        max-size: 10m
+        max-file: "3"
+
+volumes:
+  postgres-data:
+    name: pin-postgres-data
+  retention-ledger:
+    name: pin-retention-ledger
+  whisper-cache:
+    name: pin-whisper-cache
+  speech-temp:
+    name: pin-speech-temp
+  caddy-data:
+    name: pin-caddy-data
+  caddy-config:
+    name: pin-caddy-config

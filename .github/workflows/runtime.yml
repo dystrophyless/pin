@@ -1,4 +1,4 @@
-name: Runtime foundation
+name: Pin CI and Lightsail deploy
 
 on:
   push:
@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 jobs:
-  linux-x86_64:
+  checks:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -22,10 +22,209 @@ jobs:
         run: uv sync --locked --extra speech --dev
       - name: Check formatting and types
         run: |
-          uv run ruff check .
+          uv run ruff check src tests migrations deploy
           uv run mypy src
+          uv run python -m unittest discover -s deploy -p 'test_*.py' -v
+          python landing/validate_landing.py
       - name: Verify architecture and role startup
         run: |
           uv run pin-architecture-check
-          uv run pytest
+          HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 uv run pytest \
+            --ignore-glob='*_postgres.py' \
+            --ignore=tests/test_persistence.py \
+            --ignore=tests/test_persistence_migrations.py
+      - name: Validate deployment Compose configuration
+        run: |
+          docker compose --env-file deploy/.env.example --profile ops config --quiet
+          COMPOSE_PROFILES=landing-https docker compose --env-file deploy/.env.example --profile ops config --quiet
+
+  deploy:
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    needs: checks
+    runs-on: ubuntu-24.04
+    environment: production
+    concurrency:
+      group: pin-production-mutation
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Configure temporary AWS credentials through OIDC
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: pin-deploy-${{ github.run_id }}
+          mask-aws-account-id: true
+      - name: Build the release image
+        run: docker build --tag "pin:${GITHUB_SHA}" .
+      - name: Deploy with temporary Lightsail SSH access
+        id: deploy
+        env:
+          LIGHTSAIL_INSTANCE_NAME: ${{ vars.LIGHTSAIL_INSTANCE_NAME }}
+          LIGHTSAIL_INITIALIZE_EMPTY_DB: ${{ vars.LIGHTSAIL_INITIALIZE_EMPTY_DB }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          : "${LIGHTSAIL_INSTANCE_NAME:?Configure LIGHTSAIL_INSTANCE_NAME in the production environment}"
+          : "${AWS_REGION:?Configure AWS_REGION in the production environment}"
+
+          runner_ip="$(curl --fail --silent --show-error --max-time 10 https://checkip.amazonaws.com | tr -d '\r\n')"
+          python3 -c 'import ipaddress,sys; ipaddress.IPv4Address(sys.argv[1])' "$runner_ip"
+          runner_cidr="${runner_ip}/32"
+          echo "runner_cidr=$runner_cidr" >> "$GITHUB_OUTPUT"
+          port_info="$RUNNER_TEMP/pin-ssh-port.json"
+          access_json="$RUNNER_TEMP/pin-lightsail-access.json"
+          ssh_key="$RUNNER_TEMP/pin-lightsail-key"
+          ssh_cert="$RUNNER_TEMP/pin-lightsail-cert"
+          known_hosts="$RUNNER_TEMP/pin-lightsail-known-hosts"
+          image="pin:${GITHUB_SHA}"
+          opened=false
+
+          close_runner_rule() {
+            if [[ "$opened" != true ]]; then return 0; fi
+            local ports="$RUNNER_TEMP/pin-lightsail-ports-close.json"
+            local remaining="$RUNNER_TEMP/pin-lightsail-ports-remaining.json"
+            aws lightsail get-instance-port-states \
+              --instance-name "$LIGHTSAIL_INSTANCE_NAME" --output json > "$ports"
+            if jq -e --arg cidr "$runner_cidr" \
+              'any(.portStates[]?; .fromPort == 22 and .toPort == 22 and .protocol == "tcp" and any(.cidrs[]?; . == $cidr))' \
+              "$ports" >/dev/null; then
+              aws lightsail close-instance-public-ports \
+                --instance-name "$LIGHTSAIL_INSTANCE_NAME" \
+                --port-info "file://$port_info" --no-cli-pager >/dev/null
+            fi
+            for attempt in {1..30}; do
+              aws lightsail get-instance-port-states \
+                --instance-name "$LIGHTSAIL_INSTANCE_NAME" --output json > "$remaining"
+              if ! jq -e --arg cidr "$runner_cidr" \
+                'any(.portStates[]?; .fromPort == 22 and .toPort == 22 and .protocol == "tcp" and any(.cidrs[]?; . == $cidr))' \
+                "$remaining" >/dev/null; then
+                opened=false
+                return 0
+              fi
+              sleep 2
+            done
+            echo "temporary SSH firewall rule remains open" >&2
+            return 1
+          }
+          finish_deploy() {
+            local result=$?
+            close_runner_rule || result=$?
+            rm -f "$access_json" "$ssh_key" "$ssh_cert" "$known_hosts"
+            return "$result"
+          }
+          trap 'finish_deploy' EXIT
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
+
+          aws lightsail get-instance-port-states \
+            --instance-name "$LIGHTSAIL_INSTANCE_NAME" --output json \
+            > "$RUNNER_TEMP/pin-lightsail-ports-before.json"
+          if jq -e \
+            'any(.portStates[]?; .fromPort <= 22 and .toPort >= 22 and .protocol == "tcp" and any(.cidrs[]?; . == "0.0.0.0/0" or . == "::/0"))' \
+            "$RUNNER_TEMP/pin-lightsail-ports-before.json" >/dev/null; then
+            echo "refusing deployment while SSH is open to every IPv4 or IPv6 address" >&2
+            exit 1
+          fi
+          if jq -e --arg cidr "$runner_cidr" \
+            'any(.portStates[]?; .fromPort == 22 and .toPort == 22 and .protocol == "tcp" and any(.cidrs[]?; . == $cidr))' \
+            "$RUNNER_TEMP/pin-lightsail-ports-before.json" >/dev/null; then
+            echo "refusing to alter an SSH rule that existed before this deployment" >&2
+            exit 1
+          fi
+
+          jq -n --arg cidr "$runner_cidr" \
+            '{fromPort:22,toPort:22,protocol:"tcp",cidrs:[$cidr]}' > "$port_info"
+          # Treat an unknown Open API outcome as a possible mutation and always verify cleanup.
+          opened=true
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          aws lightsail open-instance-public-ports \
+            --instance-name "$LIGHTSAIL_INSTANCE_NAME" \
+            --port-info "file://$port_info" --no-cli-pager >/dev/null
+          for attempt in {1..30}; do
+            aws lightsail get-instance-port-states \
+              --instance-name "$LIGHTSAIL_INSTANCE_NAME" --output json \
+              > "$RUNNER_TEMP/pin-lightsail-ports-open.json"
+            if jq -e --arg cidr "$runner_cidr" \
+              'any(.portStates[]?; .fromPort == 22 and .toPort == 22 and .protocol == "tcp" and any(.cidrs[]?; . == $cidr))' \
+              "$RUNNER_TEMP/pin-lightsail-ports-open.json" >/dev/null; then
+              break
+            fi
+            sleep 2
+          done
+          if ! jq -e --arg cidr "$runner_cidr" \
+            'any(.portStates[]?; .fromPort == 22 and .toPort == 22 and .protocol == "tcp" and any(.cidrs[]?; . == $cidr))' \
+            "$RUNNER_TEMP/pin-lightsail-ports-open.json" >/dev/null; then
+            echo "temporary SSH firewall rule did not become active" >&2
+            exit 1
+          fi
+
+          aws lightsail get-instance-access-details \
+            --instance-name "$LIGHTSAIL_INSTANCE_NAME" --protocol ssh --output json \
+            > "$access_json"
+          read -r host user < <(python3 deploy/lightsail_access.py \
+            "$access_json" "$ssh_key" "$ssh_cert" "$known_hosts")
+          target="${user}@${host}"
+          ssh_opts=(
+            -i "$ssh_key"
+            -o "CertificateFile=$ssh_cert"
+            -o "UserKnownHostsFile=$known_hosts"
+            -o GlobalKnownHostsFile=/dev/null
+            -o StrictHostKeyChecking=yes
+            -o IdentitiesOnly=yes
+            -o IdentityAgent=none
+            -o BatchMode=yes
+            -o ConnectTimeout=15
+            -o ServerAliveInterval=15
+            -o ServerAliveCountMax=2
+          )
+          ssh "${ssh_opts[@]}" "$target" \
+            "sudo -n install -d -m 0755 /opt/pin/releases/${GITHUB_SHA}"
+          git archive --format=tar "$GITHUB_SHA" \
+            .dockerignore Dockerfile README.md alembic.ini compose.yaml deploy landing migrations pyproject.toml src uv.lock | gzip -1 | \
+            ssh "${ssh_opts[@]}" "$target" \
+              "sudo -n tar -xz -C /opt/pin/releases/${GITHUB_SHA}"
+          docker image save "$image" | gzip -1 | \
+            ssh "${ssh_opts[@]}" "$target" 'sudo -n docker image load'
+          if [[ "$LIGHTSAIL_INITIALIZE_EMPTY_DB" == true ]]; then
+            ssh "${ssh_opts[@]}" "$target" \
+              "sudo -n /bin/sh /opt/pin/releases/${GITHUB_SHA}/deploy/initialize-ledger.sh ${GITHUB_SHA} --verified-empty-database"
+          fi
+          ssh "${ssh_opts[@]}" "$target" \
+            "sudo -n /bin/sh /opt/pin/releases/${GITHUB_SHA}/deploy/release.sh ${GITHUB_SHA}"
+      - name: Verify and close temporary SSH firewall access
+        if: ${{ always() && steps.deploy.outputs.changed == 'true' }}
+        env:
+          LIGHTSAIL_INSTANCE_NAME: ${{ vars.LIGHTSAIL_INSTANCE_NAME }}
+          RUNNER_CIDR: ${{ steps.deploy.outputs.runner_cidr }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          : "${RUNNER_CIDR:?Missing the opened runner CIDR}"
+          port_info="$RUNNER_TEMP/pin-ssh-port.json"
+          ports="$RUNNER_TEMP/pin-lightsail-ports-final.json"
+          aws lightsail get-instance-port-states \
+            --instance-name "$LIGHTSAIL_INSTANCE_NAME" --output json > "$ports"
+          if jq -e --arg cidr "$RUNNER_CIDR" \
+            'any(.portStates[]?; .fromPort == 22 and .toPort == 22 and .protocol == "tcp" and any(.cidrs[]?; . == $cidr))' \
+            "$ports" >/dev/null; then
+            aws lightsail close-instance-public-ports \
+              --instance-name "$LIGHTSAIL_INSTANCE_NAME" \
+              --port-info "file://$port_info" --no-cli-pager >/dev/null
+          fi
+          for attempt in {1..30}; do
+            aws lightsail get-instance-port-states \
+              --instance-name "$LIGHTSAIL_INSTANCE_NAME" --output json > "$ports"
+            if ! jq -e --arg cidr "$RUNNER_CIDR" \
+              'any(.portStates[]?; .fromPort == 22 and .toPort == 22 and .protocol == "tcp" and any(.cidrs[]?; . == $cidr))' \
+              "$ports" >/dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "temporary SSH firewall rule remains open" >&2
+          exit 1
 
