@@ -54,7 +54,18 @@ def _cpu_busy_percent(sample_seconds: float = 0.2) -> float | None:
 
 def read_host_resources() -> dict[str, Any]:
     root = Path.cwd().anchor or Path.cwd()
-    disk = shutil.disk_usage(root)
+    disk_total: int | None
+    disk_free: int | None
+    disk_error: str | None
+    try:
+        disk = shutil.disk_usage(root)
+    except OSError as error:
+        disk_total = disk_free = None
+        disk_error = type(error).__name__
+    else:
+        disk_total = disk.total
+        disk_free = disk.free
+        disk_error = None
     cpu_count = os.cpu_count()
     cpu_busy = _cpu_busy_percent()
     result: dict[str, Any] = {
@@ -67,8 +78,9 @@ def read_host_resources() -> dict[str, Any]:
         ),
         "memory_total_bytes": None,
         "memory_available_bytes": None,
-        "disk_total_bytes": disk.total,
-        "disk_free_bytes": disk.free,
+        "disk_total_bytes": disk_total,
+        "disk_free_bytes": disk_free,
+        "disk_error": disk_error,
     }
     if sys.platform == "win32":
 
