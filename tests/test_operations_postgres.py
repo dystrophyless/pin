@@ -12,6 +12,7 @@ from alembic.config import Config
 from sqlalchemy import delete, event, select, text, update
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
+from pin.adapters.retention.deletion import finish_pending_deletions
 from pin.adapters.telegram.application_worker import (
     claim_application_job,
     process_application_job,
@@ -49,6 +50,10 @@ from pin.contexts.retention.api import read_operational_progress
 from pin.contexts.retention.infrastructure.models import (
     DeletionRequestRecord,
     DeletionTombstoneRecord,
+)
+from pin.contexts.retention.infrastructure.store import (
+    confirm_deletion_preview,
+    create_deletion_preview,
 )
 from pin.contexts.speech.infrastructure.models import SpeechRequestRecord
 from pin.entrypoints.operations import _snapshot
@@ -241,6 +246,97 @@ def test_retention_operational_progress_is_bounded_and_redacted(
                         DeletionTombstoneRecord.event_id.in_((*unexported_ids, exported_id))
                     )
                 )
+            await engine.dispose()
+
+    run_local_async(scenario)
+
+
+def test_failed_deletion_purge_remains_visible_in_redacted_operations_snapshot(
+    operations_database: str,
+    tmp_path: Path,
+) -> None:
+    owner_id = uuid4()
+    request_id: UUID | None = None
+    purge_error = f"private-purge-error-{uuid4()}"
+    now = datetime.now(UTC)
+    confirmed_at = now - timedelta(minutes=5)
+    artifact = tmp_path / "deletion-ledger.jsonl"
+
+    async def fail_purge(
+        _session: AsyncSession,
+        _owner_id: UUID,
+        _at: datetime,
+    ) -> None:
+        raise RuntimeError(purge_error)
+
+    async def scenario() -> None:
+        nonlocal request_id
+        engine = create_engine(operations_database)
+        sessions = create_session_factory(engine)
+        try:
+            async with sessions() as session, session.begin():
+                session.add(AccessAccountRecord(owner_id=owner_id))
+                await session.flush()
+                preview = await create_deletion_preview(
+                    session, owner_id=owner_id, now=confirmed_at
+                )
+                await confirm_deletion_preview(
+                    session,
+                    owner_id=owner_id,
+                    preview_id=preview.id,
+                    expected_version=preview.version,
+                    now=confirmed_at,
+                )
+                request_id = preview.id
+
+            with pytest.raises(RuntimeError, match="private-purge-error"):
+                await finish_pending_deletions(
+                    sessions,
+                    artifact=artifact,
+                    now=now,
+                    purge_owner=fail_purge,
+                )
+
+            assert request_id is not None
+            async with sessions() as session:
+                request = await session.get(DeletionRequestRecord, request_id)
+                tombstone = await session.scalar(
+                    select(DeletionTombstoneRecord).where(
+                        DeletionTombstoneRecord.owner_id == owner_id,
+                        DeletionTombstoneRecord.deleted_at == confirmed_at,
+                    )
+                )
+                assert request is not None and request.state == "pending_export"
+                assert tombstone is not None and tombstone.exported_at is not None
+
+            value, ready = await _snapshot(operations_database)
+            assert ready is True
+            progress = value["restore_and_deletion_progress"]
+            assert progress["request_state_counts"]["pending_export"] == 1
+            assert 240 < progress["oldest_pending_seconds"] < 360
+            assert progress["pending_request_ids"] == (str(request_id),)
+            assert progress["unexported_tombstone_count"] == 0
+            assert progress["unexported_tombstone_event_ids"] == ()
+            assert str(owner_id) not in repr(value)
+            assert purge_error not in repr(value)
+        finally:
+            if request_id is not None:
+                async with sessions() as session, session.begin():
+                    await session.execute(
+                        delete(DeletionRequestRecord).where(
+                            DeletionRequestRecord.id == request_id
+                        )
+                    )
+                    await session.execute(
+                        delete(DeletionTombstoneRecord).where(
+                            DeletionTombstoneRecord.owner_id == owner_id
+                    )
+                    )
+                    await session.execute(
+                        delete(AccessAccountRecord).where(
+                            AccessAccountRecord.owner_id == owner_id
+                    )
+                    )
             await engine.dispose()
 
     run_local_async(scenario)
