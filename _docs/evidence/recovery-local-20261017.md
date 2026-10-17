@@ -18,6 +18,8 @@ The first absent-attempt fixture failed at the intentional recovery database-nam
 
 ## Evidence boundaries
 
+The first Linux CI run stopped before deployment: the new restore script was committed without its executable bit, producing a permission error in the shell smoke (281 other checks passed). The script's Git mode was corrected to executable with no content change; the failed run remains visible in Actions. A later successful deployment must be recorded separately.
+
 Recovery receipts bind operator assertions to a snapshot, time window and hashed source observations. They do not independently prove provider completeness or the truth of an operator's conclusions. The local test observations are explicitly synthetic; no real payment reconciliation is claimed.
 
 These results do not prove full-host disaster recovery, a complete production Telegram journey, legal financial-retention compliance, or a model quality/capacity target. The running AWS bot remains on the previous committed release until the new changes are verified, committed and deployed. The owner confirmed that the deployed bot answered `/start`.
