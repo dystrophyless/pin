@@ -1,4 +1,29 @@
-# Local operations runbook
+# Operations runbook
+
+## Hosted investigation
+
+On the existing Pin host, inspect `pin-host-health.service` and its journal first:
+
+```sh
+sudo systemctl status pin-host-health.service --no-pager
+sudo journalctl -u pin-host-health.service --since '10 minutes ago' --no-pager
+```
+
+The journal intentionally contains aggregate health signals. For the bounded opaque IDs used in
+the triage steps below, read the current release's operations snapshot:
+
+```sh
+release=$(readlink -f /opt/pin/current)
+release_id=${release##*/}
+sudo env PIN_IMAGE="pin:$release_id" docker compose \
+  --env-file /opt/pin/shared/runtime.env --file "$release/compose.yaml" \
+  --profile ops run --rm --pull never --no-deps operations
+```
+
+This uses the existing image and private runtime configuration; it does not start workers or
+repair state. Keep incident extracts restricted and include only the redacted fields needed for
+investigation. Follow the triage steps below and the [hosted recovery runbook](runbooks/hosted_recovery.md)
+when the recovery gate is fenced.
 
 ## Read a redacted snapshot
 
