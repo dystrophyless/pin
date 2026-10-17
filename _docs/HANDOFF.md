@@ -1,5 +1,13 @@
 # Pin handoff
 
+## Current recovery work — 2026-10-17
+
+AWS runs the committed host-monitor release; all four lane-stop/recovery probes and a kernel reboot passed. The owner confirmed the bot answered `/start`. An actual S3 download restored 52 tables into a disposable database on the same host (snapshot age 4.59 h; download/restore 10.57 s); this is not full disaster recovery. See [AWS evidence](evidence/aws-initial-deployment.md).
+
+Recovery fencing/provenance is committed in `2f79c5f`, paid tests in `c8430e7`, and operations tests in `95df95e`; deployment is pending. The latest root offline suite passed 282 tests; Ruff, mypy (221 source files) and architecture checks passed. Native delivery passed 39 tests before the final cutoff/re-arm edits; focused recovery/shell checks passed 11 afterward. Paid lifecycle passed 4 cases; both actual dump/restore scenarios passed, including a send absent from the snapshot and later deletion replay. Migration roundtrip passed 1 case plus initializer acceptance/rejection checks; operations passed 6 cases. Root checked the raw passing JUnit results; earlier failed harness runs remain preserved. See [focused recovery evidence](evidence/recovery-local-20261017.md) for scope and limitations. All assigned native fixtures were removed with catalog baseline restored; no native writer remains. Do not use the older 569-test result below as proof of these changes.
+
+The owner has not selected an IP/TOO legal form. Financial-retention validation remains unresolved. Actual Stars transactions and the formal 99% model benchmark remain removed from acceptance.
+
 
 ## Latest current-source local qualification — 2026-10-17
 
