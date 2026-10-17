@@ -7,24 +7,61 @@ operator access path and preserve the downloaded files for audit. A newer timest
 and a valid checksum establish which bytes were downloaded, not that the deletion
 ledger covers every deletion after the older snapshot.
 
-The restore command accepts only an empty PostgreSQL database named
-`pin_recovery_<unique-suffix>`. It restores that database, applies migrations,
-replays the newer deletion ledger, and arms the runtime fence. It never starts
-workers. Do not point it at the live database or an existing recovery database.
+Hosted restore runs from the currently selected pinned release and requires the
+existing Compose `postgres` container to be running with image
+`postgres:18.6-bookworm`, plus the exact `pin:<release-sha>` image already on the
+host. The host needs Docker Compose, Python 3, `realpath`, and `sha256sum`; it
+does not need the Pin virtual environment, `psql`, `pg_restore`, Alembic, or
+`pin-retention`. PostgreSQL commands run inside the existing PostgreSQL
+container. Migrations, recovery-gate commands, and ledger replay run as one-off
+containers from the pinned Pin image. The helper uses `--no-deps` and
+`--pull never`; it never starts runtime roles, builds or pulls images, or
+creates/drops databases.
+
+First create a new empty database owned by `pin` in the already-running local
+PostgreSQL container. Choose a unique `pin_recovery_<suffix>` name and obtain
+authorization for this temporary database before running `createdb`:
 
 ```sh
-export PIN_DATABASE_URL='postgresql+psycopg://USER:PASSWORD@HOST:5432/pin_recovery_20261017_a'
-deploy/restore_snapshot.sh \
+export PIN_RUNTIME_ENV_FILE=/opt/pin/shared/runtime.env
+release_dir=$(readlink -f /opt/pin/current)
+release_id=${release_dir##*/}
+target_db=pin_recovery_20261017_a
+PIN_IMAGE="pin:$release_id" docker compose \
+  --env-file "$PIN_RUNTIME_ENV_FILE" --file "$release_dir/compose.yaml" \
+  exec -T postgres createdb -U pin -O pin "$target_db"
+```
+
+Set `PIN_DATABASE_URL` from the protected host secret input, using the same
+database password configured in `runtime.env`, host `postgres`, role `pin`, port
+`5432`, and the exact target name. Enter it without putting the secret in shell
+history or command arguments. For an interactive Bash session:
+
+```sh
+read -r -s -p 'Recovery database URL: ' PIN_DATABASE_URL
+printf '\n'
+export PIN_DATABASE_URL
+/opt/pin/current/deploy/restore_snapshot.sh \
   /secure/backups/pin-20261016T120000Z \
   /secure/backups/pin-20261017T120000Z
+unset PIN_DATABASE_URL
 ```
+
+Setting `PIN_RUNTIME_ENV_FILE` explicitly selects hosted mode. The helper binds
+to the currently selected release's `compose.yaml` and exact `pin:<release-sha>`
+image, then verifies that the existing PostgreSQL container is running the
+pinned image. It accepts only an already-created, empty target named
+`pin_recovery_*`, owned by `pin`. It does not restore into `pin` or any existing
+database with objects.
 
 The script checks both `.verified` markers, both `SHA256SUMS` files, the dump,
 the PostgreSQL target name and identity, and target emptiness. It requires the
 newer bundle ID to be later than the snapshot ID. It extracts only one bounded,
 regular `deletion-ledger.jsonl` member from the newer ledger archive, then runs
 the existing `pin-retention replay` command while the database is fenced. Inspect
-the retention replay output and deletion results before continuing.
+the retention replay output and deletion results before continuing. The one-off
+replay runs as the invoking host UID/GID, matching the owner of its mode-600
+temporary ledger file; the file and its mode-700 parent are mounted read-only.
 
 The fence blocks gateway, app, delivery, speech, billing-refund, regular release,
 and scheduled retention work. Configuration checks, migrations, gate status, and
@@ -94,8 +131,28 @@ PIN_DATABASE_URL="$PIN_DATABASE_URL" pin-recovery release \
 PIN_DATABASE_URL="$PIN_DATABASE_URL" pin-recovery check
 ```
 
-Only after `check` succeeds may the operator use the normal deployment procedure
-for this recovery database. `deploy/release.sh` independently checks the fence
-before starting services. Keep the source bundles, evidence files, gate status,
-and replay output together under the incident record. Preserve the existing
-seven-day backup retention policy; this procedure does not extend it.
+After the recovery CLI reports the gate released, an authorized operator can
+cut runtime over using the normal release procedure. Compose reads
+`PIN_DATABASE_NAME` for the runtime URL, PostgreSQL initialization value, and
+database health check; when unset it remains `pin`, preserving the production
+default. Backup and initialization helpers use Compose's `POSTGRES_DB`, so
+they follow the same selected database.
+
+For a cutover, use a pinned release whose `compose.yaml` supports
+`PIN_DATABASE_NAME`, set that variable in the protected
+`/opt/pin/shared/runtime.env` to the exact validated recovery database name,
+then invoke that release's normal script with its exact lowercase release SHA:
+
+```sh
+release_id=<release-sha>
+/bin/sh "/opt/pin/releases/$release_id/deploy/release.sh" "$release_id"
+```
+
+The release will take its pre-release
+backup, stop workers, migrate and replay retention against that selected
+database, verify the released gate, and only then start workers. Do not run
+this cutover during a rehearsal: keep the target isolated and workers stopped.
+The procedure does not edit the runtime env file or perform the cutover itself.
+Keep the source bundles, evidence files, gate status, and replay output together
+under the incident record. Preserve the existing seven-day backup retention
+policy; this procedure does not extend it.
