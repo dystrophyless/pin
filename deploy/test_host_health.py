@@ -27,6 +27,12 @@ class HostHealthTests(unittest.TestCase):
             "dead_job_ids": ["private-job-id"],
             "expired_lease_job_ids": [],
             "oldest_due_pending_seconds": 301,
+            "oldest_due_pending_job_ids": ["private-pending-job-id"],
+            "recovery": {
+                "state": "fenced",
+                "snapshot_id": "snapshot-private-id",
+                "ledger_id": "ledger-private-id",
+            },
             "contexts": {
                 "delivery": {
                     "outcomes": {"unknown": 2},
@@ -51,6 +57,22 @@ class HostHealthTests(unittest.TestCase):
                     "uncertain_refund_order_ids": [],
                     "receipt_count": 0,
                     "receipt_total_stars": 0,
+                    "active_paid_period_traces": [
+                        {
+                            "period_id": "period-private-id",
+                            "order_id": None,
+                            "receipt_linked": False,
+                            "reservations": [
+                                {"reservation_id": "private-reservation-id"}
+                            ],
+                    },
+                    {
+                        "period_id": "period-sample-limited-private-id",
+                        "order_id": None,
+                        "receipt_linked": None,
+                        "reservations": [],
+                    },
+                    ],
                 },
                 "retention": {
                     "request_state_counts": {},
@@ -66,10 +88,40 @@ class HostHealthTests(unittest.TestCase):
         self.assertEqual(summary["delivery"]["unknown_attempt_count"], 2)
         self.assertEqual(summary["provider"]["unknown_call_count"], 1)
         self.assertEqual(summary["speech"]["failed_request_count"], 1)
+        self.assertEqual(summary["oldest_due_pending_job_sample_count"], 1)
+        self.assertEqual(
+            summary["billing"]["active_paid_period_without_receipt_sample_count"], 1
+        )
+        self.assertEqual(
+            summary["billing"]["active_paid_period_receipt_linkage_unavailable_count"], 1
+        )
+        self.assertEqual(summary["recovery"]["state"], "fenced")
         self.assertIn("dead jobs in sample require runbook investigation (1)", signals)
         self.assertIn("unknown provider calls require runbook investigation (1)", signals)
+        self.assertIn(
+            "active paid periods without a linked receipt in the trace sample require "
+            "runbook investigation (1)",
+            signals,
+        )
+        self.assertIn(
+            "active paid period receipt linkage unavailable because the trace sample is capped "
+            "require runbook investigation (1)",
+            signals,
+        )
+        self.assertIn(
+            "database recovery gate is fenced; runtime reconciliation is required", signals
+        )
         self.assertNotIn("private-job-id", json.dumps(summary))
         self.assertNotIn("private-call-id", json.dumps(summary))
+        for private_id in (
+            "private-pending-job-id",
+            "period-private-id",
+            "private-reservation-id",
+            "period-sample-limited-private-id",
+            "snapshot-private-id",
+            "ledger-private-id",
+        ):
+            self.assertNotIn(private_id, json.dumps(summary))
 
     def test_restart_increase_is_reported_once_and_unchanged_count_is_clear(self) -> None:
         previous = {"gateway": 1, "speech-worker": 0}

@@ -9,7 +9,7 @@ from uuid import UUID, uuid4
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import delete, event, select, text, update
+from sqlalchemy import delete, event, select, text, tuple_, update
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from pin.adapters.retention.deletion import finish_pending_deletions
@@ -31,6 +31,7 @@ from pin.contexts.billing.infrastructure.models import (
     PaymentRefundRecord,
     UsageReservationRecord,
 )
+from pin.contexts.billing.infrastructure.payments import paid_period_id
 from pin.contexts.conversation.application.service import (
     BoundedPlanningAssistant,
     ProviderHTTPError,
@@ -362,6 +363,7 @@ def test_operational_fault_snapshot_reports_bounded_redacted_queue_and_worker_st
     job_ids: list[UUID] = []
     dead_job_ids: list[UUID] = []
     expired_job_ids: list[UUID] = []
+    due_job_ids: list[UUID] = []
     now = datetime.now(UTC)
 
     async def scenario() -> None:
@@ -443,6 +445,7 @@ def test_operational_fault_snapshot_reports_bounded_redacted_queue_and_worker_st
                         lane=lane,
                         key=f"operations-due-{lane.value}-{uuid4()}",
                     )
+                    due_job_ids.append(due_job.id)
                     await session.execute(
                         update(Job)
                         .where(Job.id == due_job.id)
@@ -523,6 +526,10 @@ def test_operational_fault_snapshot_reports_bounded_redacted_queue_and_worker_st
             assert snapshot.lanes == expected_lanes
             assert snapshot.oldest_due_pending_seconds is not None
             assert 500 < snapshot.oldest_due_pending_seconds < 900
+            assert len(snapshot.oldest_due_pending_job_ids) == 3
+            assert set(snapshot.oldest_due_pending_job_ids) == {
+                str(job_id) for job_id in due_job_ids
+            }
             assert len(snapshot.dead_job_ids) == 25
             assert set(snapshot.dead_job_ids).issubset({str(job_id) for job_id in dead_job_ids})
             assert len(snapshot.expired_lease_job_ids) == 25
@@ -549,6 +556,10 @@ def test_operational_fault_snapshot_reports_bounded_redacted_queue_and_worker_st
                 assert private_value not in cli_text
 
             assert cli_snapshot["lanes"] == expected_lanes
+            assert set(cli_snapshot["oldest_due_pending_job_ids"]) == {
+                str(job_id) for job_id in due_job_ids
+            }
+            assert cli_snapshot["recovery"]["state"] == "ready"
             assert len(cli_snapshot["dead_job_ids"]) == 25
             assert len(cli_snapshot["expired_lease_job_ids"]) == 25
 
@@ -589,6 +600,176 @@ def test_operational_fault_snapshot_reports_bounded_redacted_queue_and_worker_st
                 await session.execute(
                     delete(WorkerHeartbeat).where(
                         WorkerHeartbeat.worker_id.in_(worker_ids.values())
+                    )
+                )
+            await engine.dispose()
+
+    run_local_async(scenario)
+
+
+def test_paid_period_usage_trace_shows_expected_missing_receipt_link_redacted(
+    operations_database: str,
+) -> None:
+    now = datetime.now(UTC)
+    starts_at = now - timedelta(days=1)
+    ends_at = now + timedelta(days=29)
+    linked_owner_id, missing_owner_id = uuid4(), uuid4()
+    linked_order_id = uuid4()
+    linked_charge_id = f"synthetic-telegram-charge-{uuid4()}"
+    private_provider_charge_id = f"synthetic-provider-charge-{uuid4()}"
+    private_payload = f"private-payment-fixture-{uuid4()}"
+    private_request_id = f"private-request-sentinel-{uuid4()}"
+    linked_period_id = paid_period_id(linked_charge_id)
+    missing_period_id = paid_period_id(f"missing-receipt-charge-{uuid4()}")
+    linked_reservation_id, missing_reservation_id = uuid4(), uuid4()
+
+    async def scenario() -> None:
+        engine = create_engine(operations_database)
+        sessions = create_session_factory(engine)
+        try:
+            async with sessions() as session, session.begin():
+                session.add_all(
+                    [
+                        AccessAccountRecord(owner_id=linked_owner_id, created_at=now),
+                        AccessAccountRecord(owner_id=missing_owner_id, created_at=now),
+                    ]
+                )
+                await session.flush()
+                session.add_all(
+                    [
+                        AccessPeriodRecord(
+                            owner_id=linked_owner_id,
+                            period_id=linked_period_id,
+                            policy_kind="paid",
+                            policy_version="operations-test",
+                            starts_at=starts_at,
+                            ends_at=ends_at,
+                            ai_turn_limit=100,
+                            voice_second_limit=3600,
+                        ),
+                        AccessPeriodRecord(
+                            owner_id=missing_owner_id,
+                            period_id=missing_period_id,
+                            policy_kind="paid",
+                            policy_version="operations-test",
+                            starts_at=starts_at,
+                            ends_at=ends_at,
+                            ai_turn_limit=100,
+                            voice_second_limit=3600,
+                        ),
+                        PaymentOrderRecord(
+                            id=linked_order_id,
+                            owner_id=linked_owner_id,
+                            telegram_user_id=7_123_000_001,
+                            invoice_payload=private_payload,
+                            terms_version="operations-test",
+                            state="paid",
+                            invoice_status="sent",
+                            first_charge_id=linked_charge_id,
+                            latest_period_end=ends_at,
+                            created_at=now,
+                        ),
+                    ]
+                )
+                await session.flush()
+                session.add_all(
+                    [
+                        PaymentReceiptRecord(
+                            telegram_charge_id=linked_charge_id,
+                            provider_charge_id=private_provider_charge_id,
+                            order_id=linked_order_id,
+                            owner_id=linked_owner_id,
+                            telegram_user_id=7_123_000_001,
+                            currency="XTR",
+                            total_amount=250,
+                            is_recurring=True,
+                            is_first_recurring=True,
+                            period_starts_at=starts_at,
+                            period_ends_at=ends_at,
+                            received_at=now,
+                        ),
+                        UsageReservationRecord(
+                            id=linked_reservation_id,
+                            owner_id=linked_owner_id,
+                            period_id=linked_period_id,
+                            request_id=private_request_id,
+                            reserved_ai_turns=1,
+                            reserved_voice_seconds=0,
+                            settled_ai_turns=1,
+                            settled_voice_seconds=0,
+                            state="settled",
+                            created_at=now,
+                            expires_at=now + timedelta(hours=1),
+                            finalized_at=now,
+                        ),
+                        UsageReservationRecord(
+                            id=missing_reservation_id,
+                            owner_id=missing_owner_id,
+                            period_id=missing_period_id,
+                            request_id=f"request-{uuid4()}",
+                            reserved_ai_turns=1,
+                            reserved_voice_seconds=0,
+                            state="reserved",
+                            created_at=now,
+                            expires_at=now + timedelta(hours=1),
+                        ),
+                    ]
+                )
+
+            snapshot, ready = await _snapshot(operations_database)
+            assert ready is True
+            traces = snapshot["contexts"]["billing"]["active_paid_period_traces"]
+            by_period = {item["period_id"]: item for item in traces}
+            assert by_period[linked_period_id]["receipt_linked"] is True
+            assert by_period[linked_period_id]["order_id"] == str(linked_order_id)
+            assert by_period[linked_period_id]["reservations"][0]["reservation_id"] == str(
+                linked_reservation_id
+            )
+            assert by_period[missing_period_id]["receipt_linked"] is False
+            assert by_period[missing_period_id]["order_id"] is None
+            assert by_period[missing_period_id]["reservations"][0]["reservation_id"] == str(
+                missing_reservation_id
+            )
+            serialized = repr(snapshot)
+            for private_value in (
+                str(linked_owner_id),
+                str(missing_owner_id),
+                linked_charge_id,
+                private_provider_charge_id,
+                private_payload,
+                private_request_id,
+            ):
+                assert private_value not in serialized
+        finally:
+            async with sessions() as session, session.begin():
+                await session.execute(
+                    delete(UsageReservationRecord).where(
+                        UsageReservationRecord.id.in_(
+                            (linked_reservation_id, missing_reservation_id)
+                        )
+                    )
+                )
+                await session.execute(
+                    delete(AccessPeriodRecord).where(
+                        tuple_(AccessPeriodRecord.owner_id, AccessPeriodRecord.period_id).in_(
+                            (
+                                (linked_owner_id, linked_period_id),
+                                (missing_owner_id, missing_period_id),
+                            )
+                        )
+                    )
+                )
+                await session.execute(
+                    delete(PaymentReceiptRecord).where(
+                        PaymentReceiptRecord.telegram_charge_id == linked_charge_id
+                    )
+                )
+                await session.execute(
+                    delete(PaymentOrderRecord).where(PaymentOrderRecord.id == linked_order_id)
+                )
+                await session.execute(
+                    delete(AccessAccountRecord).where(
+                        AccessAccountRecord.owner_id.in_((linked_owner_id, missing_owner_id))
                     )
                 )
             await engine.dispose()
