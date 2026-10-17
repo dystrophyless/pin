@@ -41,6 +41,7 @@ def _current(item: AccountabilityOccurrence) -> CurrentOccurrence:
         starts_at=item.starts_at,
         ends_at=item.ends_at,
         deadline_at=item.deadline_at,
+        source_created_at=item.source_created_at,
     )
 
 
@@ -74,7 +75,12 @@ class PlanningAccountabilityReads:
                 for_update=for_update,
             )
             items.extend(
-                OpenUntimedItem(item.occurrence_id, item.title, item.local_date)
+                OpenUntimedItem(
+                    item.occurrence_id,
+                    item.title,
+                    item.local_date,
+                    item.source_created_at,
+                )
                 for item in page.items
             )
             if page.next_occurrence_id is None:

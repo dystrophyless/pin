@@ -64,6 +64,9 @@ from pin.platform.jobs import (
     lock_job_for_effects,
 )
 from pin.platform.models import InboxUpdate, Job, OutboxEvent
+from pin.platform.recovery import (
+    snapshot_delivery_is_uncertain,
+)
 
 DELIVERY_JOB_KIND = "notifications.deliver_reminder"
 DELIVERY_REPLY_JOB_KIND = "notifications.deliver_reply"
@@ -84,6 +87,44 @@ _TERMINAL_OUTCOMES = frozenset(
         DeliveryOutcomeKind.COALESCED.value,
     }
 )
+
+
+async def _reminder_delivery_is_uncertain(
+    session: AsyncSession,
+    intent: ReminderIntentRecord,
+    identity: IdentityStore,
+) -> bool:
+    source_event = await session.get(OutboxEvent, intent.source_event_id)
+    source_event_at = (
+        source_event.created_at
+        if source_event is not None
+        else datetime.min.replace(tzinfo=UTC)
+    )
+    generated_occurrence = source_event is not None and source_event.event_type in {
+        "planning.series_occurrence_created",
+        "planning.series_generated",
+    }
+    uncertain = await snapshot_delivery_is_uncertain(
+        session,
+        created_at=source_event_at,
+        scheduled_at=intent.due_at,
+    )
+    if uncertain:
+        return True
+    source_created_at = None
+    if generated_occurrence:
+        current = await _current_schedule(session, intent, identity)
+        if current is not None:
+            source_created_at = current[1].source_created_at
+        elif generated_occurrence:
+            source_created_at = datetime.min.replace(tzinfo=UTC)
+    return await snapshot_delivery_is_uncertain(
+        session,
+        created_at=source_event_at,
+        scheduled_at=intent.due_at,
+        source_created_at=source_created_at,
+        regenerated_occurrence=generated_occurrence,
+    )
 
 
 class ReminderTransport(Protocol):
@@ -295,6 +336,23 @@ async def deliver_reminder_job(
                 )
                 if started is not None:
                     immediate = await _finish_existing_as_unknown(session, claim, started, at=now())
+                elif await _reminder_delivery_is_uncertain(
+                    session, intent, identity_store_factory(session)
+                ):
+                    immediate = await _record_outcome(
+                        session,
+                        intent,
+                        target_id=None,
+                        attempt_number=await _next_attempt_number(
+                            session, intent, None, dispatch_version=dispatch_version
+                        ),
+                        cycle_id=cycle_id,
+                        outcome=DeliveryOutcomeKind.UNKNOWN,
+                        at=now(),
+                        failure_code="recovery_uncertain_window",
+                        dispatch_version=dispatch_version,
+                    )
+                    await complete_job(session, claim)
                 else:
                     immediate = await _record_outcome(
                         session,
@@ -318,6 +376,23 @@ async def deliver_reminder_job(
                     immediate = await _finish_existing_as_unknown(session, claim, prior, at=now())
                 elif prior is not None and prior.outcome in _TERMINAL_OUTCOMES:
                     immediate = _outcome_from_record(intent, prior)
+                    await complete_job(session, claim)
+                elif await _reminder_delivery_is_uncertain(
+                    session, intent, identity_store_factory(session)
+                ):
+                    immediate = await _record_outcome(
+                        session,
+                        intent,
+                        target_id=destination,
+                        attempt_number=await _next_attempt_number(
+                            session, intent, destination, dispatch_version=dispatch_version
+                        ),
+                        cycle_id=cycle_id,
+                        outcome=DeliveryOutcomeKind.UNKNOWN,
+                        at=now(),
+                        failure_code="recovery_uncertain_window",
+                        dispatch_version=dispatch_version,
+                    )
                     await complete_job(session, claim)
                 elif intent.dispatch_version != dispatch_version or intent.state != "scheduled":
                     immediate = await _record_outcome(
@@ -750,6 +825,21 @@ async def deliver_reply_job(
                     )
                 elif prior is not None and prior.outcome in _TERMINAL_OUTCOMES:
                     immediate = _reply_outcome_from_record(event, prior)
+                    await complete_job(session, claim)
+                elif await snapshot_delivery_is_uncertain(
+                    session, created_at=event.created_at, scheduled_at=event.created_at
+                ):
+                    immediate = await _record_reply_outcome(
+                        session,
+                        event,
+                        target_id=destination,
+                        attempt_number=await _next_reply_attempt_number(
+                            session, event.id, destination
+                        ),
+                        outcome=DeliveryOutcomeKind.UNKNOWN,
+                        at=now(),
+                        failure_code="recovery_uncertain_window",
+                    )
                     await complete_job(session, claim)
                 else:
                     markdown = payload.get("markdown")

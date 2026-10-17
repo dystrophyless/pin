@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -27,6 +28,7 @@ from pin.contexts.billing.infrastructure.models import (
     AccessPeriodRecord,
     RetainedBillingIdentityRecord,
     TrialActivationRecord,
+    UsageReservationRecord,
 )
 from pin.contexts.identity.infrastructure.models import PreferencesRecord
 from pin.contexts.notifications.application.delivery import (
@@ -43,6 +45,7 @@ from pin.contexts.planning.infrastructure.models import (
     PlanItemRecord,
     ReminderRuleRecord,
 )
+from pin.contexts.retention.infrastructure.ledger import read_tombstones
 from pin.contexts.retention.infrastructure.store import (
     confirm_deletion_preview,
     create_deletion_preview,
@@ -53,6 +56,7 @@ from pin.platform.contracts import EventEnvelope
 from pin.platform.events import add_outbox_event
 from pin.platform.jobs import JobLane, enqueue_job
 from pin.platform.models import Job
+from pin.platform.recovery import RecoveryFenced, require_runtime_recovery_ready
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE_DATABASE_ENV = "PIN_TEST_RETENTION_RESTORE_SOURCE_DATABASE_URL"
@@ -66,7 +70,7 @@ DATA_DIRECTORY = "C:/Users/roman/AppData/Local/Temp/pin-issue2-eeadfd1-20261013"
 PG_BIN = Path("D:/Program/postgresql/bin")
 DATABASE_PATTERNS = {
     "source": re.compile(r"pin_issue23_restore_source_[a-z0-9]+\Z"),
-    "target": re.compile(r"pin_issue23_restore_target_[a-z0-9]+\Z"),
+    "target": re.compile(r"(?:pin_issue23_restore_target_|pin_recovery_issue23_)[a-z0-9]+\Z"),
 }
 
 
@@ -116,6 +120,54 @@ def _database_url(role: str) -> URL:
 
 def _plain_libpq_url(url: URL) -> str:
     return url.set(drivername="postgresql").render_as_string(hide_password=True)
+
+
+def _write_recovery_receipt(
+    tmp_path: Path,
+    *,
+    kind: str,
+    observed: dict[str, object],
+    snapshot_id: str,
+    ledger_id: str,
+    fenced_at: datetime,
+) -> Path:
+    source_path = tmp_path / f"{kind}-observed-source.json"
+    source_value = {
+        "kind": kind,
+        "snapshot_id": snapshot_id,
+        "ledger_id": ledger_id,
+        "observed": observed,
+    }
+    source_path.write_text(
+        json.dumps(source_value, sort_keys=True, default=str), encoding="utf-8"
+    )
+    checked_at = max(datetime.now(UTC), fenced_at + timedelta(seconds=1))
+    receipt_value: dict[str, object] = {
+        "status": "operator_verified",
+        "checked_at": checked_at.isoformat().replace("+00:00", "Z"),
+        "snapshot_id": snapshot_id,
+        "window": {
+            "start": datetime.strptime(snapshot_id, "pin-%Y%m%dT%H%M%SZ")
+            .replace(tzinfo=UTC)
+            .isoformat()
+            .replace("+00:00", "Z"),
+            "end": fenced_at.isoformat().replace("+00:00", "Z"),
+        },
+        "reconciled": True,
+        "sources": [
+            {
+                "path": str(source_path.resolve()),
+                "sha256": hashlib.sha256(source_path.read_bytes()).hexdigest(),
+            }
+        ],
+    }
+    if kind == "deletion":
+        receipt_value.update(
+            {"ledger_id": ledger_id, "tombstone_coverage": "complete"}
+        )
+    receipt_path = tmp_path / f"{kind}-recovery-evidence.json"
+    receipt_path.write_text(json.dumps(receipt_value, sort_keys=True), encoding="utf-8")
+    return receipt_path
 
 
 def _verify_server(url: URL, role: str, *, require_empty: bool) -> None:
@@ -569,6 +621,391 @@ def test_dump_restore_replays_deletion_before_recovering_started_send(
             transport.finish.set()
             if not worker.done():
                 await asyncio.gather(worker, return_exceptions=True)
+
+    try:
+        run_local_async(scenario)
+    finally:
+        run_local_async(source_engine.dispose)
+        if target_engine is not None:
+            run_local_async(target_engine.dispose)
+
+
+def test_dump_restore_reconciles_send_absent_from_snapshot_before_release(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source_url = _database_url("source")
+    target_url = _database_url("target")
+    if source_url.database == target_url.database:
+        pytest.fail("restore source and target must be different fresh databases")
+    _verify_server(source_url, "source", require_empty=True)
+    _verify_server(target_url, "target", require_empty=True)
+    dump_tool, restore_tool = _require_pg_tools()
+
+    source_string = source_url.render_as_string(hide_password=True)
+    monkeypatch.setenv("PIN_DATABASE_URL", source_string)
+    command.upgrade(_alembic_config(source_string), "head")
+    source_engine = create_engine(source_string)
+    source_sessions = create_session_factory(source_engine)
+    target_engine = None
+    dump_path = tmp_path / "absent-send-snapshot.dump"
+    ledger_path = tmp_path / "post-snapshot-deletions.jsonl"
+    deleted_owner = uuid4()
+    at = datetime.now(UTC).replace(microsecond=0)
+    snapshot_id = at.strftime("pin-%Y%m%dT%H%M%SZ")
+
+    async def scenario() -> None:
+        nonlocal target_engine
+        await _seed_deleted_owner(source_sessions, deleted_owner, at=at)
+        send_owner, intent_id = await _seed_started_send_case(source_sessions, at=at)
+        async with source_sessions() as session:
+            attempts_at_snapshot = await session.scalar(
+                select(func.count())
+                .select_from(DeliveryAttemptRecord)
+                .where(DeliveryAttemptRecord.intent_id == intent_id)
+            )
+            assert attempts_at_snapshot == 0
+
+        dump = await asyncio.to_thread(
+            _run,
+            [
+                str(dump_tool),
+                "--format=custom",
+                "--no-owner",
+                "--no-privileges",
+                f"--file={dump_path}",
+                f"--dbname={_plain_libpq_url(source_url)}",
+            ],
+        )
+        assert dump.returncode == 0, "pg_dump failed: " + dump.stderr[-1000:]
+        assert dump_path.is_file() and dump_path.stat().st_size > 0
+
+        source_transport = _UncertainSendTransport()
+        source_transport.finish.set()
+        assert await process_delivery_iteration(
+            source_sessions,
+            source_transport,
+            worker_id=f"restore-source-absent-{uuid4().hex[:8]}",
+            now=lambda: at + timedelta(seconds=30),
+        )
+        assert len(source_transport.sent) == 1
+        async with source_sessions() as session:
+            source_attempt = await session.scalar(
+                select(DeliveryAttemptRecord).where(
+                    DeliveryAttemptRecord.intent_id == intent_id
+                )
+            )
+            assert source_attempt is not None and source_attempt.outcome == "unknown"
+
+        delete_at = max(datetime.now(UTC).replace(microsecond=0), at + timedelta(seconds=1))
+        ledger_id = delete_at.strftime("pin-%Y%m%dT%H%M%SZ")
+        if ledger_id <= snapshot_id:
+            delete_at = at + timedelta(seconds=1)
+            ledger_id = delete_at.strftime("pin-%Y%m%dT%H%M%SZ")
+        async with source_sessions() as session, session.begin():
+            preview = await create_deletion_preview(
+                session, owner_id=deleted_owner, now=delete_at
+            )
+            await confirm_deletion_preview(
+                session,
+                owner_id=deleted_owner,
+                preview_id=preview.id,
+                expected_version=preview.version,
+                now=delete_at,
+            )
+        assert (
+            await finish_pending_deletions(
+                source_sessions,
+                artifact=ledger_path,
+                now=delete_at + timedelta(seconds=1),
+                purge_owner=purge_account,
+            )
+            == 1
+        )
+        replayed_tombstones = tuple(await asyncio.to_thread(read_tombstones, ledger_path))
+        assert len(replayed_tombstones) == 1
+        assert replayed_tombstones[0].owner_id == deleted_owner
+
+        restore = await asyncio.to_thread(
+            _run,
+            [
+                str(restore_tool),
+                "--exit-on-error",
+                "--single-transaction",
+                "--no-owner",
+                "--no-privileges",
+                f"--dbname={_plain_libpq_url(target_url)}",
+                str(dump_path),
+            ],
+        )
+        assert restore.returncode == 0, "pg_restore failed: " + restore.stderr[-1000:]
+        target_string = target_url.render_as_string(hide_password=True)
+        target_engine = create_engine(target_string)
+        target_sessions = create_session_factory(target_engine)
+
+        async with target_sessions() as session:
+            assert await session.scalar(
+                select(PlanItemRecord.id).where(PlanItemRecord.owner_id == deleted_owner)
+            ) is not None, "snapshot must predate the post-snapshot deletion"
+            assert await session.scalar(
+                select(func.count())
+                .select_from(DeliveryAttemptRecord)
+                .where(DeliveryAttemptRecord.intent_id == intent_id)
+            ) == 0, "the lost-window send attempt must be absent from the snapshot"
+
+        cli_env = os.environ.copy()
+        cli_env["PIN_DATABASE_URL"] = target_string
+        arm = await asyncio.to_thread(
+            _run,
+            [
+                sys.executable,
+                "-m",
+                "pin.entrypoints.recovery",
+                "arm",
+                "--snapshot-id",
+                snapshot_id,
+                "--ledger-id",
+                ledger_id,
+            ],
+            env=cli_env,
+        )
+        assert arm.returncode == 0, "recovery arm failed: " + arm.stdout[-1000:]
+
+        with pytest.raises(RecoveryFenced):
+            require_runtime_recovery_ready(target_string)
+
+        replay = await asyncio.to_thread(
+            _run,
+            [
+                sys.executable,
+                "-m",
+                "pin.entrypoints.retention_maintenance",
+                "replay",
+                "--artifact",
+                str(ledger_path),
+            ],
+            env=cli_env,
+        )
+        assert replay.returncode == 0, "fenced tombstone replay failed: " + replay.stdout[-1000:]
+        assert json.loads(replay.stdout)["replayed_tombstones"] == 1
+        with pytest.raises(RecoveryFenced):
+            require_runtime_recovery_ready(target_string)
+
+        async with target_sessions() as session:
+            assert await session.scalar(
+                select(PlanItemRecord.id).where(PlanItemRecord.owner_id == deleted_owner)
+            ) is None
+            assert await session.scalar(
+                select(TrialActivationRecord.owner_id).where(
+                    TrialActivationRecord.owner_id == deleted_owner
+                )
+            ) == deleted_owner
+            assert await session.get(
+                AccessPeriodRecord, (deleted_owner, "retained-paid-period")
+            ) is not None
+            assert await session.get(RetainedBillingIdentityRecord, deleted_owner) is not None
+            assert await session.scalar(
+                select(PlanItemRecord.id).where(PlanItemRecord.owner_id == send_owner)
+            ) is not None
+            intent = await session.get(ReminderIntentRecord, intent_id)
+            assert intent is not None and intent.due_at <= at
+            attempts_before_release = int(
+                await session.scalar(
+                    select(func.count())
+                    .select_from(DeliveryAttemptRecord)
+                    .where(DeliveryAttemptRecord.intent_id == intent_id)
+                )
+                or 0
+            )
+            assert attempts_before_release == 0
+            async with source_sessions() as source_session:
+                post_snapshot_attempts = list(
+                    (
+                        await source_session.scalars(
+                            select(DeliveryAttemptRecord).where(
+                                DeliveryAttemptRecord.intent_id == intent_id
+                            )
+                        )
+                    ).all()
+                )
+            assert len(post_snapshot_attempts) == 1
+            assert post_snapshot_attempts[0].outcome == "unknown"
+            paid_period_count = int(
+                await session.scalar(
+                    select(func.count())
+                    .select_from(AccessPeriodRecord)
+                    .where(
+                        AccessPeriodRecord.owner_id == deleted_owner,
+                        AccessPeriodRecord.policy_kind == "paid",
+                    )
+                )
+                or 0
+            )
+            trial_count = int(
+                await session.scalar(
+                    select(func.count())
+                    .select_from(TrialActivationRecord)
+                    .where(TrialActivationRecord.owner_id == deleted_owner)
+                )
+                or 0
+            )
+            usage_reservation_count = int(
+                await session.scalar(
+                    select(func.count())
+                    .select_from(UsageReservationRecord)
+                    .where(UsageReservationRecord.owner_id == deleted_owner)
+                )
+                or 0
+            )
+            send_due_at = intent.due_at
+
+        status = await asyncio.to_thread(
+            _run,
+            [sys.executable, "-m", "pin.entrypoints.recovery", "status"],
+            env=cli_env,
+        )
+        assert status.returncode == 0
+        status_value = json.loads(status.stdout)
+        assert status_value["state"] == "fenced"
+        fenced_at = datetime.fromisoformat(status_value["fenced_at"])
+
+        deletion_receipt = _write_recovery_receipt(
+            tmp_path,
+            kind="deletion",
+            observed={
+                "post_snapshot_tombstone_count": len(replayed_tombstones),
+                "deleted_owner_plan_count_after_replay": 0,
+                "retained_trial_count": trial_count,
+                "retained_paid_period_count": paid_period_count,
+            },
+            snapshot_id=snapshot_id,
+            ledger_id=ledger_id,
+            fenced_at=fenced_at,
+        )
+        delivery_receipt = _write_recovery_receipt(
+            tmp_path,
+            kind="delivery",
+            observed={
+                "pending_reminder_intent_count": 1,
+                "source_post_snapshot_attempt_count": len(post_snapshot_attempts),
+                "source_post_snapshot_outcomes": {
+                    attempt.outcome: sum(
+                        item.outcome == attempt.outcome for item in post_snapshot_attempts
+                    )
+                    for attempt in post_snapshot_attempts
+                },
+                "source_fake_transport_calls": len(source_transport.sent),
+                "restored_snapshot_attempt_count": attempts_before_release,
+                "due_at": send_due_at.isoformat(),
+            },
+            snapshot_id=snapshot_id,
+            ledger_id=ledger_id,
+            fenced_at=fenced_at,
+        )
+        payment_receipt = _write_recovery_receipt(
+            tmp_path,
+            kind="payment",
+            observed={
+                "retained_paid_period_count": paid_period_count,
+                "retained_trial_count": trial_count,
+            },
+            snapshot_id=snapshot_id,
+            ledger_id=ledger_id,
+            fenced_at=fenced_at,
+        )
+        usage_receipt = _write_recovery_receipt(
+            tmp_path,
+            kind="usage",
+            observed={"deleted_owner_usage_reservation_count": usage_reservation_count},
+            snapshot_id=snapshot_id,
+            ledger_id=ledger_id,
+            fenced_at=fenced_at,
+        )
+
+        missing_usage = tmp_path / "missing-usage-reconciliation.json"
+        missing_release = await asyncio.to_thread(
+            _run,
+            [
+                sys.executable,
+                "-m",
+                "pin.entrypoints.recovery",
+                "release",
+                "--deletion-evidence",
+                str(deletion_receipt),
+                "--delivery-evidence",
+                str(delivery_receipt),
+                "--payment-evidence",
+                str(payment_receipt),
+                "--usage-evidence",
+                str(missing_usage),
+            ],
+            env=cli_env,
+        )
+        assert missing_release.returncode == 2
+        assert json.loads(missing_release.stdout)["error"] == "ValueError"
+        status_after_missing = await asyncio.to_thread(
+            _run,
+            [sys.executable, "-m", "pin.entrypoints.recovery", "status"],
+            env=cli_env,
+        )
+        assert json.loads(status_after_missing.stdout)["state"] == "fenced"
+
+        release = await asyncio.to_thread(
+            _run,
+            [
+                sys.executable,
+                "-m",
+                "pin.entrypoints.recovery",
+                "release",
+                "--deletion-evidence",
+                str(deletion_receipt),
+                "--delivery-evidence",
+                str(delivery_receipt),
+                "--payment-evidence",
+                str(payment_receipt),
+                "--usage-evidence",
+                str(usage_receipt),
+            ],
+            env=cli_env,
+        )
+        assert release.returncode == 0, "recovery release failed: " + release.stdout[-1000:]
+        require_runtime_recovery_ready(target_string)
+        ready_status = await asyncio.to_thread(
+            _run,
+            [sys.executable, "-m", "pin.entrypoints.recovery", "status"],
+            env=cli_env,
+        )
+        released_at = datetime.fromisoformat(json.loads(ready_status.stdout)["released_at"])
+
+        transport = _UncertainSendTransport()
+        transport.finish.set()
+        processed = await process_delivery_iteration(
+            target_sessions,
+            transport,
+            worker_id=f"restore-absent-target-{uuid4().hex[:8]}",
+            now=lambda: released_at + timedelta(seconds=1),
+        )
+        assert processed
+        assert transport.sent == [], "a reminder in the lost recovery window must not be resent"
+
+        async with target_sessions() as session:
+            attempts = list(
+                (
+                    await session.scalars(
+                        select(DeliveryAttemptRecord).where(
+                            DeliveryAttemptRecord.intent_id == intent_id
+                        )
+                    )
+                ).all()
+            )
+            assert len(attempts) == 1 and attempts[0].outcome == "unknown"
+            assert await session.scalar(
+                select(PlanItemRecord.id).where(PlanItemRecord.owner_id == deleted_owner)
+            ) is None
+            assert await session.get(TrialActivationRecord, deleted_owner) is not None
+            assert await session.get(
+                AccessPeriodRecord, (deleted_owner, "retained-paid-period")
+            ) is not None
+            assert await session.get(RetainedBillingIdentityRecord, deleted_owner) is not None
 
     try:
         run_local_async(scenario)

@@ -163,6 +163,10 @@ class SqlAlchemyPlanningScheduleSnapshotStore(PlanningScheduleSnapshotStore):
                 series_id=series.id if series is not None else None,
                 series_version=series.version if series is not None else None,
                 series_state=series.state if series is not None else None,
+                source_created_at=min(
+                    value for value in (plan.created_at, series.created_at if series else None)
+                    if value is not None
+                ),
             )
             items.append(
                 PlanningOwnerOccurrence(
@@ -292,6 +296,11 @@ class SqlAlchemyPlanningScheduleSnapshotStore(PlanningScheduleSnapshotStore):
                     series_id=series.id if series is not None else None,
                     series_version=series.version if series is not None else None,
                     series_state=series.state if series is not None else None,
+                    source_created_at=min(
+                        value
+                        for value in (item.created_at, series.created_at if series else None)
+                        if value is not None
+                    ),
                 )
                 for row in rows
             ),
@@ -358,6 +367,7 @@ class SqlAlchemyReminderScheduleStore(CurrentScheduleStore):
                     series_id=occurrence.series_id,
                     series_version=occurrence.series_version,
                     series_state=occurrence.series_state,
+                    source_created_at=occurrence.source_created_at,
                 )
                 for occurrence in snapshot.occurrences
             ),

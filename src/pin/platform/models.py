@@ -8,6 +8,7 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     DateTime,
     Index,
@@ -204,3 +205,33 @@ class ConsumerCursor(Base):
     consumer_name: Mapped[str] = mapped_column(String(120), primary_key=True)
     aggregate_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True)
     last_version: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+
+
+class RecoveryGate(Base):
+    """Singleton startup fence and evidence references for restored snapshots."""
+
+    __tablename__ = "recovery_gate"
+    __table_args__ = (
+        CheckConstraint("singleton = true", name="ck_platform_recovery_gate_singleton"),
+        CheckConstraint("state IN ('ready', 'fenced')", name="ck_platform_recovery_gate_state"),
+        CheckConstraint(
+            "(snapshot_id IS NULL AND ledger_id IS NULL AND snapshot_at IS NULL "
+            "AND state = 'ready') OR "
+            "(snapshot_id IS NOT NULL AND ledger_id IS NOT NULL AND snapshot_at IS NOT NULL "
+            "AND ledger_id > snapshot_id)",
+            name="ck_platform_recovery_gate_artifact_order",
+        ),
+        {"schema": "platform"},
+    )
+
+    singleton: Mapped[bool] = mapped_column(Boolean, primary_key=True)
+    state: Mapped[str] = mapped_column(String(16), nullable=False)
+    snapshot_id: Mapped[str | None] = mapped_column(String(32))
+    ledger_id: Mapped[str | None] = mapped_column(String(32))
+    snapshot_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    fenced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    released_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    deletion_evidence_sha256: Mapped[str | None] = mapped_column(String(64))
+    delivery_evidence_sha256: Mapped[str | None] = mapped_column(String(64))
+    payment_evidence_sha256: Mapped[str | None] = mapped_column(String(64))
+    usage_evidence_sha256: Mapped[str | None] = mapped_column(String(64))

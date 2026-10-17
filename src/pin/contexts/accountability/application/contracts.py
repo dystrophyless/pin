@@ -26,6 +26,7 @@ class OpenUntimedItem:
     occurrence_id: UUID
     title: str
     local_date: date
+    source_created_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,6 +64,7 @@ class CurrentOccurrence:
     starts_at: datetime | None
     ends_at: datetime | None
     deadline_at: datetime | None
+    source_created_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)

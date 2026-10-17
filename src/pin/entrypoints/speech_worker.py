@@ -26,6 +26,7 @@ from pin.observability import (
     log_startup_configuration_rejection,
 )
 from pin.persistence import create_engine, create_session_factory, run_local_async
+from pin.platform.recovery import RecoveryFenced, require_runtime_recovery_ready
 from pin.platform.worker_heartbeat import worker_heartbeat
 
 logger = logging.getLogger("pin.runtime")
@@ -47,6 +48,12 @@ def main() -> None:
         else:
             log_speech_dependencies_missing(logger)
         raise SystemExit(2) from None
+    if not args.check:
+        try:
+            require_runtime_recovery_ready(settings.database_url.get_secret_value())
+        except RecoveryFenced:
+            logger.error("startup_rejected: reason=recovery_gate")
+            raise SystemExit(2) from None
     logger.info("startup_ready: role=%s", ProcessRole.SPEECH_WORKER.value)
     if args.check:
         return

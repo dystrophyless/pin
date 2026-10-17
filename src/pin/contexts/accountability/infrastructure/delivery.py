@@ -23,6 +23,7 @@ from pin.contexts.accountability.infrastructure.models import (
     DailyReviewRecord,
 )
 from pin.contexts.notifications.api import defer_until_quiet_hours_end
+from pin.platform.recovery import snapshot_delivery_is_uncertain
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,6 +162,14 @@ async def authorize_accountability_send(
                     deferred_until=cycle.nudge_due_at.astimezone(UTC),
                     reason="nudge_not_due",
                 )
+        if await snapshot_delivery_is_uncertain(
+            session,
+            created_at=intent.created_at,
+            scheduled_at=due_at,
+            source_created_at=current.source_created_at,
+            regenerated_occurrence=True,
+        ):
+            return DeliveryAuthorization(None, reason="recovery_uncertain_window")
         text = _checkin_text(current.title, profile.language, slot)
         occurrence_ids = (current.occurrence_id,)
         send = AccountabilitySend(
@@ -211,6 +220,19 @@ async def authorize_accountability_send(
             intent.state = "skipped"
             intent.retryable_after_access = False
             return DeliveryAuthorization(None, reason="review_empty")
+        source_times: list[datetime] = []
+        for occurrence_id in ids:
+            source_created_at = current_by_id[occurrence_id].source_created_at
+            if source_created_at is not None:
+                source_times.append(source_created_at)
+        if source_times and await snapshot_delivery_is_uncertain(
+            session,
+            created_at=intent.created_at,
+            scheduled_at=due_at,
+            source_created_at=min(source_times),
+            regenerated_occurrence=True,
+        ):
+            return DeliveryAuthorization(None, reason="recovery_uncertain_window")
         titles = tuple(current_by_id[item].title for item in ids)
         text = _review_text(profile.language, slot, titles)
         send = AccountabilitySend(

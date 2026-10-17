@@ -35,9 +35,10 @@ from pin.contexts.notifications.application.delivery import (
     TelegramReplySend,
     UnknownDeliveryFailure,
 )
-from pin.contexts.notifications.domain.delivery import render_reminder
+from pin.contexts.notifications.domain.delivery import DeliveryOutcomeKind, render_reminder
 from pin.contexts.notifications.infrastructure.delivery_worker import (
     DELIVERY_RECOVERY_SUMMARY_JOB_KIND,
+    _reminder_delivery_is_uncertain,
     deliver_recovery_summary_job,
     deliver_reminder_job,
     deliver_reply_job,
@@ -72,7 +73,7 @@ from pin.platform.jobs import (
     enqueue_job,
     receive_update,
 )
-from pin.platform.models import Job, OutboxEvent
+from pin.platform.models import Job, OutboxEvent, RecoveryGate
 
 ROOT = Path(__file__).resolve().parents[1]
 DATABASE_URL = os.getenv("PIN_TEST_DELIVERY_DATABASE_URL")
@@ -419,6 +420,136 @@ async def _seed_reminder_case(
                 priority=1_000_000,
             )
     return _ReminderFixture(owner_id, intent_id, occurrence_id, chat_id)
+
+
+def test_restored_regenerated_delivery_is_unknown_and_postrestore_change_is_fresh(
+    delivery_sessions,
+) -> None:
+    async def scenario() -> None:
+        snapshot_at = datetime(2026, 10, 16, 12, tzinfo=UTC)
+        fenced_at = datetime.now(UTC) + timedelta(seconds=5)
+        fixture = await _seed_reminder_case(delivery_sessions, at=fenced_at)
+        async with delivery_sessions() as session, session.begin():
+            intent = await session.get(ReminderIntentRecord, fixture.intent_id)
+            assert intent is not None
+            old_source_event_id = intent.source_event_id
+            series_id = uuid4()
+            await session.execute(
+                update(PlanItemRecord)
+                .where(PlanItemRecord.id == intent.plan_item_id)
+                .values(created_at=snapshot_at - timedelta(days=1))
+            )
+            await session.execute(
+                update(OutboxEvent)
+                .where(OutboxEvent.id == old_source_event_id)
+                .values(
+                    created_at=fenced_at + timedelta(minutes=1),
+                    event_type="planning.series_occurrence_created",
+                    aggregate_id=fixture.occurrence_id,
+                )
+            )
+            session.add(
+                SeriesRecord(
+                    id=series_id,
+                    owner_id=fixture.owner_id,
+                    plan_item_id=intent.plan_item_id,
+                    version=1,
+                    state="active",
+                    anchor_date=date(2026, 10, 16),
+                    anchor_sequence=0,
+                    next_sequence=1,
+                    rule={},
+                    typed_draft={},
+                    created_at=snapshot_at - timedelta(days=1),
+                    updated_at=snapshot_at - timedelta(days=1),
+                )
+            )
+            await session.flush()
+            await session.execute(
+                update(ReminderIntentRecord)
+                .where(ReminderIntentRecord.id == fixture.intent_id)
+                .values(
+                    created_at=snapshot_at + timedelta(minutes=1),
+                    series_id=series_id,
+                    series_version=1,
+                )
+            )
+            session.add(
+                SeriesOccurrenceRecord(
+                    owner_id=fixture.owner_id,
+                    series_id=series_id,
+                    occurrence_id=fixture.occurrence_id,
+                    sequence=0,
+                    recurrence_key="2026-10-16",
+                )
+            )
+            session.add(
+                RecoveryGate(
+                    singleton=True,
+                    state="ready",
+                    snapshot_id="pin-20261016T120000Z",
+                    ledger_id="pin-20261017T120000Z",
+                    snapshot_at=snapshot_at,
+                    fenced_at=fenced_at,
+                    released_at=fenced_at,
+                )
+            )
+            claim = await claim_job(
+                session,
+                lane=JobLane.DELIVERY,
+                worker_id="recovery-lost-window",
+                lease_for=timedelta(minutes=2),
+            )
+            assert claim is not None
+
+        transport = _ReminderTransport()
+        outcome = await deliver_reminder_job(
+            delivery_sessions,
+            claim,
+            transport,
+            identity_store_factory=SqlAlchemyIdentityStore,
+            now=lambda: fenced_at,
+        )
+        assert outcome is not None and outcome.outcome is DeliveryOutcomeKind.UNKNOWN
+        assert transport.sent == []
+        async with delivery_sessions() as session, session.begin():
+            attempt = await session.scalar(
+                select(DeliveryAttemptRecord).where(
+                    DeliveryAttemptRecord.intent_id == fixture.intent_id
+                )
+            )
+            assert attempt is not None
+            assert attempt.outcome == DeliveryOutcomeKind.UNKNOWN.value
+            assert attempt.failure_code == "recovery_uncertain_window"
+
+            fresh_source_event = EventEnvelope(
+                id=uuid4(),
+                event_type="planning.plan_rescheduled",
+                schema_version=1,
+                aggregate_id=fixture.occurrence_id,
+                aggregate_version=2,
+                owner_id=fixture.owner_id,
+                occurred_at=fenced_at + timedelta(seconds=1),
+                payload={},
+            )
+            await add_outbox_event(session, fresh_source_event)
+            await session.execute(
+                update(OutboxEvent)
+                .where(OutboxEvent.id == fresh_source_event.id)
+                .values(created_at=fenced_at + timedelta(seconds=1))
+            )
+            await session.execute(
+                update(ReminderIntentRecord)
+                .where(ReminderIntentRecord.id == fixture.intent_id)
+                .values(source_event_id=fresh_source_event.id)
+            )
+            intent = await session.get(ReminderIntentRecord, fixture.intent_id)
+            assert intent is not None
+            assert not await _reminder_delivery_is_uncertain(
+                session, intent, SqlAlchemyIdentityStore(session)
+            )
+
+    run_local_async(scenario)
 
 
 def test_bounded_reminder_pump_liveness_and_queue_microbenchmark(

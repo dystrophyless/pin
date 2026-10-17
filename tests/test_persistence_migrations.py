@@ -56,6 +56,13 @@ def test_fresh_migration_downgrade_and_reupgrade_lifecycle() -> None:
             assert "home_zone_change_previews" in inspector.get_table_names(schema="planning")
             assert "requests" in inspector.get_table_names(schema="speech")
             assert "mutation_runtime_pending" in inspector.get_table_names(schema="pin_telegram")
+            assert "recovery_gate" in inspector.get_table_names(schema="platform")
+            assert (
+                connection.exec_driver_sql(
+                    "SELECT state FROM platform.recovery_gate WHERE singleton = true"
+                ).scalar_one()
+                == "ready"
+            )
             assert (
                 connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar_one()
                 == head
@@ -64,15 +71,19 @@ def test_fresh_migration_downgrade_and_reupgrade_lifecycle() -> None:
         command.downgrade(config, "base")
         with engine.connect() as connection:
             schemas = set(inspect(connection).get_schema_names())
-            assert not {
-                "pin_persistence",
-                "planning",
-                "speech",
-                "pin_telegram",
-            } & schemas
-            assert connection.exec_driver_sql(
-                "SELECT COUNT(*) FROM alembic_version"
-            ).scalar_one() == 0
+            assert (
+                not {
+                    "pin_persistence",
+                    "planning",
+                    "speech",
+                    "pin_telegram",
+                    "platform",
+                }
+                & schemas
+            )
+            assert (
+                connection.exec_driver_sql("SELECT COUNT(*) FROM alembic_version").scalar_one() == 0
+            )
 
         command.upgrade(config, "head")
         with engine.connect() as connection:
@@ -86,6 +97,13 @@ def test_fresh_migration_downgrade_and_reupgrade_lifecycle() -> None:
             assert "requests" in inspect(connection).get_table_names(schema="speech")
             assert "mutation_runtime_pending" in inspect(connection).get_table_names(
                 schema="pin_telegram"
+            )
+            assert "recovery_gate" in inspect(connection).get_table_names(schema="platform")
+            assert (
+                connection.exec_driver_sql(
+                    "SELECT state FROM platform.recovery_gate WHERE singleton = true"
+                ).scalar_one()
+                == "ready"
             )
             assert (
                 connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar_one()
