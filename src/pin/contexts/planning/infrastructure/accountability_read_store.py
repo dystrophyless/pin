@@ -74,7 +74,7 @@ class SqlAlchemyAccountabilityReadStore:
         today = agenda_window(AgendaView.TODAY, profile_zone, at).start_date
         occurrence = OccurrenceRecord
         statement = (
-            select(occurrence, PlanItemRecord.title)
+            select(occurrence, PlanItemRecord.title, PlanItemRecord.created_at)
             .join(
                 PlanItemRecord,
                 (PlanItemRecord.id == occurrence.plan_item_id)

@@ -325,6 +325,7 @@ async def test_planning_reads_preserve_saved_schedule_and_page_profile_local_unt
         assert completed is not None and completed.state == "completed"
         assert cancelled is not None and cancelled.state == "cancelled"
         assert hidden is not None and hidden.ends_at is None and hidden.deadline_at is None
+        assert first.items[0].source_created_at == hidden.source_created_at
         assert foreign is None
         with pytest.raises(ValueError):
             await list_today_open_untimed(
