@@ -1,6 +1,6 @@
 # Local recovery verification — 2026-10-17
 
-This records focused verification of recovery source committed in `2f79c5f`, paid-lifecycle coverage in `c8430e7` and operations coverage in `95df95e`. It does not establish a deployed release or complete MVP acceptance.
+This records focused verification of recovery source committed in `2f79c5f`, paid-lifecycle coverage in `c8430e7` and operations coverage in `95df95e`. The executable-bit correction and release `f27f1c5` deployed successfully through [CI/CD](https://github.com/dystrophyless/pin/actions/runs/39049018040). It does not establish complete MVP acceptance.
 
 ## Observed results
 
@@ -18,10 +18,10 @@ The first absent-attempt fixture failed at the intentional recovery database-nam
 
 ## Evidence boundaries
 
-The first Linux CI run stopped before deployment: the new restore script was committed without its executable bit, producing a permission error in the shell smoke (281 other checks passed). The script's Git mode was corrected to executable with no content change; the failed run remains visible in Actions. A later successful deployment must be recorded separately.
+The first Linux CI run stopped before deployment: the new restore script was committed without its executable bit, producing a permission error in the shell smoke (281 other checks passed). The script's Git mode was corrected to executable with no content change; the failed run remains visible in Actions. The subsequent run passed checks and deployment, including the new migration, recovery readiness check and temporary SSH-rule cleanup. Root independently observed the active release on AWS, all seven containers running with PostgreSQL healthy, the production recovery gate ready, and a successful post-deployment host-health check.
 
 Recovery receipts bind operator assertions to a snapshot, time window and hashed source observations. They do not independently prove provider completeness or the truth of an operator's conclusions. The local test observations are explicitly synthetic; no real payment reconciliation is claimed.
 
-These results do not prove full-host disaster recovery, a complete production Telegram journey, legal financial-retention compliance, or a model quality/capacity target. The running AWS bot remains on the previous committed release until the new changes are verified, committed and deployed. The owner confirmed that the deployed bot answered `/start`.
+These results do not prove full-host disaster recovery, a complete production Telegram journey, legal financial-retention compliance, or a model quality/capacity target. The owner confirmed that the deployed bot answered `/start` before this update; a complete current-version Telegram journey remains unverified.
 
 Private raw packets are retained locally under the dated recovery, paid-lifecycle and retention-restore verification directories. Public issues should reference the results and limitations without publishing workstation paths or private system identifiers.
