@@ -18,6 +18,7 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from pin.adapters.retention.deletion import finish_pending_deletions
+from pin.adapters.telegram.access_notices import schedule_access_notices
 from pin.adapters.telegram.account_deletion import (
     apply_account_deletion_callback,
     begin_account_deletion,
@@ -58,6 +59,7 @@ from pin.contexts.billing.domain.access import InvalidTransition, PeriodKind, Pl
 from pin.contexts.billing.domain.payments import STARS_CURRENCY, STARS_PERIOD, STARS_PRICE
 from pin.contexts.billing.infrastructure.models import (
     AccessAccountRecord,
+    AccessExpiryNoticeRecord,
     AccessPeriodRecord,
     PaymentOrderRecord,
     PaymentReceiptRecord,
@@ -72,6 +74,7 @@ from pin.contexts.notifications.application.delivery import (
     TelegramReplySend,
     UnknownDeliveryFailure,
 )
+from pin.contexts.notifications.infrastructure.delivery_worker import enqueue_due_reply_jobs
 from pin.contexts.notifications.infrastructure.models import (
     DeliveryAttemptRecord,
     ReminderIntentRecord,
@@ -101,6 +104,8 @@ BOT_ID = 8_100_026
 TELEGRAM_USER_ID = 8_200_026
 CANCEL_BOT_ID = 8_100_027
 CANCEL_TELEGRAM_USER_ID = 8_200_027
+EXPIRY_BOT_ID = 8_100_029
+EXPIRY_TELEGRAM_USER_ID = 8_200_029
 
 
 def _database_url() -> str:
@@ -185,6 +190,7 @@ class _LocalDeliveryTransport:
     def __init__(self) -> None:
         self.sent: list[tuple[int, str]] = []
         self.replies = 0
+        self.reply_texts: list[str] = []
         self.cancelled: list[tuple[int, str]] = []
         self.invoices: list[tuple[int, str, str]] = []
 
@@ -201,8 +207,9 @@ class _LocalDeliveryTransport:
         self.sent.append((message.destination_id, attempt_id))
         return attempt_id
 
-    async def send_reply(self, _message: TelegramReplySend) -> str:
+    async def send_reply(self, message: TelegramReplySend) -> str:
         self.replies += 1
+        self.reply_texts.append(message.plain_text)
         return f"issue26-fake-reply-{self.replies}"
 
     async def send_stars_invoice(self, *, chat_id: int, payload: str, language: str) -> int:
@@ -260,6 +267,294 @@ def _assert_landing_matches_billing() -> None:
     assert f"{paid.allowance.ai_turns:,}" in _landing_value("en", "paidTurns")
     assert f"{paid.allowance.voice_seconds // 60} minutes" in _landing_value("en", "paidVoice")
     assert "not yet verified" in _landing_value("en", "offerStatus")
+
+    ru_terms = _landing_value("ru", "termsTrial")
+    assert "семь дней" in ru_terms
+    assert f"{trial.allowance.ai_turns} AI-взаимодействий" in ru_terms
+    assert f"{trial.allowance.voice_seconds // 60} минут" in ru_terms
+    assert f"{STARS_PRICE} Stars за {paid.duration.days} дней" in ru_terms
+    assert f"{paid.allowance.ai_turns:,}".replace(",", " ") in ru_terms
+    assert f"{paid.allowance.voice_seconds // 60} минут" in ru_terms
+
+
+def test_trial_warning_quiet_hours_expiry_and_saved_plan_are_composed(
+    paid_lifecycle_sessions: async_sessionmaker[AsyncSession],
+) -> None:
+    _assert_landing_matches_billing()
+    base = datetime.now(UTC).replace(microsecond=0) - timedelta(days=8)
+    clock = _Clock(base)
+    transport = _LocalDeliveryTransport()
+    owner_id: UUID
+    trial_end: datetime
+    reminder_id: UUID
+
+    async def scenario() -> None:
+        nonlocal owner_id, trial_end, reminder_id
+        async with paid_lifecycle_sessions() as session, session.begin():
+            owner_id = await PostgresTelegramOwnerResolver().resolve(
+                session, bot_id=EXPIRY_BOT_ID, telegram_user_id=EXPIRY_TELEGRAM_USER_ID
+            )
+            trial = await SqlAlchemyAccessUsageStore(session).activate_trial(
+                StartTrial(owner_id, EXPIRY_TELEGRAM_USER_ID, base)
+            )
+            assert trial.status is TrialActivationStatus.ACTIVATED
+            assert trial.period_id is not None
+            trial_end = base + PlanPolicy.trial().duration
+            warning_at = trial_end - timedelta(hours=24)
+            quiet_start = (warning_at - timedelta(minutes=30)).time().replace(tzinfo=None)
+            quiet_end = (warning_at + timedelta(minutes=90)).time().replace(tzinfo=None)
+            profile = await SqlAlchemyIdentityStore(session).save_preferences(
+                owner_id=owner_id,
+                expected_version=None,
+                preferences=Preferences(
+                    language="en",
+                    home_zone="UTC",
+                    reminder_calendar_days=0,
+                    reminder_elapsed_hours=0,
+                    quiet_start=quiet_start,
+                    quiet_end=quiet_end,
+                ),
+            )
+            assert profile is not None
+
+        proof = ConfirmationProof(uuid4(), 1, f"issue26-expiry-{uuid4().hex}")
+        event_at = trial_end + timedelta(hours=24)
+        draft = OneOffPlanDraft(
+            kind=PlanKind.TASK,
+            title="Retained after trial expiry",
+            local_date=event_at.date(),
+            local_time=event_at.time().replace(tzinfo=None),
+            event_zone="UTC",
+            reminders=(ReminderOffset(OffsetKind.ELAPSED_SECONDS, 23 * 60 * 60),),
+        )
+        async with paid_lifecycle_sessions() as session, session.begin():
+            identity = SqlAlchemyIdentityStore(session)
+            profile = await identity.get_preferences(owner_id)
+            assert profile is not None
+            saved = await create_confirmed_plan_batch(
+                ConfirmedPlanBatch("issue26-expiry-plan", profile.version, (draft,), proof),
+                authenticated_owner_id=owner_id,
+                store=SqlAlchemyPlanningStore(session),
+                identity=identity,
+                billing=SqlAlchemyAccessUsageStore(session),
+                confirmation_verifier=_ConfirmedLocalPreview(proof),
+                clock=clock,
+            )
+            assert len(cast(list[object], saved["plans"])) == 1
+        assert await process_pending_reminder_schedules(
+            paid_lifecycle_sessions, now=base, limit=100
+        ) == 1
+        async with paid_lifecycle_sessions() as session:
+            intent = await session.scalar(
+                select(ReminderIntentRecord).where(ReminderIntentRecord.owner_id == owner_id)
+            )
+            assert intent is not None
+            reminder_id = intent.id
+            assert intent.due_at == trial_end + timedelta(hours=1)
+
+        async def drain_delivery(at: datetime) -> bool:
+            processed_any = False
+            for _ in range(20):
+                processed = await process_delivery_iteration(
+                    paid_lifecycle_sessions,
+                    transport,
+                    worker_id="issue26-expiry-local",
+                    now=lambda: at,
+                )
+                if not processed:
+                    return processed_any
+                processed_any = True
+            raise AssertionError("delivery worker did not become idle within the bounded drain")
+
+        assert await drain_delivery(base)
+        assert transport.sent == [] and transport.replies == 0
+        async with paid_lifecycle_sessions() as session, session.begin():
+            assert await schedule_access_notices(session, transport, at=warning_at) == 1
+            notice_reply = await session.scalar(
+                select(OutboxEvent).where(
+                    OutboxEvent.owner_id == owner_id,
+                    OutboxEvent.event_type == "telegram.reply.requested",
+                    OutboxEvent.causation_id.is_not(None),
+                ).order_by(OutboxEvent.created_at.desc())
+            )
+            assert notice_reply is not None
+            # The fixture injects historical application time; align this generated event's
+            # DB-default timestamp so the real job queue sees the same frozen timeline.
+            notice_reply.created_at = warning_at
+            assert await enqueue_due_reply_jobs(session, now=warning_at) == 1
+        assert await process_delivery_iteration(
+            paid_lifecycle_sessions,
+            transport,
+            worker_id="issue26-expiry-local",
+            now=lambda: warning_at,
+        )
+        assert transport.replies == 0  # The 24-hour notice is deferred during quiet hours.
+        async with paid_lifecycle_sessions() as session, session.begin():
+            billing = SqlAlchemyAccessUsageStore(session)
+            assert await billing.enqueue_due_access_notices(at=warning_at) == 0
+            notices = list(
+                await session.scalars(
+                    select(AccessExpiryNoticeRecord).where(
+                        AccessExpiryNoticeRecord.owner_id == owner_id
+                    )
+                )
+            )
+            assert len(notices) == 1 and notices[0].kind == "expiry_24h"
+            replies = list(
+                await session.scalars(
+                    select(OutboxEvent).where(
+                        OutboxEvent.owner_id == owner_id,
+                        OutboxEvent.event_type == "telegram.reply.requested",
+                    )
+                )
+            )
+            notice_reply = next(
+                event
+                for event in replies
+                if isinstance(event.payload.get("payload"), dict)
+                and event.payload["payload"].get("billing_access_notice") is not None
+            )
+            jobs = list(
+                await session.scalars(select(Job).where(Job.owner_id == owner_id))
+            )
+            deferred = next(
+                job
+                for job in jobs
+                if job.payload.get("reply_event_id") == str(notice_reply.id)
+            )
+            db_now = await session.scalar(select(func.clock_timestamp()))
+            assert db_now is not None
+            assert deferred.status == "pending" and deferred.last_error == "quiet_hours"
+            assert timedelta(minutes=59) <= deferred.available_at - db_now <= timedelta(hours=1)
+            # The worker retry uses PostgreSQL's live clock; project that verified retry
+            # onto this historical fixture timeline before testing the quiet-end delivery.
+            deferred.available_at = warning_at + timedelta(hours=1)
+
+        clock.at = warning_at + timedelta(hours=2)
+        assert await drain_delivery(clock.now())
+        assert len(transport.reply_texts) == 1
+        assert "After expiry" in transport.reply_texts[0]
+
+        one_hour_warning = trial_end - timedelta(hours=1)
+        clock.at = one_hour_warning
+        async with paid_lifecycle_sessions() as session, session.begin():
+            assert await schedule_access_notices(
+                session, transport, at=one_hour_warning
+            ) == 1
+            replies = list(
+                await session.scalars(
+                    select(OutboxEvent).where(
+                        OutboxEvent.owner_id == owner_id,
+                        OutboxEvent.event_type == "telegram.reply.requested",
+                    )
+                )
+            )
+            notices = list(
+                await session.scalars(
+                    select(AccessExpiryNoticeRecord).where(
+                        AccessExpiryNoticeRecord.owner_id == owner_id
+                    )
+                )
+            )
+            one_hour_notice = next(notice for notice in notices if notice.kind == "expiry_1h")
+            one_hour_reply = next(
+                event
+                for event in replies
+                if isinstance(event.payload.get("payload"), dict)
+                and event.payload["payload"].get("billing_access_notice") is not None
+                and event.payload["payload"]["billing_access_notice"].get("notice_id")
+                == str(one_hour_notice.id)
+            )
+            one_hour_reply.created_at = one_hour_warning
+            assert await enqueue_due_reply_jobs(session, now=one_hour_warning) == 1
+        assert await drain_delivery(clock.now())
+        async with paid_lifecycle_sessions() as session:
+            notices = list(
+                await session.scalars(
+                    select(AccessExpiryNoticeRecord)
+                    .where(AccessExpiryNoticeRecord.owner_id == owner_id)
+                    .order_by(AccessExpiryNoticeRecord.kind)
+                )
+            )
+            assert {notice.kind for notice in notices} == {"expiry_1h", "expiry_24h"}
+            assert len(notices) == 2
+        assert len(transport.reply_texts) == 2
+
+        async with paid_lifecycle_sessions() as session, session.begin():
+            result = await persist_update(
+                session,
+                bot_id=EXPIRY_BOT_ID,
+                payload={
+                    "update_id": 21,
+                    "message": {
+                        "message_id": 21,
+                        "date": int((trial_end + timedelta(hours=2)).timestamp()),
+                        "chat": {"id": EXPIRY_TELEGRAM_USER_ID, "type": "private"},
+                        "from": {"id": EXPIRY_TELEGRAM_USER_ID, "is_bot": False},
+                        "text": "/subscription",
+                    },
+                },
+                owner_resolver=PostgresTelegramOwnerResolver(),
+            )
+            assert result is not None and result.accepted
+        claim = await claim_application_job(
+            paid_lifecycle_sessions, worker_id="issue26-expiry-subscription"
+        )
+        assert claim is not None and claim.owner_id == owner_id
+        await process_application_job(
+            paid_lifecycle_sessions, claim, now=trial_end + timedelta(hours=2)
+        )
+        async with paid_lifecycle_sessions() as session, session.begin():
+            reply = await session.scalar(
+                select(OutboxEvent).where(
+                    OutboxEvent.event_type == "telegram.reply.requested",
+                    OutboxEvent.causation_id == claim.job_id,
+                )
+            )
+            assert reply is not None
+            payload = reply.payload.get("payload")
+            assert isinstance(payload, dict)
+            plain_text = payload.get("plain_text")
+            assert isinstance(plain_text, str)
+            assert "There is no active access." in plain_text
+            assert "You can still view, complete and cancel plans." in plain_text
+            reply.created_at = trial_end + timedelta(hours=2)
+            assert await enqueue_due_reply_jobs(
+                session, now=trial_end + timedelta(hours=2)
+            ) == 1
+            status = await SqlAlchemyAccessUsageStore(session).read_subscription_status(
+                ReadSubscriptionStatus(owner_id, trial_end + timedelta(hours=2))
+            )
+            assert not status.active and status.trial_used
+            plans = list(
+                await session.scalars(
+                    select(PlanItemRecord).where(PlanItemRecord.owner_id == owner_id)
+                )
+            )
+            assert len(plans) == 1
+
+        clock.at = trial_end + timedelta(hours=2)
+        assert await drain_delivery(clock.now())
+        assert len(transport.sent) == 0
+        async with paid_lifecycle_sessions() as session:
+            attempt = await session.scalar(
+                select(DeliveryAttemptRecord).where(
+                    DeliveryAttemptRecord.intent_id == reminder_id
+                )
+            )
+            assert attempt is not None
+            assert attempt.outcome == "skipped"
+            assert attempt.failure_code == "access_expired"
+            plans = list(
+                await session.scalars(
+                    select(PlanItemRecord).where(PlanItemRecord.owner_id == owner_id)
+                )
+            )
+            assert len(plans) == 1
+        assert len(transport.reply_texts) == 3
+        assert "There is no active access." in transport.reply_texts[-1]
+
+    run_local_async(scenario)
 
 
 def test_trial_paid_quota_and_reminders_agree_across_local_runtime(
