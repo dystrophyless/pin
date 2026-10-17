@@ -25,7 +25,7 @@ class SqlAlchemyAccountabilityReadStore:
     ) -> AccountabilityOccurrence | None:
         occurrence = OccurrenceRecord
         statement = (
-            select(occurrence, PlanItemRecord.title)
+            select(occurrence, PlanItemRecord.title, PlanItemRecord.created_at)
             .join(
                 PlanItemRecord,
                 (PlanItemRecord.id == occurrence.plan_item_id)
@@ -55,7 +55,7 @@ class SqlAlchemyAccountabilityReadStore:
             )
             statement = statement.execution_options(populate_existing=True)
         row = (await self._session.execute(statement)).one_or_none()
-        return _occurrence(row[0], row[1]) if row is not None else None
+        return _occurrence(row[0], row[1], row[2]) if row is not None else None
 
     async def list_today_open_untimed(
         self,
@@ -127,12 +127,14 @@ class SqlAlchemyAccountabilityReadStore:
         if has_more and next_occurrence_id is None and membership:
             next_occurrence_id = membership[-1].id
         return AccountabilityOccurrencePage(
-            items=tuple(_occurrence(row[0], row[1]) for row in page_rows),
+            items=tuple(_occurrence(row[0], row[1], row[2]) for row in page_rows),
             next_occurrence_id=next_occurrence_id if has_more else None,
         )
 
 
-def _occurrence(record: OccurrenceRecord, title: str) -> AccountabilityOccurrence:
+def _occurrence(
+    record: OccurrenceRecord, title: str, plan_created_at: datetime
+) -> AccountabilityOccurrence:
     return AccountabilityOccurrence(
         owner_id=record.owner_id,
         occurrence_id=record.id,
@@ -145,4 +147,5 @@ def _occurrence(record: OccurrenceRecord, title: str) -> AccountabilityOccurrenc
         starts_at=record.starts_at.astimezone(UTC) if record.starts_at is not None else None,
         ends_at=record.ends_at.astimezone(UTC) if record.ends_at is not None else None,
         deadline_at=record.deadline_at.astimezone(UTC) if record.deadline_at is not None else None,
+        source_created_at=min(record.created_at, plan_created_at).astimezone(UTC),
     )

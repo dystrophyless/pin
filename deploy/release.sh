@@ -36,6 +36,8 @@ compose stop -t 60 gateway app-worker delivery-worker speech-worker retention
 compose --profile ops run --rm migrate
 compose --profile ops run --rm retention pin-retention replay \
   --artifact /var/lib/pin-retention/deletion-ledger.jsonl
+# A restored database stays fenced until its reconciliation receipts are recorded.
+compose --profile ops run --rm operations pin-recovery check
 compose up -d --wait --wait-timeout 120
 
 # Compose waits for the database healthcheck, while the operational snapshot

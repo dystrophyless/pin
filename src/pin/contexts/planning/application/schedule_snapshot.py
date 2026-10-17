@@ -44,6 +44,7 @@ class PlanningOccurrenceSchedule:
     series_id: UUID | None = None
     series_version: int | None = None
     series_state: str | None = None
+    source_created_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)

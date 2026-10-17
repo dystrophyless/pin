@@ -18,6 +18,7 @@ from pin.contexts.billing.api import (
 )
 from pin.observability import configure_logging, log_startup_configuration_rejection
 from pin.persistence import create_engine, create_session_factory, run_local_async
+from pin.platform.recovery import RecoveryFenced, require_runtime_recovery_ready
 
 logger = logging.getLogger("pin.billing.refund")
 
@@ -71,6 +72,11 @@ def main() -> None:
         log_startup_configuration_rejection(
             logger, error.diagnostic_category, error.diagnostic_fields
         )
+        raise SystemExit(2) from None
+    try:
+        require_runtime_recovery_ready(settings.database_url.get_secret_value())
+    except RecoveryFenced:
+        logger.error("refund_rejected: reason=recovery_gate")
         raise SystemExit(2) from None
     if settings.bot_token is None:
         raise SystemExit(2)

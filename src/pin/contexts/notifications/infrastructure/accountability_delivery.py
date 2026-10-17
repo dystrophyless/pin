@@ -181,6 +181,44 @@ async def deliver_accountability_job(
                 expected_dispatch_version=generation,
             )
             if authorization.send is None:
+                if authorization.reason == "recovery_uncertain_window":
+                    attempt_number = (
+                        int(
+                            await session.scalar(
+                                select(func.max(AccountabilityDeliveryAttemptRecord.attempt_number))
+                                .where(AccountabilityDeliveryAttemptRecord.intent_id == intent_id)
+                            )
+                            or 0
+                        )
+                        + 1
+                    )
+                    finished_at = now().astimezone(UTC)
+                    session.add(
+                        AccountabilityDeliveryAttemptRecord(
+                            id=uuid4(),
+                            owner_id=owner_id,
+                            intent_id=intent_id,
+                            target_id=profile.destination_id,
+                            attempt_number=attempt_number,
+                            dispatch_version=generation,
+                            outcome=DeliveryOutcomeKind.UNKNOWN.value,
+                            failure_code="recovery_uncertain_window",
+                            access_period_id=access.period_id,
+                            started_at=finished_at,
+                            finished_at=finished_at,
+                        )
+                    )
+                    await record_delivery_attempt_result(
+                        session,
+                        owner_id=owner_id,
+                        intent_id=intent_id,
+                        outcome=DeliveryOutcomeKind.UNKNOWN.value,
+                        retrying=False,
+                        failure_code="recovery_uncertain_window",
+                        expected_dispatch_version=generation,
+                    )
+                    await complete_job(session, claim)
+                    return DeliveryOutcomeKind.UNKNOWN
                 if authorization.deferred_until is not None:
                     delay = max(
                         timedelta(seconds=1), authorization.deferred_until - now().astimezone(UTC)

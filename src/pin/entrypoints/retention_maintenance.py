@@ -11,6 +11,7 @@ from pathlib import Path
 from pin.adapters.retention.maintenance import replay_before_workers, run_retention_once
 from pin.bootstrap.config import SettingsError, load_database_url
 from pin.persistence import create_engine, create_session_factory, run_local_async
+from pin.platform.recovery import RecoveryFenced, require_runtime_recovery_ready
 
 
 async def _run(database_url: str, *, artifact: Path, replay: bool) -> dict[str, int]:
@@ -50,6 +51,12 @@ def main() -> None:
     except SettingsError as error:
         print(json.dumps({"database_ready": False, "database_error": str(error)}))
         raise SystemExit(2) from None
+    if args.operation == "run":
+        try:
+            require_runtime_recovery_ready(database_url)
+        except RecoveryFenced:
+            print(json.dumps({"completed": False, "error": "RecoveryFenced"}, sort_keys=True))
+            raise SystemExit(2) from None
     try:
         result = run_local_async(
             lambda: _run(

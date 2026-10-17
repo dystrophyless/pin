@@ -19,6 +19,7 @@ class AccountabilityOccurrence:
     starts_at: datetime | None
     ends_at: datetime | None
     deadline_at: datetime | None
+    source_created_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)

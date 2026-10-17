@@ -37,6 +37,7 @@ class CurrentOccurrenceSchedule:
     series_id: UUID | None = None
     series_version: int | None = None
     series_state: str | None = None
+    source_created_at: datetime | None = None
 
     def __post_init__(self) -> None:
         if self.occurrence_version < 1:
