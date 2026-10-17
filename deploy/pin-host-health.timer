@@ -1,0 +1,12 @@
+[Unit]
+Description=Run Pin host and runtime health checks
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=5min
+RandomizedDelaySec=30s
+Persistent=true
+Unit=pin-host-health.service
+
+[Install]
+WantedBy=timers.target

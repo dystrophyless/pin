@@ -23,3 +23,46 @@ Each archive is rejected above 2 GiB. With daily runs and the configured 7-day l
 The host keeps checksum-verified local backup directories for up to 7 days and always retains the newest verified directory until a newer one passes its checksum check. Cleanup is restricted to immediate `pin-YYYYMMDDTHHMMSSZ` directories in `/var/backups/pin`; unmarked or unrecognized directories are left intact.
 
 To restore, download the desired archive to a protected machine, extract it into a private directory, verify `SHA256SUMS`, and follow the project database restore and deletion-ledger replay runbook before starting workers. The workflow uploads backups but does not automate restore testing.
+
+## Host health checks
+
+The root-owned `pin-host-health.timer` runs every five minutes. It asks the current release's `pin-operations` container for the redacted database, queue, delivery, provider, speech, billing, retention and four-worker heartbeat snapshot; it also checks Compose service states and restart-count increases, and records host root-volume disk and Linux memory availability. Each run emits only filtered health fields and aggregate counts to the system journal; opaque IDs, payloads and provider errors are omitted. The one-shot service exits nonzero for runbook-actionable statuses, unavailable database/worker/service/resource checks, or a container restart-count increase. It also warns when root-volume free space is below 1 GiB or 10%, available memory is below 256 MiB, or oldest globally due pending work is older than 300 seconds. These are operator warning levels for this host check, not product availability targets. Queue age is global and does not identify a lane. Inspect the journal failure and follow the matching investigation steps in the [operations runbook](../_docs/runbooks/operations_local.md).
+
+Install and run the monitor after the first successful release:
+
+```sh
+sudo install -o root -g root -m 0644 /opt/pin/current/deploy/pin-host-health.service /etc/systemd/system/
+sudo install -o root -g root -m 0644 /opt/pin/current/deploy/pin-host-health.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now pin-host-health.timer
+sudo systemctl start pin-host-health.service
+sudo journalctl -u pin-host-health.service --since '10 minutes ago' --no-pager
+```
+
+For a bounded end-to-end failure signal check, use a maintenance window and first confirm the selected worker owns no active lease or started external action. Stop only `app-worker`, run the one-shot service and expect its failure, then restore that worker from an `EXIT` trap. After it writes a fresh heartbeat, rerun the check and expect success. Do not use this probe during active work if pausing the worker could delay a task.
+
+```sh
+set -eu
+release=$(readlink -f /opt/pin/current)
+release_id=${release##*/}
+compose() {
+  sudo env PIN_IMAGE="pin:$release_id" docker compose \
+    --env-file /opt/pin/shared/runtime.env \
+    --file "$release/compose.yaml" "$@"
+}
+restore_app_worker() {
+  compose up -d --wait --wait-timeout 120 app-worker
+}
+trap 'restore_app_worker' EXIT HUP INT TERM
+compose stop -t 60 app-worker
+if sudo systemctl start pin-host-health.service; then
+  echo 'health check unexpectedly passed with app-worker stopped' >&2
+  exit 1
+fi
+sudo journalctl -u pin-host-health.service --since '2 minutes ago' --no-pager
+restore_app_worker
+trap - EXIT HUP INT TERM
+sleep 20
+sudo systemctl reset-failed pin-host-health.service
+sudo systemctl start pin-host-health.service
+```
