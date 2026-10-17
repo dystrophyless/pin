@@ -121,11 +121,25 @@ def operations_summary(snapshot: dict[str, Any]) -> tuple[dict[str, Any], list[s
     billing_invoices = _counts(billing.get("invoice_states"))
     billing_cancellations = _counts(billing.get("cancellation_states"))
     billing_refunds = _counts(billing.get("refund_states"))
+    paid_period_traces = billing.get("active_paid_period_traces")
+    paid_periods_without_receipt = sum(
+        1
+        for item in (paid_period_traces if isinstance(paid_period_traces, list) else [])
+        if isinstance(item, dict) and item.get("receipt_linked") is False
+    )
+    paid_period_receipt_linkage_unavailable = sum(
+        1
+        for item in (paid_period_traces if isinstance(paid_period_traces, list) else [])
+        if isinstance(item, dict) and item.get("receipt_linked") is None
+    )
     retention_states = _counts(retention.get("request_state_counts"))
 
     summary: dict[str, Any] = {
         "lanes": lane_counts,
         "oldest_due_pending_seconds": snapshot.get("oldest_due_pending_seconds"),
+        "oldest_due_pending_job_sample_count": _sample_count(
+            snapshot.get("oldest_due_pending_job_ids")
+        ),
         "dead_job_sample_count": _sample_count(snapshot.get("dead_job_ids")),
         "expired_lease_sample_count": _sample_count(snapshot.get("expired_lease_job_ids")),
         "heartbeat_stale_after_seconds": snapshot.get("heartbeat_stale_after_seconds"),
@@ -156,6 +170,13 @@ def operations_summary(snapshot: dict[str, Any]) -> tuple[dict[str, Any], list[s
             ),
             "receipt_count": billing.get("receipt_count"),
             "receipt_total_stars": billing.get("receipt_total_stars"),
+            "active_paid_period_count": billing.get(
+                "active_paid_period_count", _sample_count(paid_period_traces)
+            ),
+            "active_paid_period_without_receipt_sample_count": paid_periods_without_receipt,
+            "active_paid_period_receipt_linkage_unavailable_count": (
+                paid_period_receipt_linkage_unavailable
+            ),
         },
         "retention": {
             "request_state_counts": retention_states,
@@ -164,6 +185,7 @@ def operations_summary(snapshot: dict[str, Any]) -> tuple[dict[str, Any], list[s
             "unexported_tombstone_count": retention.get("unexported_tombstone_count"),
             "restore_status": retention.get("restore_status"),
         },
+        "recovery": {"state": _mapping(snapshot.get("recovery")).get("state")},
     }
     signals: list[str] = []
     for key, label in (
@@ -181,9 +203,19 @@ def operations_summary(snapshot: dict[str, Any]) -> tuple[dict[str, Any], list[s
         (summary["billing"]["uncertain_refund_sample_count"], "uncertain refunds"),
         (summary["retention"]["pending_request_sample_count"], "pending deletion exports"),
         (summary["retention"]["unexported_tombstone_count"], "unexported deletion tombstones"),
+        (
+            summary["billing"]["active_paid_period_without_receipt_sample_count"],
+            "active paid periods without a linked receipt in the trace sample",
+        ),
+        (
+            summary["billing"]["active_paid_period_receipt_linkage_unavailable_count"],
+            "active paid period receipt linkage unavailable because the trace sample is capped",
+        ),
     ):
         if value:
             signals.append(f"{label} require runbook investigation ({value})")
+    if summary["recovery"].get("state") == "fenced":
+        signals.append("database recovery gate is fenced; runtime reconciliation is required")
     return summary, signals
 
 
