@@ -206,7 +206,7 @@ def test_non_speech_entrypoint_import_does_not_import_whisper(module: str) -> No
     assert result.returncode == 0, result.stderr
 
 
-def test_speech_startup_fails_if_optional_backend_is_unavailable(monkeypatch, capsys) -> None:
+def test_speech_startup_fails_if_optional_backend_is_unavailable(monkeypatch, capfd) -> None:
     import builtins
 
     from pin.entrypoints._common import main_for
@@ -223,5 +223,5 @@ def test_speech_startup_fails_if_optional_backend_is_unavailable(monkeypatch, ca
     for name, value in ROLE_ENV["speech-worker"].items():
         monkeypatch.setenv(name, value)
     assert main_for(ProcessRole.SPEECH_WORKER, ["--check"]) == 2
-    assert "Speech dependencies are missing" in capsys.readouterr().err
+    assert "Speech dependencies are missing" in capfd.readouterr().err
 
