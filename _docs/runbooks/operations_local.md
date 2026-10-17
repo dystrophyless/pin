@@ -1,5 +1,8 @@
 # Local operations and failure investigation
 
+This page records the manual Windows foundation. For the deployed health timer, current bounded
+correlation fields and recovery-gate investigation, use the [current operations runbook](../operations-runbook.md).
+
 This runbook applies to the Windows local-development runtime. The current command takes one read-only snapshot; it does not repair jobs, retry external actions, deliver alerts, or prove a backup restore. It connects to the database configured for the current process. Confirm privately that `PIN_DATABASE_URL` targets the intended local database before running it; never print or paste that value.
 
 ## Take a snapshot
