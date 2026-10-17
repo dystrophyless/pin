@@ -170,7 +170,7 @@ jobs:
             exit 1
           fi
           ssh "${ssh_opts[@]}" "$target" \
-            "sudo -n tar -czf - -C '$remote_backup' ." > "$archive"
+            "sudo -n tar -czf - --exclude=./.verified -C '$remote_backup' ." > "$archive"
           test -s "$archive"
           archive_bytes="$(stat -c '%s' "$archive")"
           if (( archive_bytes > 2147483648 )); then

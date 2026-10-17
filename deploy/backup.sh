@@ -38,6 +38,52 @@ prune_old_verified_backups() {
   done
 }
 
+verify_new_backup_bundle() {
+  directory=$1
+  python3 - "$directory" <<'PY'
+import json
+import os
+import re
+import sys
+from datetime import datetime
+
+directory = sys.argv[1]
+name = os.path.basename(directory)
+metadata_path = os.path.join(directory, "backup-metadata.json")
+checksums_path = os.path.join(directory, "SHA256SUMS")
+if any(not os.path.isfile(os.path.join(directory, item)) or os.path.islink(os.path.join(directory, item))
+       for item in ("backup-metadata.json", "database.dump", "deletion-ledger.tar.gz", "SHA256SUMS")):
+    raise SystemExit("new backup must contain regular metadata, payload, and checksum files")
+try:
+    with open(metadata_path, encoding="utf-8") as stream:
+        metadata = json.load(stream)
+except (OSError, json.JSONDecodeError):
+    raise SystemExit("new backup metadata is missing or invalid") from None
+if (not isinstance(metadata, dict)
+        or set(metadata) != {"format_version", "backup_id", "started_at"}
+        or type(metadata["format_version"]) is not int
+        or metadata["format_version"] != 1):
+    raise SystemExit("new backup metadata format is unsupported")
+backup_id = metadata["backup_id"]
+started_at = metadata["started_at"]
+if not isinstance(backup_id, str) or not re.fullmatch(r"pin-\d{8}T\d{6}Z", backup_id):
+    raise SystemExit("new backup metadata ID is invalid")
+try:
+    timestamp = datetime.strptime(backup_id, "pin-%Y%m%dT%H%M%SZ")
+except ValueError:
+    raise SystemExit("new backup metadata ID is invalid") from None
+if name != backup_id or started_at != timestamp.strftime("%Y-%m-%dT%H:%M:%SZ"):
+    raise SystemExit("new backup metadata does not match its directory ID and start time")
+with open(checksums_path, encoding="ascii") as stream:
+    lines = stream.read().splitlines()
+entries = [re.fullmatch(r"([0-9a-f]{64}) [ *]([A-Za-z0-9._-]+)", line) for line in lines]
+expected = {"backup-metadata.json", "database.dump", "deletion-ledger.tar.gz"}
+if any(entry is None for entry in entries) or {entry[2] for entry in entries if entry} != expected or len(entries) != len(expected):
+    raise SystemExit("new backup checksum manifest must cover metadata and both payloads exactly")
+PY
+  (cd "$directory" && sha256sum --check --status SHA256SUMS)
+}
+
 mark_verified_backup() {
   requested=$1
   root=$(realpath -e "$backup_dir")
@@ -50,7 +96,7 @@ mark_verified_backup() {
     echo "refusing to mark a path outside the owned backup directory" >&2
     return 1
   }
-  (cd "$destination" && sha256sum --check --status SHA256SUMS)
+  verify_new_backup_bundle "$destination"
   umask 077
   printf 'verified %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$destination/.verified.tmp"
   mv -f "$destination/.verified.tmp" "$destination/.verified"
@@ -76,7 +122,10 @@ fi
 env_file=${PIN_RUNTIME_ENV_FILE:-/opt/pin/shared/runtime.env}
 release_dir=$(readlink -f "$release_dir")
 release_id=$(basename "$release_dir")
-timestamp=$(date -u +%Y%m%dT%H%M%SZ)
+backup_clock=$(date -u +'%Y%m%dT%H%M%SZ %Y-%m-%dT%H:%M:%SZ')
+set -- $backup_clock
+timestamp=$1
+started_at=$2
 destination="$backup_dir/pin-$timestamp"
 temporary="$backup_dir/.pin-$timestamp.tmp"
 
@@ -104,7 +153,7 @@ finish() {
     compose --profile ops run --rm operations || result=$?
   fi
   rm -f "$temporary/database.dump" "$temporary/deletion-ledger.tar.gz" \
-    "$temporary/SHA256SUMS"
+    "$temporary/backup-metadata.json" "$temporary/SHA256SUMS"
   rmdir "$temporary" 2>/dev/null || true
   exit "$result"
 }
@@ -125,8 +174,11 @@ compose --profile ops run --rm --no-deps retention sh -ec \
   'tar -czf - -C /var/lib/pin-retention .' > "$temporary/deletion-ledger.tar.gz"
 test -s "$temporary/database.dump"
 test -s "$temporary/deletion-ledger.tar.gz"
-(cd "$temporary" && sha256sum database.dump deletion-ledger.tar.gz > SHA256SUMS)
-chmod 600 "$temporary/database.dump" "$temporary/deletion-ledger.tar.gz" "$temporary/SHA256SUMS"
+printf '{"format_version":1,"backup_id":"pin-%s","started_at":"%s"}\n' \
+  "$timestamp" "$started_at" > "$temporary/backup-metadata.json"
+(cd "$temporary" && sha256sum backup-metadata.json database.dump deletion-ledger.tar.gz > SHA256SUMS)
+chmod 600 "$temporary/backup-metadata.json" "$temporary/database.dump" \
+  "$temporary/deletion-ledger.tar.gz" "$temporary/SHA256SUMS"
 mv "$temporary" "$destination"
 (cd "$destination" && sha256sum --check --status SHA256SUMS)
 umask 077

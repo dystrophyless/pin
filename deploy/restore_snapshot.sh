@@ -11,28 +11,64 @@ database_url=${PIN_DATABASE_URL:?set PIN_DATABASE_URL to a new disposable recove
 
 snapshot=$(realpath -e "$snapshot")
 ledger_bundle=$(realpath -e "$ledger_bundle")
-snapshot_id=${snapshot##*/}
-ledger_id=${ledger_bundle##*/}
-case "$snapshot_id:$ledger_id" in
-  pin-????????T??????Z:pin-????????T??????Z) ;;
-  *) echo "backup directories must use the pin-UTC-timestamp format" >&2; exit 2 ;;
-esac
-python3 - "$snapshot_id" "$ledger_id" <<'PY'
+backup_ids=$(python3 - "$snapshot" "$ledger_bundle" <<'PY'
+import json
+import os
 import re
 import sys
 from datetime import datetime
 
-def timestamp(value: str) -> datetime:
-    if not re.fullmatch(r"pin-\d{8}T\d{6}Z", value):
-        raise SystemExit("backup directories must use the pin-UTC-timestamp format")
+def read_backup_id(directory: str) -> str:
+    metadata_path = f"{directory}/backup-metadata.json"
+    if not os.path.isfile(metadata_path) or os.path.islink(metadata_path):
+        raise SystemExit("backup metadata is missing or not a regular file; legacy bundles require independently verified provenance")
     try:
-        return datetime.strptime(value, "pin-%Y%m%dT%H%M%SZ")
+        with open(metadata_path, encoding="utf-8") as stream:
+            metadata = json.load(stream)
+    except (OSError, json.JSONDecodeError):
+        raise SystemExit("backup metadata is missing or invalid") from None
+    if (
+        not isinstance(metadata, dict)
+        or set(metadata) != {"format_version", "backup_id", "started_at"}
+        or type(metadata["format_version"]) is not int
+        or metadata["format_version"] != 1
+    ):
+        raise SystemExit("backup metadata format is unsupported")
+    value = metadata["backup_id"]
+    started_at = metadata["started_at"]
+    if not isinstance(value, str) or not re.fullmatch(r"pin-\d{8}T\d{6}Z", value):
+        raise SystemExit("backup metadata ID is invalid")
+    try:
+        parsed = datetime.strptime(value, "pin-%Y%m%dT%H%M%SZ")
     except ValueError:
-        raise SystemExit("backup directory timestamp is invalid") from None
+        raise SystemExit("backup metadata ID is invalid") from None
+    if not isinstance(started_at, str) or started_at != parsed.strftime("%Y-%m-%dT%H:%M:%SZ"):
+        raise SystemExit("backup metadata start time does not match its ID")
+    if directory.rsplit("/", 1)[-1] != value:
+        raise SystemExit("backup directory name does not match its verified metadata ID")
+    checksum_path = f"{directory}/SHA256SUMS"
+    if not os.path.isfile(checksum_path) or os.path.islink(checksum_path):
+        raise SystemExit("backup checksum manifest is missing or not a regular file")
+    with open(checksum_path, encoding="ascii") as stream:
+        lines = stream.read().splitlines()
+    entries = [re.fullmatch(r"([0-9a-f]{64}) [ *]([A-Za-z0-9._-]+)", line) for line in lines]
+    expected = {"backup-metadata.json", "database.dump", "deletion-ledger.tar.gz"}
+    if any(entry is None for entry in entries) or {entry[2] for entry in entries if entry} != expected or len(entries) != len(expected):
+        raise SystemExit("backup checksum manifest must cover metadata and both payloads exactly")
+    return value
 
-if timestamp(sys.argv[2]) <= timestamp(sys.argv[1]):
+snapshot_id = read_backup_id(sys.argv[1])
+ledger_id = read_backup_id(sys.argv[2])
+snapshot_time = datetime.strptime(snapshot_id, "pin-%Y%m%dT%H%M%SZ")
+ledger_time = datetime.strptime(ledger_id, "pin-%Y%m%dT%H%M%SZ")
+if ledger_time <= snapshot_time:
     raise SystemExit("deletion ledger bundle must be newer than the selected database snapshot")
+print(snapshot_id, ledger_id)
 PY
+)
+set -- $backup_ids
+snapshot_id=$1
+ledger_id=$2
 [ -f "$snapshot/.verified" ] && [ ! -L "$snapshot/.verified" ]
 [ -f "$ledger_bundle/.verified" ] && [ ! -L "$ledger_bundle/.verified" ]
 (cd "$snapshot" && sha256sum --check --status SHA256SUMS)
