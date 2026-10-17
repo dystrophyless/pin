@@ -7,6 +7,97 @@ operator access path and preserve the downloaded files for audit. A newer timest
 and a valid checksum establish which bytes were downloaded, not that the deletion
 ledger covers every deletion after the older snapshot.
 
+Each new bundle includes `backup-metadata.json` (format version 1) with the
+original `backup_id` and UTC `started_at`; both fields are covered by
+`SHA256SUMS`. The S3 object key timestamp is only the upload time and must never
+be used as the database snapshot ID. The archive does not contain `.verified`:
+the workflow excludes the host marker from the archive and also marks the host
+copy after upload. For a downloaded
+bundle, extract into a new private staging directory, verify the exact checksum
+manifest, validate the metadata ID/time, and only then create a local marker:
+
+```sh
+umask 077
+work=$(mktemp -d /secure/recovery-download.XXXXXX)
+chmod 700 "$work"
+mkdir -m 700 "$work/extracted"
+python3 - /secure/downloads/backup.tar.gz "$work/extracted" <<'PY'
+import sys, tarfile
+from pathlib import Path
+
+expected = {"backup-metadata.json", "database.dump", "deletion-ledger.tar.gz", "SHA256SUMS"}
+destination = Path(sys.argv[2])
+with tarfile.open(sys.argv[1], "r:gz") as archive:
+    members = archive.getmembers()
+    files = {}
+    for member in members:
+        name = member.name.removeprefix("./").rstrip("/")
+        if name in {"", "."} and member.isdir():
+            continue
+        if name not in expected or not member.isfile() or name in files:
+            raise SystemExit("archive contains an unexpected or non-regular member")
+        if member.size > 2 * 1024**3:
+            raise SystemExit("archive member exceeds the 2 GiB bound")
+        files[name] = member
+    if set(files) != expected:
+        raise SystemExit("archive does not contain the exact expected file set")
+    for name, member in files.items():
+        source = archive.extractfile(member)
+        if source is None:
+            raise SystemExit("archive member could not be read")
+        with source, (destination / name).open("xb") as output:
+            while chunk := source.read(1024 * 1024):
+                output.write(chunk)
+PY
+(cd "$work/extracted" && python3 - <<'PY'
+import re
+from pathlib import Path
+
+lines = Path("SHA256SUMS").read_text(encoding="ascii").splitlines()
+entries = [re.fullmatch(r"([0-9a-f]{64}) [ *]([A-Za-z0-9._-]+)", line) for line in lines]
+expected = {"backup-metadata.json", "database.dump", "deletion-ledger.tar.gz"}
+if any(entry is None for entry in entries) or {entry[2] for entry in entries if entry} != expected or len(entries) != len(expected):
+    raise SystemExit("checksum manifest must cover metadata and both payloads exactly")
+PY
+sha256sum --check SHA256SUMS)
+backup_id=$(python3 - "$work/extracted/backup-metadata.json" <<'PY'
+import json, re, sys
+from datetime import datetime
+with open(sys.argv[1], encoding="utf-8") as stream:
+    metadata = json.load(stream)
+if (not isinstance(metadata, dict)
+        or set(metadata) != {"format_version", "backup_id", "started_at"}
+        or type(metadata["format_version"]) is not int
+        or metadata["format_version"] != 1):
+    raise SystemExit("unsupported backup metadata")
+backup_id = metadata["backup_id"]
+if not isinstance(backup_id, str) or not re.fullmatch(r"pin-\d{8}T\d{6}Z", backup_id):
+    raise SystemExit("invalid backup ID")
+stamp = datetime.strptime(backup_id, "pin-%Y%m%dT%H%M%SZ")
+if not isinstance(metadata["started_at"], str) or metadata["started_at"] != stamp.strftime("%Y-%m-%dT%H:%M:%SZ"):
+    raise SystemExit("backup start time does not match its ID")
+print(backup_id)
+PY
+)
+mv "$work/extracted" "/secure/backups/$backup_id"
+printf 'verified locally after checksum and metadata checks %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  > "/secure/backups/$backup_id/.verified"
+chmod 600 "/secure/backups/$backup_id/.verified"
+```
+
+The extraction step accepts only the four expected regular files
+(`backup-metadata.json`, `database.dump`, `deletion-ledger.tar.gz`, and
+`SHA256SUMS`) and writes their basename into a fresh private directory. The newer
+ledger bundle is validated the same way. Keep the downloaded archive, extracted bundle, and
+verification output in the incident record. Legacy archives without metadata
+remain legacy: the automatic restore helper rejects them even when the folder or
+S3 key looks like a `pin-...` timestamp. Never infer the original ID from the
+upload key or renamed folder. Use a legacy archive only after independent
+original-host provenance establishes its ID and checksum manifest, and perform
+any migration into the supported metadata format as a separately recorded
+manual step while preserving the original archive. If provenance is unavailable,
+stop and leave recovery fenced.
+
 Hosted restore runs from the currently selected pinned release and requires the
 existing Compose `postgres` container to be running with image
 `postgres:18.6-bookworm`, plus the exact `pin:<release-sha>` image already on the
