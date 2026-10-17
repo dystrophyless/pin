@@ -17,7 +17,7 @@ x-runtime: &runtime
       max-size: 10m
       max-file: "3"
   environment: &database-environment
-    PIN_DATABASE_URL: postgresql+psycopg://pin:${PIN_DB_PASSWORD:?Set PIN_DB_PASSWORD in the runtime environment}@postgres:5432/pin
+    PIN_DATABASE_URL: postgresql+psycopg://pin:${PIN_DB_PASSWORD:?Set PIN_DB_PASSWORD in the runtime environment}@postgres:5432/${PIN_DATABASE_NAME:-pin}
 
 services:
   postgres:
@@ -30,7 +30,7 @@ services:
         max-size: 10m
         max-file: "3"
     environment:
-      POSTGRES_DB: pin
+      POSTGRES_DB: ${PIN_DATABASE_NAME:-pin}
       POSTGRES_USER: pin
       POSTGRES_PASSWORD: ${PIN_DB_PASSWORD:?Set PIN_DB_PASSWORD in the runtime environment}
     volumes:
