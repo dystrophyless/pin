@@ -61,6 +61,60 @@ def render_mutation_preview(preview: MutationPreview, language: str) -> tuple[st
             f", … +{len(date_labels) - len(visible)}" if len(date_labels) > len(visible) else ""
         )
         detail += f"\n{scope_label}: {', '.join(visible)}{suffix}"
+    series = preview.series_projection
+    if (
+        series is not None
+        and preview.request.scope.value == "this_and_future"
+        and series.change.new_pattern is not None
+        and series.updated_draft.recurrence.frequency.value == "weekly"
+    ):
+        rule = series.updated_draft.recurrence
+        weekdays = rule.weekdays
+        names = (
+            ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+            if language != "ru"
+            else (
+                "понедельникам",
+                "вторникам",
+                "средам",
+                "четвергам",
+                "пятницам",
+                "субботам",
+                "воскресеньям",
+            )
+        )
+        weekday_label = ", ".join(names[day] for day in weekdays)
+        if language == "ru":
+            if rule.interval == 1:
+                cadence = "Каждую неделю"
+            else:
+                week_unit = (
+                    "неделю"
+                    if rule.interval % 10 == 1 and rule.interval % 100 != 11
+                    else "недели"
+                    if rule.interval % 10 in {2, 3, 4}
+                    and not 12 <= rule.interval % 100 <= 14
+                    else "недель"
+                )
+                cadence = f"Раз в {rule.interval} {week_unit}"
+            count = (
+                f"осталось {series.remaining_count} (всего {rule.count})"
+                if series.remaining_count is not None and rule.count is not None
+                else f"до {rule.end_date.isoformat()}"
+                if rule.end_date is not None
+                else "количество оставшихся повторений не ограничено"
+            )
+            detail += f"\n{cadence}, по {weekday_label}; {count}"
+        else:
+            cadence = "Weekly" if rule.interval == 1 else f"Every {rule.interval} weeks"
+            count = (
+                f"{series.remaining_count} remaining ({rule.count} total)"
+                if series.remaining_count is not None and rule.count is not None
+                else f"through {rule.end_date.isoformat()}"
+                if rule.end_date is not None
+                else "unlimited remaining occurrences"
+            )
+            detail += f"\n{cadence} on {weekday_label}; {count}"
     if preview.cancellation_projection is not None:
         dates = [item.local_date.isoformat() for item in preview.cancellation_projection.targets]
         visible = dates[:6]

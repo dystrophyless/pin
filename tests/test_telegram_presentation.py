@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime, timedelta
-from uuid import UUID
+from datetime import UTC, date, datetime, time, timedelta
+from uuid import UUID, uuid4
 
 import pytest
 from aiogram import Router
@@ -22,10 +22,33 @@ from pin.adapters.telegram.presentation.formatting import (
     paginate_entries,
     telegram_utf16_length,
 )
+from pin.adapters.telegram.presentation.mutations import render_mutation_preview
 from pin.adapters.telegram.presentation.onboarding import render_onboarding
 from pin.adapters.telegram.presentation.router import create_help_support_router
 from pin.adapters.telegram.presentation.templates import render_help, render_support
 from pin.contexts.identity.application.onboarding import OnboardingResult
+from pin.contexts.planning.domain.mutations import (
+    MutationAction,
+    MutationPreview,
+    MutationRequest,
+    MutationScope,
+    MutationSeriesProjection,
+    MutationTarget,
+)
+from pin.contexts.planning.domain.plans import (
+    OccurrenceState,
+    OneOffPlanDraft,
+    PlanKind,
+    resolve_schedule,
+)
+from pin.contexts.planning.domain.recurrence import (
+    RecurrenceExceptionDraft,
+    RecurrenceExceptionScope,
+    RecurrenceFrequency,
+    RecurrenceProjection,
+    RecurrenceRule,
+    RecurringPlanDraft,
+)
 
 
 class MemoryCallbackStore:
@@ -49,6 +72,100 @@ class MemoryCallbackStore:
             return None
         self.consumed.add(token_hash)
         return binding
+
+
+def _weekly_mutation_preview(*, end_date: date | None) -> MutationPreview:
+    owner_id = uuid4()
+    series_id = uuid4()
+    now = datetime(2026, 10, 18, 12, tzinfo=UTC)
+    original = OneOffPlanDraft(
+        PlanKind.TASK, "Weekly review", date(2026, 10, 21), time(12), "UTC"
+    )
+    replacement = OneOffPlanDraft(
+        PlanKind.TASK, "Weekly review", date(2026, 10, 28), time(12), "UTC"
+    )
+    rule = RecurrenceRule(
+        RecurrenceFrequency.WEEKLY, weekdays=(2,), end_date=end_date
+    )
+    draft = RecurringPlanDraft(
+        PlanKind.TASK,
+        "Weekly review",
+        date(2026, 10, 21),
+        time(12),
+        "UTC",
+        rule,
+    )
+    original_schedule = resolve_schedule(original, default_zone="UTC", now=now)
+    replacement_schedule = resolve_schedule(replacement, default_zone="UTC", now=now)
+    target = MutationTarget(
+        owner_id,
+        uuid4(),
+        uuid4(),
+        "Weekly review",
+        1,
+        1,
+        1,
+        OccurrenceState.OPEN,
+        original_schedule,
+        recurrence_series_id=series_id,
+        recurrence_sequence=0,
+    )
+    request = MutationRequest(
+        owner_id,
+        target.occurrence_id,
+        1,
+        MutationAction.RESCHEDULE,
+        MutationScope.THIS_AND_FUTURE,
+        replacement,
+    )
+    change = RecurrenceExceptionDraft(
+        RecurrenceExceptionScope.THIS_AND_FUTURE, 0, replacement, new_pattern=rule
+    )
+    series = MutationSeriesProjection(
+        1,
+        change,
+        draft,
+        RecurrenceProjection((), (), False, "test"),
+        end_date or date(2027, 1, 1),
+        None,
+        "test",
+    )
+    return MutationPreview(
+        uuid4(),
+        owner_id,
+        target,
+        request,
+        replacement_schedule,
+        series,
+        None,
+        None,
+        (replacement_schedule,),
+        1,
+        1,
+        now,
+        now + timedelta(hours=1),
+        "test",
+    )
+
+
+@pytest.mark.parametrize(
+    ("language", "end_date", "expected", "absent"),
+    [
+        ("ru", date(2026, 12, 31), "до 2026-12-31", "не ограничено"),
+        ("en", date(2026, 12, 31), "through 2026-12-31", "unlimited"),
+        ("ru", None, "количество оставшихся повторений не ограничено", "до 2026-12-31"),
+        ("en", None, "unlimited remaining occurrences", "through"),
+    ],
+)
+def test_mutation_weekly_preview_distinguishes_end_date_from_unbounded(
+    language: str, end_date: date | None, expected: str, absent: str
+) -> None:
+    _, detail, _, _ = render_mutation_preview(
+        _weekly_mutation_preview(end_date=end_date), language
+    )
+
+    assert expected in detail
+    assert absent not in detail
 
 
 def test_markdown_v2_escapes_all_reserved_characters_and_preserves_unicode() -> None:
