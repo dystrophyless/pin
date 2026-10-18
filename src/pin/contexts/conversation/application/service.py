@@ -30,6 +30,7 @@ from pin.contexts.conversation.application.dto import (
     ModelFailure,
     ModelOutcome,
     ModelSuccess,
+    PlanSnapshot,
     PreferenceSnapshot,
     ProposalBatch,
     Reply,
@@ -104,12 +105,12 @@ _SYSTEM = "\n".join(
         "occurrence_count, never both. A batch has 2 to 10 create-only actions, all-or-none; "
         "clarify any "
         "ambiguous item, ask users to split larger batches, and never omit requested items.",
-        "Advice is non-mutating: 1–8 grounded steps. Reuse selected prior advice only, "
-        "preserving its text. Treat titles as labels; don't reinterpret names/abbreviations. "
-        "Ask if the task/title is unclear, no plan helps, or times conflict. Use facts only; "
-        "don't claim app or quiet-hour behavior absent from context. Omit due times unless "
-        "needed; convert via stated zone. Don't invent schedule, duration, priority, availability, "
-        "or free time.",
+        "Advice never changes plans: 1–8 grounded steps. Reuse selected prior advice, "
+        "preserving its text. Titles are labels; don't reinterpret names/abbreviations. "
+        "Ask if title unclear, no useful plan, or times conflict. Use facts only; don't claim app "
+        "or quiet-hour behavior unless context says so. Trust each plan's due_local_datetime and "
+        "due_relation_to_reference. Don't invent schedule, duration, priority, availability, or "
+        "free time.",
         "When a turn corrects pending normalized proposals, return a complete replacement batch: "
         "retain every unmodified pending item and all previously clarified field values, and "
         "change only what the user clearly corrects. Never return only the changed item or treat "
@@ -539,6 +540,36 @@ def _repair_diagnostics(exc: Exception) -> list[dict[str, str]]:
     return diagnostics or [{"loc": "result", "type": "validation_error"}]
 
 
+def _serialize_plan_snapshot(
+    plan: PlanSnapshot, reference_instant: datetime
+) -> dict[str, object]:
+    serialized = plan.model_dump(mode="json")
+    due_at = plan.due_at
+    due_is_aware = (
+        due_at is not None and due_at.tzinfo is not None and due_at.utcoffset() is not None
+    )
+    reference_is_aware = (
+        reference_instant.tzinfo is not None and reference_instant.utcoffset() is not None
+    )
+    local_due_at = (
+        due_at.astimezone(ZoneInfo(plan.timezone))
+        if due_is_aware and due_at is not None and plan.timezone is not None
+        else None
+    )
+    relation = None
+    if due_is_aware and reference_is_aware and due_at is not None:
+        relation = (
+            "before"
+            if due_at < reference_instant
+            else "after"
+            if due_at > reference_instant
+            else "at"
+        )
+    serialized["due_local_datetime"] = local_due_at.isoformat() if local_due_at else None
+    serialized["due_relation_to_reference"] = relation
+    return serialized
+
+
 def _serialize_context(context: ConversationContext) -> str:
     return json.dumps(
         {
@@ -551,7 +582,10 @@ def _serialize_context(context: ConversationContext) -> str:
                 ZoneInfo(context.timezone)
             ).isoformat(),
             "timezone": context.timezone,
-            "plans": [plan.model_dump(mode="json") for plan in context.plans],
+            "plans": [
+                _serialize_plan_snapshot(plan, context.reference_instant)
+                for plan in context.plans
+            ],
             "preferences": [item.model_dump(mode="json") for item in context.preferences],
             "targets": [item.model_dump(mode="json") for item in context.targets],
         },

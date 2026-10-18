@@ -308,7 +308,7 @@ async def test_structured_ru_en_advice_is_bounded_and_contains_explicit_handoff_
     assert "target id/version" in system_prompt
     assert "Complete/cancel use fields={}" in system_prompt
     assert "all-or-none" in system_prompt
-    assert "Reuse selected prior advice only" in system_prompt
+    assert "Reuse selected prior advice, preserving its text" in system_prompt
     assert "times conflict" in system_prompt
     assert "or free time" in system_prompt
     assert "output is strictly validated" in system_prompt
@@ -318,13 +318,14 @@ async def test_structured_ru_en_advice_is_bounded_and_contains_explicit_handoff_
 @pytest.mark.asyncio
 async def test_advice_prompt_treats_saved_titles_as_labels_and_times_as_zoned_facts() -> None:
     text = (
-        "Using my saved task ‘Pin проверка тихих часов’, suggest two practical preparation "
+        "Using my saved task ‘Pin проверка тихих часов — повтор’, suggest two practical "
+        "preparation "
         "steps and explain what to prioritize. Do not add, complete, cancel, or reschedule any "
         "plan. You only know the plans I shared here, not my external calendar."
     )
     context = _context(
         language=SourceLanguage.EN,
-        reference_instant=datetime(2026, 10, 18, 16, 0, tzinfo=UTC),
+        reference_instant=datetime(2026, 10, 18, 18, 41, tzinfo=UTC),
         timezone="Asia/Almaty",
         text=text,
     ).model_copy(
@@ -333,8 +334,31 @@ async def test_advice_prompt_treats_saved_titles_as_labels_and_times_as_zoned_fa
                 PlanSnapshot(
                     id=PLAN,
                     version=1,
-                    title="Pin проверка тихих часов",
-                    due_at=datetime(2026, 10, 18, 17, 49, tzinfo=UTC),
+                    title="Pin проверка тихих часов — повтор",
+                    due_at=datetime(2026, 10, 18, 18, 48, tzinfo=UTC),
+                    timezone="Asia/Almaty",
+                    status="open",
+                ),
+                PlanSnapshot(
+                    id=UUID("00000000-0000-4000-8000-000000000688"),
+                    version=1,
+                    title="Пойти в университет",
+                    due_at=datetime(2026, 10, 18, 9, 0, tzinfo=UTC),
+                    timezone="Asia/Almaty",
+                    status="open",
+                ),
+                PlanSnapshot(
+                    id=UUID("00000000-0000-4000-8000-000000000689"),
+                    version=1,
+                    title="Future other-zone task",
+                    due_at=datetime(2026, 10, 18, 20, 0, tzinfo=UTC),
+                    timezone="America/Los_Angeles",
+                    status="open",
+                ),
+                PlanSnapshot(
+                    id=UUID("00000000-0000-4000-8000-000000000690"),
+                    version=1,
+                    title="Untimed task",
                     status="open",
                 ),
             ),
@@ -343,7 +367,13 @@ async def test_advice_prompt_treats_saved_titles_as_labels_and_times_as_zoned_fa
                     id=PLAN,
                     version=1,
                     kind="occurrence",
-                    title="Pin проверка тихих часов",
+                    title="Pin проверка тихих часов — повтор",
+                ),
+                TargetSnapshot(
+                    id=UUID("00000000-0000-4000-8000-000000000688"),
+                    version=1,
+                    kind="occurrence",
+                    title="Пойти в университет",
                 ),
             ),
         }
@@ -366,14 +396,23 @@ async def test_advice_prompt_treats_saved_titles_as_labels_and_times_as_zoned_fa
     assert isinstance(outcome.result, Advice)
     messages = cast(list[dict[str, object]], transport.payloads[0]["messages"])
     system_prompt = str(messages[0]["content"])
-    assert "Treat titles as labels" in system_prompt
-    assert "don't reinterpret names/abbreviations" in system_prompt
-    assert "don't claim app or quiet-hour behavior absent from context" in system_prompt
-    assert "Omit due times unless needed; convert via stated zone" in system_prompt
-    serialized_context = json.loads(str(messages[1]["content"]))
+    assert "Titles are labels; don't reinterpret names/abbreviations" in system_prompt
+    assert "don't claim app or quiet-hour behavior unless context says so" in system_prompt
+    assert "Trust each plan's due_local_datetime and due_relation_to_reference" in system_prompt
+    serialized_context = cast(dict[str, object], json.loads(str(messages[1]["content"])))
     assert serialized_context["timezone"] == "Asia/Almaty"
-    assert serialized_context["reference_local_datetime"] == "2026-10-18T21:00:00+05:00"
-    assert serialized_context["plans"][0]["due_at"] == "2026-10-18T17:49:00Z"
+    assert serialized_context["reference_local_datetime"] == "2026-10-18T23:41:00+05:00"
+    plans = cast(list[dict[str, object]], serialized_context["plans"])
+    assert plans[0]["due_at"] == "2026-10-18T18:48:00Z"
+    assert plans[0]["due_local_datetime"] == "2026-10-18T23:48:00+05:00"
+    assert plans[0]["due_relation_to_reference"] == "after"
+    assert plans[1]["due_local_datetime"] == "2026-10-18T14:00:00+05:00"
+    assert plans[1]["due_relation_to_reference"] == "before"
+    assert plans[1]["status"] == "open"
+    assert plans[2]["due_local_datetime"] == "2026-10-18T13:00:00-07:00"
+    assert plans[2]["due_relation_to_reference"] == "after"
+    assert plans[3]["due_local_datetime"] is None
+    assert plans[3]["due_relation_to_reference"] is None
 
 
 @pytest.mark.asyncio
@@ -532,7 +571,12 @@ async def test_outbound_request_carries_receipt_instant_and_receipt_local_date(
     assert payload["reference_local_datetime"] == expected_local_datetime
     assert payload["reference_date"] == expected_date
     assert payload["timezone"] == "Asia/Almaty"
-    assert json.loads(_context_prompt(context)) == payload
+    base_payload = json.loads(json.dumps(payload))
+    base_plans = cast(list[dict[str, object]], base_payload["plans"])
+    for plan in base_plans:
+        plan.pop("due_local_datetime")
+        plan.pop("due_relation_to_reference")
+    assert json.loads(_context_prompt(context)) == base_payload
     system_message = cast(list[dict[str, object]], request["messages"])[0]
     assert "derive profile-local local_time from reference_local_datetime" in cast(
         str, system_message["content"]
