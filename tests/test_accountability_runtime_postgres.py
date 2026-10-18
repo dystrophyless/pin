@@ -1788,7 +1788,7 @@ def test_runtime_defers_an_initial_check_until_quiet_hours_end(runtime_database:
             )
             assert transport.messages == []
             local_end = datetime.combine(NOW.date(), quiet_end, tzinfo=UTC)
-            if quiet_start > quiet_end:
+            if local_end <= NOW:
                 local_end += timedelta(days=1)
             async with sessions() as session:
                 intent = await session.scalar(
