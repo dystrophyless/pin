@@ -196,9 +196,10 @@ PY
   PIN_DATABASE_URL=$database_url compose --profile ops run --rm --no-deps --pull never \
     -e PIN_DATABASE_URL --entrypoint pin-recovery operations arm \
     --snapshot-id "$snapshot_id" --ledger-id "$ledger_id"
+  # The reader creates a lock sidecar beside this private scratch copy.
   PIN_DATABASE_URL=$database_url compose --profile ops run --rm --no-deps --pull never \
     -e PIN_DATABASE_URL --user "$(id -u):$(id -g)" \
-    --volume "$temporary:/run/pin-recovery:ro" \
+    --volume "$temporary:/run/pin-recovery:rw" \
     --entrypoint pin-retention retention replay \
     --artifact /run/pin-recovery/deletion-ledger.jsonl
   PIN_DATABASE_URL=$database_url compose --profile ops run --rm --no-deps --pull never \

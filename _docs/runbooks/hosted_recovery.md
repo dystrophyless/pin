@@ -152,7 +152,9 @@ regular `deletion-ledger.jsonl` member from the newer ledger archive, then runs
 the existing `pin-retention replay` command while the database is fenced. Inspect
 the retention replay output and deletion results before continuing. The one-off
 replay runs as the invoking host UID/GID, matching the owner of its mode-600
-temporary ledger file; the file and its mode-700 parent are mounted read-only.
+temporary ledger file. Only this mode-700 scratch directory is mounted writable,
+because the ledger reader creates and locks a private sidecar file. The original
+backup bundles are not mounted into the replay container or modified.
 
 The fence blocks gateway, app, delivery, speech, billing-refund, regular release,
 and scheduled retention work. Configuration checks, migrations, gate status, and
