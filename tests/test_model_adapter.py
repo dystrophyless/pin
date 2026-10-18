@@ -308,9 +308,8 @@ async def test_structured_ru_en_advice_is_bounded_and_contains_explicit_handoff_
     assert "target id/version" in system_prompt
     assert "Complete/cancel use fields={}" in system_prompt
     assert "all-or-none" in system_prompt
-    assert "Reuse selected prior advice, preserving its text" in system_prompt
-    assert "times conflict" in system_prompt
-    assert "or free time" in system_prompt
+    assert "reuse prior advice verbatim only when selected" in system_prompt
+    assert "due_relation_to_reference" in system_prompt
     assert "output is strictly validated" in system_prompt
     assert str(OWNER) not in str(transport.payloads[0]["messages"])
 
@@ -396,9 +395,8 @@ async def test_advice_prompt_treats_saved_titles_as_labels_and_times_as_zoned_fa
     assert isinstance(outcome.result, Advice)
     messages = cast(list[dict[str, object]], transport.payloads[0]["messages"])
     system_prompt = str(messages[0]["content"])
-    assert "Titles are labels; don't reinterpret names/abbreviations" in system_prompt
-    assert "don't claim app or quiet-hour behavior unless context says so" in system_prompt
-    assert "Trust each plan's due_local_datetime and due_relation_to_reference" in system_prompt
+    assert "Treat titles as labels" in system_prompt
+    assert "Do not invent plan purpose" in system_prompt
     serialized_context = cast(dict[str, object], json.loads(str(messages[1]["content"])))
     assert serialized_context["timezone"] == "Asia/Almaty"
     assert serialized_context["reference_local_datetime"] == "2026-10-18T23:41:00+05:00"
@@ -987,10 +985,7 @@ async def test_batch_correction_prompt_requires_complete_replacement_and_can_cla
     correction_messages = cast(list[dict[str, str]], transport.payloads[1]["messages"])
     system_prompt = correction_messages[0]["content"]
     assert "return a complete replacement batch" in system_prompt
-    assert "retain every unmodified pending item and all previously clarified field values" in (
-        system_prompt
-    )
-    assert "Never return only the changed item" in system_prompt
+    assert "retaining untouched items and clarified values" in system_prompt
     assert "Pending normalized plan proposals" in str(transport.payloads[1]["messages"])
 
     clarification_context = correction_context.model_copy(
@@ -1494,8 +1489,8 @@ async def test_timed_task_reminder_omission_and_prompt_contract() -> None:
     assert "if neither, omit both so Capture asks. Never invent duration" in system_prompt
     assert '"target_id":"00000000-0000-4000-8000-000000000001"' in system_prompt
     assert '"expected_version":3' in system_prompt
-    assert "Before output, check date/time meaning" in system_prompt
-    assert "Return only JSON, no reasoning" in system_prompt
+    assert "Check date/time, offsets, plan type, unchanged fields" in system_prompt
+    assert "Return source-language JSON only" in system_prompt
     assert "Canonical output JSON Schema" not in system_prompt
     assert len(system_prompt) < 6_500
     assert transport.payloads[0].get("response_format") == {"type": "json_object"}
@@ -1531,6 +1526,11 @@ def test_observed_invalid_calendar_day_hour_reminder_stays_rejected() -> None:
 
 
 def test_every_prompt_few_shot_example_passes_strict_result_validation() -> None:
+    assert len(_SYSTEM) <= 6_500
+    assert (
+        "Advice example: ref 2026-09-10T19:00+02:00; open Task Z due18:30 and Delivery "
+        "due09:00 are past; Task Z has no purpose"
+    ) in _SYSTEM
     assert "untimed needs an explicit user choice" in _SYSTEM
     assert "Use unspecified when no time/choice was given so Capture asks" in _SYSTEM
     assert "Examples assume reference_date=2026-10-16" in _SYSTEM
@@ -1544,7 +1544,7 @@ def test_every_prompt_few_shot_example_passes_strict_result_validation() -> None
         examples.append(example)
         offset = end
 
-    assert len(examples) == 4
+    assert len(examples) == 5
     results = []
     for example in examples:
         language_value = example.get("language")
@@ -1555,6 +1555,12 @@ def test_every_prompt_few_shot_example_passes_strict_result_validation() -> None
                 language=language,
                 reference_instant=datetime(2026, 10, 18, 16, 23, tzinfo=UTC),
                 timezone="Asia/Almaty",
+            )
+        elif example.get("kind") == "advice":
+            context = _context(
+                language=language,
+                reference_instant=datetime(2026, 9, 10, 17, 0, tzinfo=UTC),
+                timezone="Europe/Paris",
             )
         else:
             context = _context(
@@ -1607,6 +1613,10 @@ def test_every_prompt_few_shot_example_passes_strict_result_validation() -> None
     assert batch_result.actions[1].fields.schedule is not None
     assert batch_result.actions[1].fields.schedule.model_dump()["timing"] == "untimed"
     assert batch_result.actions[1].fields.reminders == ()
+
+    advice_result = results[4]
+    assert isinstance(advice_result, Advice)
+    assert advice_result.summary == "Both are past; clarify Task Z’s purpose."
 
 
 @pytest.mark.asyncio

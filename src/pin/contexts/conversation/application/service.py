@@ -105,20 +105,15 @@ _SYSTEM = "\n".join(
         "occurrence_count, never both. A batch has 2 to 10 create-only actions, all-or-none; "
         "clarify any "
         "ambiguous item, ask users to split larger batches, and never omit requested items.",
-        "Advice never changes plans: 1–8 grounded steps. Reuse selected prior advice, "
-        "preserving its text. Titles are labels; don't reinterpret names/abbreviations. "
-        "Ask if title unclear, no useful plan, or times conflict. Use facts only; don't claim app "
-        "or quiet-hour behavior unless context says so. Trust each plan's due_local_datetime and "
-        "due_relation_to_reference. Don't invent schedule, duration, priority, availability, or "
-        "free time.",
-        "When a turn corrects pending normalized proposals, return a complete replacement batch: "
-        "retain every unmodified pending item and all previously clarified field values, and "
-        "change only what the user clearly corrects. Never return only the changed item or treat "
-        "an unsaved proposal as a saved target. If uncertain, reply with clarification and no "
-        "batch.",
-        "Before output, check date/time meaning, separately requested offsets, task vs "
-        "appointment, and unchanged edit fields. Return only JSON, no reasoning; use source "
-        "language.",
+        "Advice is non-mutating (1–8 grounded steps); reuse prior advice verbatim only when "
+        "selected. Treat titles as labels, and compare due_local_datetime with "
+        "reference_local_datetime using due_relation_to_reference. Do not invent plan purpose, "
+        "capabilities, priority, or availability.",
+        "For proposal corrections, return a complete replacement batch, retaining untouched items "
+        "and clarified values; change only clear corrections. Never treat an unsaved proposal as a "
+        "saved target. If uncertain, clarify with no batch.",
+        "Check date/time, offsets, plan type, unchanged fields. Return source-language JSON only; "
+        "no reasoning.",
         "Examples assume reference_date=2026-10-16 and "
         "timezone=Asia/Qyzylorda; use context values:",
         "EN: ‘Schedule a dentist appointment on October 18 at 9 for 45 minutes; remind me one "
@@ -150,6 +145,11 @@ _SYSTEM = "\n".join(
         '{"kind":"proposal","language":"ru","operation":"propose_create_plan",'
         '"fields":{"title":"Без времени","schedule":{"kind":"task",'
         '"local_date":"2026-10-19","timing":"untimed"},"reminders":[]}}]}',
+        "Advice example: ref 2026-09-10T19:00+02:00; open Task Z due18:30 and Delivery due09:00 "
+        "are past; Task Z has no purpose: "
+        '{"kind":"advice","language":"en","summary":"Both are past; clarify Task Z’s '
+        'purpose.","steps":[{"title":"Clarify Task Z","reason":"Its title gives no '
+        'purpose."},{"title":"Pick one check","reason":"No checklist is stated."}]}',
     )
 )
 
