@@ -8,6 +8,7 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from pin.contexts.planning.application.schedule_snapshot import PersistedReminderSchedule
 from pin.contexts.planning.domain.plans import OccurrenceState, ResolvedSchedule
 from pin.contexts.planning.infrastructure.mutation_read_store import (
     SqlAlchemyMutationTargetReader,
@@ -28,6 +29,7 @@ class MutationTargetSummary:
     state: OccurrenceState
     title: str
     schedule: ResolvedSchedule
+    reminders: tuple[PersistedReminderSchedule, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

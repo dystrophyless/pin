@@ -20,7 +20,16 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from pin.contexts.identity.api import PreferencesPage, list_review_profiles
 from pin.contexts.identity.infrastructure.models import PreferencesRecord
 from pin.contexts.planning.api import get_accountability_occurrence, list_today_open_untimed
-from pin.contexts.planning.infrastructure.models import OccurrenceRecord, PlanItemRecord
+from pin.contexts.planning.infrastructure.models import (
+    OccurrenceRecord,
+    PlanItemRecord,
+    ReminderRuleRecord,
+)
+from pin.contexts.planning.infrastructure.series_models import SeriesOccurrenceRecord, SeriesRecord
+from pin.contexts.planning.mutation_read_api import (
+    get_owner_mutation_target,
+    get_owner_mutation_targets,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 DATABASE_ENV = "PIN_TEST_ISSUE16_READ_DATABASE_URL"
@@ -171,7 +180,7 @@ async def _plan(
     ends_at: datetime | None = None,
     deadline_at: datetime | None = None,
     local_time: time | None = None,
-) -> None:
+) -> UUID:
     plan_item_id = uuid4()
     session.add(
         PlanItemRecord(id=plan_item_id, owner_id=owner_id, kind=kind, title=title, version=2)
@@ -198,6 +207,7 @@ async def _plan(
             version=3,
         )
     )
+    return plan_item_id
 
 
 @pytest.mark.asyncio
@@ -331,6 +341,130 @@ async def test_planning_reads_preserve_saved_schedule_and_page_profile_local_unt
             await list_today_open_untimed(
                 session, owner_id=owner_id, profile_zone="UTC", at=at, limit=True
             )
+    finally:
+        await _cleanup(sessions, (owner_id, other_owner))
+
+
+@pytest.mark.asyncio
+async def test_mutation_targets_include_owned_reminder_and_series_facts_only(
+    sessions: async_sessionmaker[AsyncSession],
+) -> None:
+    owner_id, other_owner = uuid4(), uuid4()
+    one_off_id, recurring_id, untimed_id, foreign_id = (uuid4() for _ in range(4))
+    reminder_at = datetime(2026, 10, 18, 18, 47, tzinfo=UTC)
+    event_at = datetime(2026, 10, 18, 18, 48, tzinfo=UTC)
+    series_id = uuid4()
+    async with sessions() as session, session.begin():
+        one_off_item_id = await _plan(
+            session,
+            owner_id=owner_id,
+            occurrence_id=one_off_id,
+            kind="task",
+            title="One off",
+            local_date=date(2026, 10, 18),
+            local_time=time(23, 48),
+            starts_at=event_at,
+        )
+        recurring_item_id = await _plan(
+            session,
+            owner_id=owner_id,
+            occurrence_id=recurring_id,
+            kind="task",
+            title="Weekly series",
+            local_date=date(2026, 10, 19),
+            local_time=time(18),
+            starts_at=datetime(2026, 10, 19, 13, tzinfo=UTC),
+        )
+        await _plan(
+            session,
+            owner_id=owner_id,
+            occurrence_id=untimed_id,
+            kind="untimed",
+            title="Untimed one off",
+            local_date=date(2026, 10, 18),
+        )
+        await _plan(
+            session,
+            owner_id=other_owner,
+            occurrence_id=foreign_id,
+            kind="task",
+            title="Foreign reminder",
+            local_date=date(2026, 10, 18),
+            local_time=time(23, 48),
+            starts_at=event_at,
+        )
+        session.add_all(
+            (
+                ReminderRuleRecord(
+                    owner_id=owner_id,
+                    occurrence_id=one_off_id,
+                    offset_kind="elapsed_seconds",
+                    offset_amount=60,
+                    source="explicit",
+                    due_at=reminder_at,
+                ),
+                ReminderRuleRecord(
+                    owner_id=other_owner,
+                    occurrence_id=foreign_id,
+                    offset_kind="elapsed_seconds",
+                    offset_amount=60,
+                    source="explicit",
+                    due_at=reminder_at,
+                ),
+                SeriesRecord(
+                    id=series_id,
+                    owner_id=owner_id,
+                    plan_item_id=recurring_item_id,
+                    version=1,
+                    state="active",
+                    anchor_date=date(2026, 10, 19),
+                    anchor_sequence=0,
+                    next_sequence=1,
+                    total_count=3,
+                    end_date=None,
+                    rule={"frequency": "weekly", "weekdays": [0]},
+                    typed_draft={},
+                ),
+            )
+        )
+        await session.flush()
+        session.add(
+            SeriesOccurrenceRecord(
+                owner_id=owner_id,
+                series_id=series_id,
+                occurrence_id=recurring_id,
+                sequence=0,
+                recurrence_key="2026-10-19",
+            )
+        )
+    try:
+        async with sessions() as session:
+            targets = await get_owner_mutation_targets(
+                session,
+                owner_id=owner_id,
+                at=datetime(2026, 10, 18, 18, 41, tzinfo=UTC),
+            )
+            hidden = await get_owner_mutation_target(
+                session,
+                owner_id=owner_id,
+                occurrence_id=foreign_id,
+                at=datetime(2026, 10, 18, 18, 41, tzinfo=UTC),
+            )
+        by_id = {item.occurrence_id: item for item in targets}
+        assert set(by_id) == {one_off_id, recurring_id, untimed_id}
+        assert by_id[one_off_id].plan_item_id == one_off_item_id
+        assert by_id[one_off_id].schedule.kind.value == "task"
+        assert by_id[one_off_id].series_id is None
+        assert by_id[one_off_id].reminders[0].due_at == reminder_at
+        assert by_id[one_off_id].reminders[0].offset.kind.value == "elapsed_seconds"
+        assert by_id[one_off_id].reminders[0].offset.amount == 60
+        assert by_id[one_off_id].reminders[0].offset.source == "explicit"
+        assert by_id[recurring_id].plan_item_id == recurring_item_id
+        assert by_id[recurring_id].series_id == series_id
+        assert by_id[recurring_id].reminders == ()
+        assert by_id[untimed_id].schedule.kind.value == "untimed"
+        assert by_id[untimed_id].reminders == ()
+        assert hidden is None
     finally:
         await _cleanup(sessions, (owner_id, other_owner))
 
