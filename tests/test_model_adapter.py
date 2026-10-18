@@ -603,6 +603,7 @@ async def test_outbound_request_carries_receipt_instant_and_receipt_local_date(
     assert payload["reference_date"] == expected_date
     assert payload["timezone"] == "Asia/Almaty"
     base_payload = json.loads(json.dumps(payload))
+    base_payload.pop("clock_facts")
     base_plans = cast(list[dict[str, object]], base_payload["plans"])
     for plan in base_plans:
         plan["due_at"] = plan.pop("event_anchor_at")
@@ -636,6 +637,118 @@ def test_reference_instant_rejects_naive_and_mismatched_profile_date() -> None:
     payload["reference_date"] = date(2026, 10, 16)
     with pytest.raises(ValueError, match="reference_date must match reference_instant"):
         ConversationContext.model_validate(payload)
+
+
+@pytest.mark.asyncio
+async def test_clock_facts_use_received_time_and_keep_event_separate_from_reminder() -> None:
+    reference = datetime(2031, 2, 6, 3, 10, tzinfo=UTC)
+    plan_ids = tuple(UUID(int=value) for value in range(801, 806))
+
+    def plan(
+        plan_id: UUID,
+        title: str,
+        event_at: datetime | None,
+        reminder_at: datetime | None = None,
+    ) -> PlanSnapshot:
+        reminders = (
+            (
+                ScheduledReminderSnapshot(
+                    scheduled_at=reminder_at,
+                    offset_kind="elapsed_seconds",
+                    offset_amount=60,
+                    source="explicit",
+                ),
+            )
+            if reminder_at is not None
+            else ()
+        )
+        return PlanSnapshot(
+            id=plan_id,
+            version=1,
+            title=title,
+            due_at=event_at,
+            timezone="Asia/Tokyo",
+            status="open",
+            schedule_kind="task" if event_at is not None else "untimed",
+            is_recurring=False,
+            reminders=reminders,
+        )
+
+    plans = (
+        plan(
+            plan_ids[0],
+            "Past event",
+            datetime(2031, 2, 6, 3, 0, tzinfo=UTC),
+            datetime(2031, 2, 6, 2, 59, tzinfo=UTC),
+        ),
+        plan(
+            plan_ids[1],
+            "Future event",
+            datetime(2031, 2, 6, 3, 20, tzinfo=UTC),
+            datetime(2031, 2, 6, 3, 19, tzinfo=UTC),
+        ),
+        plan(plan_ids[2], "At reference", reference),
+        plan(plan_ids[3], "Untimed", None),
+        plan(plan_ids[4], "Naive event", datetime(2031, 2, 6, 12, 0)),
+    )
+    context = _context(reference_instant=reference, timezone="Asia/Tokyo").model_copy(
+        update={
+            "plans": plans,
+            "targets": tuple(
+                TargetSnapshot(
+                    id=plan.id, version=plan.version, kind="occurrence", title=plan.title
+                )
+                for plan in plans
+            ),
+        }
+    )
+    processing_at = reference + timedelta(hours=3)
+    transport = FakeTransport(
+        _provider_response(json.dumps({"kind": "reply", "language": "ru", "text": "Ок."}))
+    )
+    assistant, _, _ = _assistant(transport)
+
+    outcome = await assistant.interpret(context, at=processing_at)
+
+    assert isinstance(outcome, ModelSuccess)
+    messages = cast(list[dict[str, object]], transport.payloads[0]["messages"])
+    serialized = cast(dict[str, object], json.loads(cast(str, messages[1]["content"])))
+    assert serialized["reference_local_datetime"] == "2031-02-06T12:10:00+09:00"
+    clock_facts = cast(dict[str, object], serialized["clock_facts"])
+    assert clock_facts["reference_time"] == "2031-02-06T12:10:00+09:00"
+    clock_plans = cast(list[dict[str, object]], clock_facts["plans"])
+    past, future, at_reference, untimed, naive = clock_plans
+    assert past["event_time_status"] == "PAST: scheduled 10 minutes BEFORE the reference time"
+    assert past["event_time"] == "2031-02-06T12:00:00+09:00"
+    assert past["reminder_times"] == [
+        {
+            "scheduled_time": "2031-02-06T11:59:00+09:00",
+            "time_status": "PAST: scheduled 11 minutes BEFORE the reference time",
+        }
+    ]
+    assert future["event_time_status"] == "FUTURE: scheduled 10 minutes AFTER the reference time"
+    assert future["reminder_times"] == [
+        {
+            "scheduled_time": "2031-02-06T12:19:00+09:00",
+            "time_status": "FUTURE: scheduled 9 minutes AFTER the reference time",
+        }
+    ]
+    assert at_reference["event_time_status"] == "AT the reference time"
+    assert untimed["event_time"] is None and untimed["event_time_status"] == "UNKNOWN"
+    assert naive["event_time"] is None and naive["event_time_status"] == "UNKNOWN"
+    assert all(
+        fact["delivery_evidence"] == "not provided; schedule is not delivery"
+        for fact in clock_plans
+    )
+    plans_payload = cast(list[dict[str, object]], serialized["plans"])
+    past_plan = plans_payload[0]
+    assert past_plan["event_anchor_at"] == plans[0].model_dump(mode="json")["due_at"]
+    assert past_plan["event_anchor_local_datetime"] == "2031-02-06T12:00:00+09:00"
+    scheduled = cast(list[dict[str, object]], past_plan["reminders"])[0]
+    assert scheduled["scheduled_at"] == plans[0].reminders[0].model_dump(mode="json")[
+        "scheduled_at"
+    ]
+    assert scheduled["scheduled_local_datetime"] == "2031-02-06T11:59:00+09:00"
 
 
 @pytest.mark.asyncio

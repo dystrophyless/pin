@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Callable
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from time import monotonic
 from typing import cast
@@ -588,9 +588,84 @@ def _serialize_plan_snapshot(
     return serialized
 
 
+def _clock_time_status(instant: datetime | None, reference_instant: datetime) -> str:
+    if (
+        instant is None
+        or instant.tzinfo is None
+        or instant.utcoffset() is None
+        or reference_instant.tzinfo is None
+        or reference_instant.utcoffset() is None
+    ):
+        return "UNKNOWN"
+
+    delta = instant.astimezone(UTC) - reference_instant.astimezone(UTC)
+    if not delta:
+        return "AT the reference time"
+
+    duration = abs(delta)
+    if duration.microseconds:
+        elapsed = f"{duration.total_seconds():g} seconds"
+    else:
+        remaining = duration.days * 86_400 + duration.seconds
+        parts = []
+        for unit_seconds, unit in ((86_400, "day"), (3_600, "hour"), (60, "minute"), (1, "second")):
+            amount, remaining = divmod(remaining, unit_seconds)
+            if amount:
+                parts.append(f"{amount} {unit}{'' if amount == 1 else 's'}")
+        elapsed = " ".join(parts)
+
+    relation = "AFTER" if delta > timedelta(0) else "BEFORE"
+    status = "FUTURE" if delta > timedelta(0) else "PAST"
+    return f"{status}: scheduled {elapsed} {relation} the reference time"
+
+
 def _serialize_context(context: ConversationContext) -> str:
+    serialized_plans = [
+        _serialize_plan_snapshot(plan, context.reference_instant) for plan in context.plans
+    ]
+    clock_plan_facts = []
+    for plan, serialized in zip(context.plans, serialized_plans, strict=True):
+        serialized_reminders = cast(list[dict[str, object]], serialized["reminders"])
+        clock_plan_facts.append(
+            {
+                "title": plan.title,
+                "event_time": (
+                    (
+                        serialized["event_anchor_local_datetime"]
+                        or serialized["event_anchor_at"]
+                    )
+                    if plan.due_at is not None
+                    and plan.due_at.tzinfo is not None
+                    and plan.due_at.utcoffset() is not None
+                    else None
+                ),
+                "event_time_status": _clock_time_status(
+                    plan.due_at, context.reference_instant
+                ),
+                "reminder_times": [
+                    {
+                        "scheduled_time": (
+                            reminder["scheduled_local_datetime"] or reminder["scheduled_at"]
+                        ),
+                        "time_status": _clock_time_status(
+                            snapshot.scheduled_at, context.reference_instant
+                        ),
+                    }
+                    for snapshot, reminder in zip(
+                        plan.reminders, serialized_reminders, strict=True
+                    )
+                ],
+                "delivery_evidence": "not provided; schedule is not delivery",
+            }
+        )
     return json.dumps(
         {
+            "clock_facts": {
+                "reference_time": context.reference_instant.astimezone(
+                    ZoneInfo(context.timezone)
+                ).isoformat(),
+                "plans": clock_plan_facts,
+            },
             "language": context.language.value,
             "input_kind": context.input_kind.value,
             "text": context.text,
@@ -600,10 +675,7 @@ def _serialize_context(context: ConversationContext) -> str:
                 ZoneInfo(context.timezone)
             ).isoformat(),
             "timezone": context.timezone,
-            "plans": [
-                _serialize_plan_snapshot(plan, context.reference_instant)
-                for plan in context.plans
-            ],
+            "plans": serialized_plans,
             "preferences": [item.model_dump(mode="json") for item in context.preferences],
             "targets": [item.model_dump(mode="json") for item in context.targets],
         },
