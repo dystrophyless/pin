@@ -197,3 +197,11 @@ Latest advice retry: opaque-title and quiet-policy fiction disappeared, but the 
 
 
 9091d7b deployment and host health passed, but the 23:54 provider retry still suggested preparing before 22:00 and invented task materials/review. Cancelled without writes; combined budget is reconciled above. Executor owns only a compact advice few-shot replacement and focused tests, no paid calls. The own synthetic fixture remains open for final retry/cleanup; exactly one reminder attempt remains confirmed after restart, no duplicate. Profile is temporarily EN.
+
+### 2026-10-19 privacy and processing-consent checkpoint
+
+Verified repository state: branch `main`, HEAD `abee1c5`. The privacy-route source remains local and uncommitted. [Privacy route proof](evidence/privacy-route-20261019.md) records the guarded native PostgreSQL run (**2 passed, 0 skipped**, 6.98s), root's offline suite (**21 passed**, 4.66s), Ruff/mypy checks, source hashes, and exact fixture cleanup. The route covers six account/access states, duplicate delivery, and group-message rejection without assistant calls or domain-record changes. It is not deployed.
+
+Active goal: finish the reviewed explicit processing-consent package before implementation. The consent specification has been reviewed and three task drafts exist; package correction `PCR-P01` remains open for its lock-map mismatch. No consent implementation has started. The exact Luna executor model is now available. The current owner override still applies: no separate implementation reviewer.
+
+Remaining product gates include the unresolved mandatory Kazakhstan financial-retention evidence, provider eligibility, the full client journey, and final owner acceptance. The current scope remains bot-only; landing work is deferred. No KGD request has been sent; preserve the local inquiry draft and `output/` with other unrelated dirty work. No further provider calls are authorized (24/24 budget exhausted). No Stars or benchmark acceptance gate is in scope. Do not publish, commit, deploy, or otherwise alter the current dirty worktree without a separate authorization.
