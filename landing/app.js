@@ -52,7 +52,7 @@ const copy = {
     previewExample: 'Call the doctor · Friday, 10:00 am', stepThreeTitle: 'Confirm', stepThreeText: 'The plan is saved only after you confirm. Pin can then send a reminder.', confirmedExample: 'Plan added',
     offerEyebrow: 'Start at your own pace', offerTitle: 'Try it first.<br><em>Decide later.</em>',
     offerText: 'The trial starts after you finish getting started with Pin. A paid renewal has separate terms and clear limits.',
-    offerStatus: 'Preview version: offer availability is not yet confirmed.', trialName: 'Free trial', sevenDays: '7 days', free: 'free',
+    offerStatus: 'Preview version: offer availability is not yet verified.', trialName: 'Free trial', sevenDays: '7 days', free: 'free',
     trialStarts: 'After setup is complete', trialTurns: '250 AI interactions', trialVoice: '15 minutes of voice messages', paidName: 'Subscription', stars: 'Stars', per30: 'per 30 days',
     paidAuto: 'Auto-renews. Cancel any time.', paidTurns: '1,000 AI interactions per period', paidVoice: '60 minutes of voice messages per period',
     paidCancel: 'After cancellation, access continues until the paid period ends', allowanceNote: 'One AI interaction is one request from you and one reply from Pin. Processing each voice message uses one AI interaction and also counts against the separate voice-minute allowance; each message can be up to 3 minutes. Commands and buttons do not use AI allowance.',
