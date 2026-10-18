@@ -308,3 +308,7 @@ These sources were consulted during the brainstorm. Revalidate mutable pricing a
 - Produce a precise scope before beginning implementation.
 - Carry confirmed choices forward while keeping provisional estimates and unresolved questions explicit.
 - This save request authorizes this Markdown brief; it does not itself authorize deploying infrastructure, buying services, or implementing the product.
+
+## Owner launch direction — 2026-10-19
+
+**Confirmed owner decision:** commercial launch now, retain Vercel free/Hobby, and operate without an IP/TOO registration in Kazakhstan. This supersedes the unresolved personal-pilot versus commercial-launch choice. It does not establish provider permission, statutory financial-retention applicability, or final MVP acceptance. No paid hosting upgrade or provider migration is authorized. The requested Vercel plan conflicts with its documented non-commercial-only restriction; an eligible arrangement or explicit provider exception remains unresolved. Financial-record policy remains unapproved; no period or legal conclusion is inferred from the absence of registration.

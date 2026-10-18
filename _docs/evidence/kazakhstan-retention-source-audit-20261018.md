@@ -35,3 +35,7 @@
 ## Research limits
 
 Research was bounded to primary Kazakhstan legal/government sources listed above. The current Adilet text for Law No. 234 was intermittently unavailable to page retrieval, so article references were cross-checked against Adilet’s indexed current text. The KGD-hosted Tax Code pages retrieved here exposed contents rather than the operative Article 65/206 bodies; the Order No. 279-НҚ annex rows were likewise not independently fetched. No source was found in this bounded pass that extends a tax-document rule to an entire personal assistant conversation or profile. This is a search limit, not proof that no other rule could apply.
+
+## Owner follow-up — 2026-10-19
+
+The owner now explicitly intends commercial launch without IP/TOO registration. Personal-pilot versus commercial intent is resolved as commercial. This supplies operating intent, not a legal determination of whether registration is required, a tax regime, a document-class inventory, or an applicable approved retention schedule. The unresolved policy gate remains; no numeric retention period is adopted.
