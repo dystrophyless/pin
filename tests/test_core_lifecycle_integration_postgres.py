@@ -39,9 +39,18 @@ from pin.contexts.conversation.infrastructure.usage import (
     SqlAlchemyTurnAllowance,
 )
 from pin.contexts.identity.infrastructure.models import OnboardingRecord, PreferencesRecord
-from pin.contexts.notifications.application.delivery import ReminderSend, TelegramReplySend
+from pin.contexts.notifications.application.delivery import (
+    RecoverySummaryRequest,
+    ReminderSend,
+    TelegramReplySend,
+)
+from pin.contexts.notifications.infrastructure.delivery_worker import (
+    DELIVERY_RECOVERY_SUMMARY_JOB_KIND,
+    enqueue_recovery_summary_job,
+)
 from pin.contexts.notifications.infrastructure.models import (
     AccountabilityDeliveryAttemptRecord,
+    DeliveryAttemptRecord,
     ReminderIntentRecord,
 )
 from pin.contexts.planning.infrastructure.models import (
@@ -334,10 +343,14 @@ async def _schedule_accountability(
         await schedule_accountability_iteration(session, transport, at=at)
 
 
-@pytest.mark.parametrize("language", ["en", "ru"])
+@pytest.mark.parametrize(
+    ("language", "recovery_scenario"),
+    [("en", False), ("ru", False), ("en", True), ("ru", True)],
+)
 def test_private_core_lifecycle_runs_through_real_producers_and_consumers(
     core_lifecycle_database: str,
     language: str,
+    recovery_scenario: bool,
     record_property: Callable[[str, str], None],
 ) -> None:
     async def scenario() -> None:
@@ -418,6 +431,16 @@ def test_private_core_lifecycle_runs_through_real_producers_and_consumers(
                 assert profile.reminder_calendar_days == 1
                 assert profile.reminder_elapsed_hours == 1
                 assert onboarding is not None and onboarding.step == "complete"
+
+            if recovery_scenario:
+                # Put the controlled recovery instant just before quiet hours so the
+                # late initial check can send, while its one-hour nudge must wait.
+                async with sessions() as session, session.begin():
+                    profile = await session.get(PreferencesRecord, owner_id)
+                    assert profile is not None
+                    profile.quiet_start = time(21, 0)
+                    profile.quiet_end = time(22, 0)
+                    profile.version += 1
 
             # One deterministic model proposal intentionally omits appointment duration.
             # The production capture path must ask, bind a choice to the owner/draft, and
@@ -596,81 +619,331 @@ def test_private_core_lifecycle_runs_through_real_producers_and_consumers(
             assert reminder_due_times[0] == occurrences[0].starts_at - timedelta(days=1)
             assert reminder_due_times[1] == occurrences[0].starts_at - timedelta(hours=1)
 
-            for due_at in reminder_due_times:
-                clock.at = due_at
-                before = len(delivery.reminders)
-                await _drain_delivery(sessions, delivery, at=clock.now())
-                assert len(delivery.reminders) == before + 1
             appointment_end = occurrences[0].ends_at
             assert appointment_end is not None
 
-            # The actual Planning event consumer opens the appointment cycle at its saved
-            # end. The delivery worker confirms the initial check, and its persisted result
-            # is consumed before the one-hour nudge becomes due.
-            clock.at = appointment_end
-            await _schedule_accountability(sessions, delivery, at=clock.now())
-            before_replies = len(delivery.replies)
-            await _drain_delivery(sessions, delivery, at=clock.now())
-            assert len(delivery.replies) == before_replies + 1
-            initial_check = delivery.replies[-1][1]
-            initial_text = str(getattr(initial_check, "plain_text", ""))
-            assert title in initial_text
-            async with sessions() as session:
-                cycle = await session.scalar(
-                    select(CheckInCycleRecord).where(
-                        CheckInCycleRecord.owner_id == owner_id,
-                        CheckInCycleRecord.occurrence_id == occurrence_id,
+            if recovery_scenario:
+                # No delivery worker runs from the two advance-reminder deadlines through
+                # appointment end. Recovery begins five hours after the saved end, still
+                # before quiet hours in Asia/Almaty; no initial intent or attempt exists.
+                recovery_at = appointment_end + timedelta(hours=5)
+                clock.at = recovery_at
+                assert clock.now().astimezone(zone).time() == time(20, 30)
+            else:
+                for due_at in reminder_due_times:
+                    clock.at = due_at
+                    before = len(delivery.reminders)
+                    await _drain_delivery(sessions, delivery, at=clock.now())
+                    assert len(delivery.reminders) == before + 1
+                clock.at = appointment_end
+
+            if recovery_scenario:
+                assert clock.now() == recovery_at
+            else:
+                assert clock.now() == appointment_end
+
+            if recovery_scenario:
+                async with sessions() as session:
+                    pre_recovery_cycle = await session.scalar(
+                        select(CheckInCycleRecord).where(
+                            CheckInCycleRecord.owner_id == owner_id,
+                            CheckInCycleRecord.occurrence_id == occurrence_id,
+                        )
                     )
-                )
-                assert cycle is not None and cycle.initial_confirmed_at == appointment_end
-                assert cycle.nudge_due_at == appointment_end + timedelta(hours=1)
-                initial_attempts = list(
-                    await session.scalars(
-                        select(AccountabilityDeliveryAttemptRecord)
+                    assert pre_recovery_cycle is not None
+                    assert pre_recovery_cycle.state == "open"
+                    assert pre_recovery_cycle.initial_confirmed_at is None
+                    assert await session.scalar(
+                        select(func.count()).select_from(AccountabilityIntentRecord).where(
+                            AccountabilityIntentRecord.owner_id == owner_id,
+                            AccountabilityIntentRecord.cycle_id == pre_recovery_cycle.id,
+                        )
+                    ) == 0
+                    assert await session.scalar(
+                        select(func.count())
+                        .select_from(AccountabilityDeliveryAttemptRecord)
                         .join(
                             AccountabilityIntentRecord,
                             AccountabilityIntentRecord.id
                             == AccountabilityDeliveryAttemptRecord.intent_id,
                         )
-                        .where(AccountabilityIntentRecord.cycle_id == cycle.id)
-                    )
-                )
-                assert len(initial_attempts) == 1
-                assert initial_attempts[0].outcome == "confirmed"
-
-            # Consume the durable delivery-outcome event, then make exactly one nudge due.
-            await _schedule_accountability(sessions, delivery, at=clock.now())
-            clock.at = appointment_end + timedelta(hours=1)
-            await _schedule_accountability(sessions, delivery, at=clock.now())
-            before_replies = len(delivery.replies)
-            await _drain_delivery(sessions, delivery, at=clock.now())
-            assert len(delivery.replies) == before_replies + 1
-            nudge_message = delivery.replies[-1][1]
-            ac_data = _callback_data(
-                {
-                    "reply_markup": getattr(nudge_message, "reply_markup", None)
-                },
-                prefix="ac:",
-            )
-            async with sessions() as session:
-                cycle = await session.scalar(
-                    select(CheckInCycleRecord).where(
-                        CheckInCycleRecord.owner_id == owner_id,
-                        CheckInCycleRecord.occurrence_id == occurrence_id,
-                    )
-                )
-                assert cycle is not None and cycle.nudge_slot_used
-                assert cycle.state == "exhausted"
-                intents = list(
-                    await session.scalars(
-                        select(AccountabilityIntentRecord).where(
+                        .where(
                             AccountabilityIntentRecord.owner_id == owner_id,
-                            AccountabilityIntentRecord.cycle_id == cycle.id,
+                            AccountabilityIntentRecord.cycle_id == pre_recovery_cycle.id,
+                        )
+                    ) == 0
+                assert delivery.reminders == []
+            else:
+                async with sessions() as session:
+                    ordinary_cycle = await session.scalar(
+                        select(CheckInCycleRecord).where(
+                            CheckInCycleRecord.owner_id == owner_id,
+                            CheckInCycleRecord.occurrence_id == occurrence_id,
                         )
                     )
+                    assert ordinary_cycle is not None
+                    assert ordinary_cycle.initial_confirmed_at is None
+
+            if not recovery_scenario:
+                # The actual Planning event consumer opens the appointment cycle at its
+                # saved end; the delivery worker confirms the normal initial check.
+                await _schedule_accountability(sessions, delivery, at=clock.now())
+                before_replies = len(delivery.replies)
+                await _drain_delivery(sessions, delivery, at=clock.now())
+                assert len(delivery.replies) == before_replies + 1
+                initial_check = delivery.replies[-1][1]
+                initial_text = str(getattr(initial_check, "plain_text", ""))
+                assert title in initial_text
+                async with sessions() as session:
+                    normal_cycle = await session.scalar(
+                        select(CheckInCycleRecord).where(
+                            CheckInCycleRecord.owner_id == owner_id,
+                            CheckInCycleRecord.occurrence_id == occurrence_id,
+                        )
+                    )
+                    assert normal_cycle is not None
+                    assert normal_cycle.initial_confirmed_at == appointment_end
+                    assert normal_cycle.nudge_due_at == appointment_end + timedelta(hours=1)
+                    normal_attempts = list(
+                        await session.scalars(
+                            select(AccountabilityDeliveryAttemptRecord)
+                            .join(
+                                AccountabilityIntentRecord,
+                                AccountabilityIntentRecord.id
+                                == AccountabilityDeliveryAttemptRecord.intent_id,
+                            )
+                            .where(AccountabilityIntentRecord.cycle_id == normal_cycle.id)
+                        )
+                    )
+                    assert len(normal_attempts) == 1
+                    assert normal_attempts[0].outcome == "confirmed"
+
+            if recovery_scenario:
+                episode_key = f"issue25-tr01-{uuid4().hex}"
+                recovery_request = RecoverySummaryRequest(owner_id, episode_key)
+                async with sessions() as session, session.begin():
+                    summary_job = await enqueue_recovery_summary_job(session, recovery_request)
+                    duplicate_summary_job = await enqueue_recovery_summary_job(
+                        session, recovery_request
+                    )
+                    assert summary_job.id == duplicate_summary_job.id
+                    assert summary_job.kind == DELIVERY_RECOVERY_SUMMARY_JOB_KIND
+
+                # The actual delivery worker sends one owner-scoped recovery summary.
+                # Its maintenance pass may schedule the one overdue check, but the summary
+                # attempt itself must not be recorded against that accountability cycle.
+                before_replies = len(delivery.replies)
+                assert await process_delivery_iteration(
+                    sessions,
+                    delivery,
+                    worker_id="issue25-core-tr01-recovery",
+                    now=clock.now,
                 )
-                assert sum(row.slot == "initial" for row in intents) == 1
-                assert sum(row.slot == "nudge" for row in intents) == 1
+                assert len(delivery.replies) == before_replies + 1
+                summary_message = delivery.replies[-1][1]
+                summary_text = str(getattr(summary_message, "plain_text", ""))
+                assert title in summary_text
+                assert "check-in" not in summary_text.casefold()
+                assert "check in" not in summary_text.casefold()
+                async with sessions() as session:
+                    summary_attempts = list(
+                        await session.scalars(
+                            select(DeliveryAttemptRecord).where(
+                                DeliveryAttemptRecord.owner_id == owner_id,
+                                DeliveryAttemptRecord.recovery_episode_key == episode_key,
+                            )
+                        )
+                    )
+                    recovery_cycle = await session.scalar(
+                        select(CheckInCycleRecord).where(
+                            CheckInCycleRecord.owner_id == owner_id,
+                            CheckInCycleRecord.occurrence_id == occurrence_id,
+                        )
+                    )
+                    assert len(summary_attempts) == 1
+                    assert summary_attempts[0].outcome == "confirmed"
+                    assert summary_attempts[0].check_in_cycle_id is None
+                    assert recovery_cycle is not None
+                    assert recovery_cycle.initial_confirmed_at is None
+                    recovery_intents = list(
+                        await session.scalars(
+                            select(AccountabilityIntentRecord).where(
+                                AccountabilityIntentRecord.cycle_id == recovery_cycle.id
+                            )
+                        )
+                    )
+                    assert len(recovery_intents) == 1
+                    assert recovery_intents[0].slot == "initial"
+
+                # Deliver overdue work after recovery. Both pre-event reminder offsets
+                # are now past the appointment start and must be skipped without sending.
+                await _drain_delivery(sessions, delivery, at=clock.now())
+                assert delivery.reminders == []
+                assert len(delivery.replies) == before_replies + 2
+                initial_check = delivery.replies[-1][1]
+                initial_text = str(getattr(initial_check, "plain_text", ""))
+                assert title in initial_text
+                async with sessions() as session:
+                    cycle = await session.scalar(
+                        select(CheckInCycleRecord).where(
+                            CheckInCycleRecord.owner_id == owner_id,
+                            CheckInCycleRecord.occurrence_id == occurrence_id,
+                        )
+                    )
+                    assert cycle is not None and cycle.initial_confirmed_at == recovery_at
+                    assert cycle.nudge_due_at == recovery_at + timedelta(hours=1)
+                    initial_attempts = list(
+                        await session.scalars(
+                            select(AccountabilityDeliveryAttemptRecord)
+                            .join(
+                                AccountabilityIntentRecord,
+                                AccountabilityIntentRecord.id
+                                == AccountabilityDeliveryAttemptRecord.intent_id,
+                            )
+                            .where(AccountabilityIntentRecord.cycle_id == cycle.id)
+                        )
+                    )
+                    assert len(initial_attempts) == 1
+                    assert initial_attempts[0].outcome == "confirmed"
+                    reminder_attempts = list(
+                        await session.scalars(
+                            select(DeliveryAttemptRecord).where(
+                                DeliveryAttemptRecord.intent_id.in_(
+                                    [row.id for row in reminders]
+                                )
+                            )
+                        )
+                    )
+                    assert len(reminder_attempts) == 2
+                    assert all(
+                        row.outcome == "skipped" and row.failure_code == "event_already_started"
+                        for row in reminder_attempts
+                    )
+
+                # The timer begins at confirmed late-check delivery. Its due instant falls
+                # in quiet hours, so the single nudge intent waits until quiet hours end.
+                await _schedule_accountability(sessions, delivery, at=clock.now())
+                clock.at = recovery_at + timedelta(hours=1)
+                await _schedule_accountability(sessions, delivery, at=clock.now())
+                before_replies = len(delivery.replies)
+                await _drain_delivery(sessions, delivery, at=clock.now())
+                assert len(delivery.replies) == before_replies
+                async with sessions() as session:
+                    cycle = await session.scalar(
+                        select(CheckInCycleRecord).where(
+                            CheckInCycleRecord.owner_id == owner_id,
+                            CheckInCycleRecord.occurrence_id == occurrence_id,
+                        )
+                    )
+                    quiet_nudge = await session.scalar(
+                        select(AccountabilityIntentRecord).where(
+                            AccountabilityIntentRecord.cycle_id == cycle.id,
+                            AccountabilityIntentRecord.slot == "nudge",
+                        )
+                    ) if cycle is not None else None
+                    assert cycle is not None and cycle.nudge_slot_used
+                    assert cycle.nudge_due_at == recovery_at + timedelta(hours=1)
+                    assert quiet_nudge is not None and quiet_nudge.due_at == (
+                        recovery_at + timedelta(hours=1, minutes=30)
+                    )
+                    nudge_job_key = (
+                        f"accountability:{quiet_nudge.id}:{quiet_nudge.dispatch_version}"
+                    )
+                async with sessions() as session:
+                    deferred_job = await session.scalar(
+                        select(Job).where(Job.deduplication_key == nudge_job_key)
+                    )
+                    assert deferred_job is not None
+                    assert deferred_job.owner_id == owner_id
+                    assert deferred_job.status == "pending"
+                    assert deferred_job.last_error == "not_due"
+                    deferred_job_id = deferred_job.id
+
+                clock.at = recovery_at + timedelta(hours=1, minutes=30)
+                # The controlled application clock advances to quiet-end, but PostgreSQL's
+                # claim predicate uses wall-clock time. Bridge only this exact owner-bound
+                # deferred job into the real delivery worker after the persisted intent due_at.
+                async with sessions() as session, session.begin():
+                    deferred_job = await session.scalar(
+                        select(Job)
+                        .where(
+                            Job.id == deferred_job_id,
+                            Job.owner_id == owner_id,
+                            Job.deduplication_key == nudge_job_key,
+                            Job.status == "pending",
+                            Job.last_error == "not_due",
+                        )
+                        .with_for_update()
+                    )
+                    assert deferred_job is not None
+                    deferred_job.available_at = await session.scalar(select(func.clock_timestamp()))
+                await _schedule_accountability(sessions, delivery, at=clock.now())
+                await _drain_delivery(sessions, delivery, at=clock.now())
+                assert len(delivery.replies) == before_replies + 1
+                nudge_message = delivery.replies[-1][1]
+                ac_data = _callback_data(
+                    {
+                        "reply_markup": getattr(nudge_message, "reply_markup", None)
+                    },
+                    prefix="ac:",
+                )
+                async with sessions() as session:
+                    cycle = await session.scalar(
+                        select(CheckInCycleRecord).where(
+                            CheckInCycleRecord.owner_id == owner_id,
+                            CheckInCycleRecord.occurrence_id == occurrence_id,
+                        )
+                    )
+                    assert cycle is not None and cycle.nudge_slot_used
+                    assert cycle.state == "exhausted"
+                    intents = list(
+                        await session.scalars(
+                            select(AccountabilityIntentRecord).where(
+                                AccountabilityIntentRecord.owner_id == owner_id,
+                                AccountabilityIntentRecord.cycle_id == cycle.id,
+                            )
+                        )
+                    )
+                    assert sum(row.slot == "initial" for row in intents) == 1
+                    assert sum(row.slot == "nudge" for row in intents) == 1
+
+                # Re-enqueueing the same recovery episode and another scheduler sweep
+                # cannot start a second summary or check-in campaign after exhaustion.
+                async with sessions() as session, session.begin():
+                    replay_summary_job = await enqueue_recovery_summary_job(
+                        session, recovery_request
+                    )
+                    assert replay_summary_job.id == summary_job.id
+                    assert replay_summary_job.status == "succeeded"
+                before_exhausted_sweep = len(delivery.replies)
+                await _schedule_accountability(sessions, delivery, at=clock.now())
+                await _drain_delivery(sessions, delivery, at=clock.now())
+                assert len(delivery.replies) == before_exhausted_sweep
+                async with sessions() as session:
+                    recovery_attempts = list(
+                        await session.scalars(
+                            select(DeliveryAttemptRecord).where(
+                                DeliveryAttemptRecord.owner_id == owner_id,
+                                DeliveryAttemptRecord.recovery_episode_key == episode_key,
+                            )
+                        )
+                    )
+                    assert len(recovery_attempts) == 1
+
+            else:
+                # Preserve the ordinary composed reminder path: its initial check is
+                # delivered at the appointment end, and the nudge follows one hour later.
+                await _schedule_accountability(sessions, delivery, at=clock.now())
+                clock.at = appointment_end + timedelta(hours=1)
+                await _schedule_accountability(sessions, delivery, at=clock.now())
+                before_replies = len(delivery.replies)
+                await _drain_delivery(sessions, delivery, at=clock.now())
+                assert len(delivery.replies) == before_replies + 1
+                nudge_message = delivery.replies[-1][1]
+                ac_data = _callback_data(
+                    {"reply_markup": getattr(nudge_message, "reply_markup", None)},
+                    prefix="ac:",
+                )
 
             # The nudge action is itself an owner-bound inbox callback. It produces a Done
             # preview; a second callback confirms the mutation through the application worker.
