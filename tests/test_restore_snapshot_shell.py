@@ -401,6 +401,8 @@ def test_hosted_restore_uses_existing_containers_and_never_starts_runtime_roles(
     assert "pin-recovery operations arm" in commands
     assert "pin-retention retention replay" in commands
     assert " --user " in commands
+    assert ":/run/pin-recovery:rw" in commands
+    assert ":/run/pin-recovery:ro" not in commands
     assert "pin-recovery operations status" in commands
     assert " createdb" not in commands
     assert "DROP DATABASE" not in commands
