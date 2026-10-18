@@ -705,7 +705,10 @@ async def _handle_callback(
                 "quiet_review": {"suggested", "keep"},
                 "confirm": {"confirm"},
             }
-            if value not in allowed.get(step, set()):
+            keep_current_home_zone = (
+                step == "home_zone" and value == "keep" and active_draft.mode == "preferences"
+            )
+            if value not in allowed.get(step, set()) and not keep_current_home_zone:
                 raise InvalidCallbackToken("callback action is not valid for this step")
             text = {
                 "suggested": "по умолчанию" if language == "ru" else "suggested",

@@ -770,6 +770,49 @@ def test_private_quick_replies_are_owner_bound_versioned_and_single_use(
                 assert current_profile is not None and current_profile.version == 1
                 assert current_profile.home_zone == "Asia/Almaty"
 
+            # The preferences-only Keep current button for the home-zone step is
+            # a valid answer callback and remains single-use.
+            await message_update(1_024, "/cancel")
+            await message_update(1_025, "/settings")
+            async with sessions() as session:
+                assert owner_id is not None
+                language_reply = [
+                    event
+                    for event in await _owner_events(session, owner_id)
+                    if event.event_type == "telegram.reply.requested"
+                ][-1]
+                language_keyboard = language_reply.payload["reply_markup"]
+                english_token = next(
+                    button["callback_data"]
+                    for row in language_keyboard["inline_keyboard"]
+                    for button in row
+                    if button["text"] == "English"
+                )
+            await click(1_026, telegram_user_id, english_token)
+            async with sessions() as session:
+                zone_reply = [
+                    event
+                    for event in await _owner_events(session, owner_id)
+                    if event.event_type == "telegram.reply.requested"
+                ][-1]
+                zone_keyboard = zone_reply.payload["reply_markup"]
+                keep_zone_token = next(
+                    button["callback_data"]
+                    for row in zone_keyboard["inline_keyboard"]
+                    for button in row
+                    if button["text"] == "Keep current"
+                )
+            await click(1_027, telegram_user_id, keep_zone_token)
+            await click(1_028, telegram_user_id, keep_zone_token)
+            async with sessions() as session:
+                kept = await session.get(OnboardingRecord, owner_id)
+                saved = await session.get(PreferencesRecord, owner_id)
+                assert kept is not None and kept.step == "reminders"
+                assert kept.draft["language"] == "en"
+                assert kept.draft["home_zone"] == "Asia/Almaty"
+                assert saved is not None and saved.version == 1
+                assert saved.language == "ru" and saved.home_zone == "Asia/Almaty"
+
             # A profile with no retained onboarding row starts each preview at the
             # same version. The old confirm token must still fail after cancel/restart.
             preview_user_id = foreign_telegram_user_id + 1
