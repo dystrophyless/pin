@@ -225,3 +225,28 @@ def test_speech_startup_fails_if_optional_backend_is_unavailable(monkeypatch, ca
     assert main_for(ProcessRole.SPEECH_WORKER, ["--check"]) == 2
     assert "Speech dependencies are missing" in capfd.readouterr().err
 
+
+def test_alembic_migrations_preserve_existing_runtime_logger() -> None:
+    script = """
+import io
+from alembic import command
+from alembic.config import Config
+from pin.entrypoints._common import logger
+
+assert not logger.disabled
+config = Config("alembic.ini", output_buffer=io.StringIO())
+config.set_main_option(
+    "sqlalchemy.url", "postgresql+psycopg://pin_test@localhost/pin_offline_logging"
+)
+command.upgrade(config, "head", sql=True)
+assert not logger.disabled, "Alembic disabled the Pin runtime logger"
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
