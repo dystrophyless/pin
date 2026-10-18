@@ -8,12 +8,19 @@ from uuid import UUID
 from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from pin.contexts.planning.application.schedule_snapshot import PersistedReminderSchedule
 from pin.contexts.planning.domain.plans import (
     OccurrenceState,
+    OffsetKind,
     PlanKind,
+    ReminderOffset,
     ResolvedSchedule,
 )
-from pin.contexts.planning.infrastructure.models import OccurrenceRecord, PlanItemRecord
+from pin.contexts.planning.infrastructure.models import (
+    OccurrenceRecord,
+    PlanItemRecord,
+    ReminderRuleRecord,
+)
 from pin.contexts.planning.infrastructure.series_models import (
     SeriesOccurrenceRecord,
     SeriesRecord,
@@ -142,6 +149,39 @@ class SqlAlchemyMutationTargetReader:
                 .execution_options(populate_existing=True)
             )
         ).all()
+        occurrence_ids = [occurrence.id for occurrence, *_ in rows]
+        reminder_rows = (
+            list(
+                (
+                    await self._session.scalars(
+                        select(ReminderRuleRecord)
+                        .where(
+                            ReminderRuleRecord.owner_id == owner_id,
+                            ReminderRuleRecord.occurrence_id.in_(occurrence_ids),
+                        )
+                        .order_by(
+                            ReminderRuleRecord.occurrence_id,
+                            ReminderRuleRecord.due_at,
+                            ReminderRuleRecord.id,
+                        )
+                    )
+                ).all()
+            )
+            if occurrence_ids
+            else []
+        )
+        reminders_by_occurrence: dict[UUID, list[PersistedReminderSchedule]] = {}
+        for reminder in reminder_rows:
+            reminders_by_occurrence.setdefault(reminder.occurrence_id, []).append(
+                PersistedReminderSchedule(
+                    ReminderOffset(
+                        OffsetKind(reminder.offset_kind),
+                        reminder.offset_amount,
+                        reminder.source,
+                    ),
+                    reminder.due_at,
+                )
+            )
         result: list[MutationTargetSummary] = []
         for occurrence, item, link, series in rows:
             result.append(
@@ -169,6 +209,7 @@ class SqlAlchemyMutationTargetReader:
                         deadline_at=occurrence.deadline_at,
                         duration_seconds=occurrence.duration_seconds,
                     ),
+                    reminders=tuple(reminders_by_occurrence.get(occurrence.id, ())),
                 )
             )
         return tuple(result), len(rows) == limit

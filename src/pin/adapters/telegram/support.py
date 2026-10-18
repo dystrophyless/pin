@@ -4,10 +4,15 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import replace
+from typing import Literal, cast
 from uuid import UUID
 
 from pin.contexts.conversation.application.capture import CaptureInterpretation
-from pin.contexts.conversation.application.dto import PlanSnapshot, TargetSnapshot
+from pin.contexts.conversation.application.dto import (
+    PlanSnapshot,
+    ScheduledReminderSnapshot,
+    TargetSnapshot,
+)
 from pin.contexts.conversation.application.service import bounded_target_snapshot
 from pin.contexts.planning.mutation_read_api import MutationTargetSummary
 
@@ -30,6 +35,18 @@ def with_owned_plans(
             timezone=item.schedule.event_zone,
             ends_at=item.schedule.ends_at,
             status="open",
+            schedule_kind=item.schedule.kind.value,
+            series_id=item.series_id,
+            is_recurring=item.series_id is not None,
+            reminders=tuple(
+                ScheduledReminderSnapshot(
+                    scheduled_at=reminder.due_at,
+                    offset_kind=reminder.offset.kind.value,
+                    offset_amount=reminder.offset.amount,
+                    source=cast(Literal["explicit", "default"], reminder.offset.source),
+                )
+                for reminder in item.reminders
+            ),
         )
         for item in targets
     )

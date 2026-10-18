@@ -28,6 +28,20 @@ class TargetSnapshot(StrictModel):
     title: Annotated[str, Field(min_length=1, max_length=240)]
 
 
+class ScheduledReminderSnapshot(StrictModel):
+    scheduled_at: datetime
+    offset_kind: Literal["calendar_days", "elapsed_seconds"]
+    offset_amount: Annotated[int, Field(ge=1)]
+    source: Literal["explicit", "default"]
+
+    @field_validator("scheduled_at")
+    @classmethod
+    def aware_scheduled_at(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("scheduled reminder time must be timezone-aware")
+        return value.astimezone(UTC)
+
+
 class PlanSnapshot(StrictModel):
     id: UUID
     version: Annotated[int, Field(ge=1)]
@@ -36,11 +50,23 @@ class PlanSnapshot(StrictModel):
     timezone: Annotated[str | None, Field(max_length=64)] = None
     ends_at: datetime | None = None
     status: Literal["open", "completed", "cancelled"]
+    schedule_kind: Literal["task", "deadline", "appointment", "untimed"] | None = None
+    series_id: UUID | None = None
+    is_recurring: bool | None = None
+    reminders: tuple[ScheduledReminderSnapshot, ...] = ()
 
     @field_validator("timezone")
     @classmethod
     def valid_timezone(cls, value: str | None) -> str | None:
         return _validate_timezone(value) if value is not None else None
+
+    @model_validator(mode="after")
+    def recurrence_link_matches_flag(self) -> PlanSnapshot:
+        if self.series_id is not None and self.is_recurring is False:
+            raise ValueError("recurring plan must retain its series ID")
+        if self.series_id is None and self.is_recurring is True:
+            raise ValueError("recurring plan requires its series ID")
+        return self
 
 
 class PreferenceSnapshot(StrictModel):

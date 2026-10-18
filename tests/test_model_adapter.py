@@ -36,6 +36,7 @@ from pin.contexts.conversation.application.dto import (
     ProposalBatch,
     RelativeReminder,
     Reply,
+    ScheduledReminderSnapshot,
     TargetSnapshot,
     TaskSchedule,
 )
@@ -309,7 +310,9 @@ async def test_structured_ru_en_advice_is_bounded_and_contains_explicit_handoff_
     assert "Complete/cancel use fields={}" in system_prompt
     assert "all-or-none" in system_prompt
     assert "reuse prior advice verbatim only when selected" in system_prompt
-    assert "due_relation_to_reference" in system_prompt
+    assert "event_anchor_relation_to_reference" in system_prompt
+    assert "scheduled, not proof of delivery" in system_prompt
+    assert "is_recurring/series_id show series presence" in system_prompt
     assert "output is strictly validated" in system_prompt
     assert str(OWNER) not in str(transport.payloads[0]["messages"])
 
@@ -337,6 +340,17 @@ async def test_advice_prompt_treats_saved_titles_as_labels_and_times_as_zoned_fa
                     due_at=datetime(2026, 10, 18, 18, 48, tzinfo=UTC),
                     timezone="Asia/Almaty",
                     status="open",
+                    schedule_kind="task",
+                    series_id=UUID("00000000-0000-4000-8000-000000000687"),
+                    is_recurring=True,
+                    reminders=(
+                        ScheduledReminderSnapshot(
+                            scheduled_at=datetime(2026, 10, 18, 18, 47, tzinfo=UTC),
+                            offset_kind="elapsed_seconds",
+                            offset_amount=60,
+                            source="explicit",
+                        ),
+                    ),
                 ),
                 PlanSnapshot(
                     id=UUID("00000000-0000-4000-8000-000000000688"),
@@ -345,6 +359,9 @@ async def test_advice_prompt_treats_saved_titles_as_labels_and_times_as_zoned_fa
                     due_at=datetime(2026, 10, 18, 9, 0, tzinfo=UTC),
                     timezone="Asia/Almaty",
                     status="open",
+                    schedule_kind="task",
+                    series_id=None,
+                    is_recurring=False,
                 ),
                 PlanSnapshot(
                     id=UUID("00000000-0000-4000-8000-000000000689"),
@@ -353,12 +370,18 @@ async def test_advice_prompt_treats_saved_titles_as_labels_and_times_as_zoned_fa
                     due_at=datetime(2026, 10, 18, 20, 0, tzinfo=UTC),
                     timezone="America/Los_Angeles",
                     status="open",
+                    schedule_kind="task",
+                    series_id=None,
+                    is_recurring=False,
                 ),
                 PlanSnapshot(
                     id=UUID("00000000-0000-4000-8000-000000000690"),
                     version=1,
                     title="Untimed task",
                     status="open",
+                    schedule_kind="untimed",
+                    series_id=None,
+                    is_recurring=False,
                 ),
             ),
             "targets": (
@@ -395,22 +418,32 @@ async def test_advice_prompt_treats_saved_titles_as_labels_and_times_as_zoned_fa
     assert isinstance(outcome.result, Advice)
     messages = cast(list[dict[str, object]], transport.payloads[0]["messages"])
     system_prompt = str(messages[0]["content"])
-    assert "Treat titles as labels" in system_prompt
-    assert "Do not invent plan purpose" in system_prompt
+    assert "Titles are labels" in system_prompt
+    assert "Don't invent plan purpose" in system_prompt
     serialized_context = cast(dict[str, object], json.loads(str(messages[1]["content"])))
     assert serialized_context["timezone"] == "Asia/Almaty"
     assert serialized_context["reference_local_datetime"] == "2026-10-18T23:41:00+05:00"
     plans = cast(list[dict[str, object]], serialized_context["plans"])
-    assert plans[0]["due_at"] == "2026-10-18T18:48:00Z"
-    assert plans[0]["due_local_datetime"] == "2026-10-18T23:48:00+05:00"
-    assert plans[0]["due_relation_to_reference"] == "after"
-    assert plans[1]["due_local_datetime"] == "2026-10-18T14:00:00+05:00"
-    assert plans[1]["due_relation_to_reference"] == "before"
+    assert plans[0]["schedule_kind"] == "task"
+    assert plans[0]["is_recurring"] is True
+    assert plans[0]["series_id"] == "00000000-0000-4000-8000-000000000687"
+    assert plans[0]["event_anchor_at"] == "2026-10-18T18:48:00Z"
+    assert plans[0]["event_anchor_local_datetime"] == "2026-10-18T23:48:00+05:00"
+    assert plans[0]["event_anchor_relation_to_reference"] == "after"
+    reminder = cast(list[dict[str, object]], plans[0]["reminders"])[0]
+    assert reminder["scheduled_at"] == "2026-10-18T18:47:00Z"
+    assert reminder["scheduled_local_datetime"] == "2026-10-18T23:47:00+05:00"
+    assert reminder["offset_kind"] == "elapsed_seconds"
+    assert reminder["offset_amount"] == 60
+    assert reminder["source"] == "explicit"
+    assert plans[1]["event_anchor_local_datetime"] == "2026-10-18T14:00:00+05:00"
+    assert plans[1]["event_anchor_relation_to_reference"] == "before"
     assert plans[1]["status"] == "open"
-    assert plans[2]["due_local_datetime"] == "2026-10-18T13:00:00-07:00"
-    assert plans[2]["due_relation_to_reference"] == "after"
-    assert plans[3]["due_local_datetime"] is None
-    assert plans[3]["due_relation_to_reference"] is None
+    assert plans[1]["is_recurring"] is False
+    assert plans[2]["event_anchor_local_datetime"] == "2026-10-18T13:00:00-07:00"
+    assert plans[2]["event_anchor_relation_to_reference"] == "after"
+    assert plans[3]["event_anchor_local_datetime"] is None
+    assert plans[3]["event_anchor_relation_to_reference"] is None
 
 
 @pytest.mark.asyncio
@@ -572,8 +605,11 @@ async def test_outbound_request_carries_receipt_instant_and_receipt_local_date(
     base_payload = json.loads(json.dumps(payload))
     base_plans = cast(list[dict[str, object]], base_payload["plans"])
     for plan in base_plans:
-        plan.pop("due_local_datetime")
-        plan.pop("due_relation_to_reference")
+        plan["due_at"] = plan.pop("event_anchor_at")
+        plan.pop("event_anchor_local_datetime")
+        plan.pop("event_anchor_relation_to_reference")
+        for reminder in cast(list[dict[str, object]], plan["reminders"]):
+            reminder.pop("scheduled_local_datetime")
     assert json.loads(_context_prompt(context)) == base_payload
     system_message = cast(list[dict[str, object]], request["messages"])[0]
     assert "derive profile-local local_time from reference_local_datetime" in cast(
@@ -984,8 +1020,8 @@ async def test_batch_correction_prompt_requires_complete_replacement_and_can_cla
     assert replacement.result.actions[1] == initial.result.actions[1]
     correction_messages = cast(list[dict[str, str]], transport.payloads[1]["messages"])
     system_prompt = correction_messages[0]["content"]
-    assert "return a complete replacement batch" in system_prompt
-    assert "retaining untouched items and clarified values" in system_prompt
+    assert "return all pending items with clarified values" in system_prompt
+    assert "Unsaved proposals are never targets" in system_prompt
     assert "Pending normalized plan proposals" in str(transport.payloads[1]["messages"])
 
     clarification_context = correction_context.model_copy(
@@ -1489,7 +1525,7 @@ async def test_timed_task_reminder_omission_and_prompt_contract() -> None:
     assert "if neither, omit both so Capture asks. Never invent duration" in system_prompt
     assert '"target_id":"00000000-0000-4000-8000-000000000001"' in system_prompt
     assert '"expected_version":3' in system_prompt
-    assert "Check date/time, offsets, plan type, unchanged fields" in system_prompt
+    assert "Check date/time, offsets, kind, unchanged fields" in system_prompt
     assert "Return source-language JSON only" in system_prompt
     assert "Canonical output JSON Schema" not in system_prompt
     assert len(system_prompt) < 6_500
@@ -1528,8 +1564,7 @@ def test_observed_invalid_calendar_day_hour_reminder_stays_rejected() -> None:
 def test_every_prompt_few_shot_example_passes_strict_result_validation() -> None:
     assert len(_SYSTEM) <= 6_500
     assert (
-        "Advice example: ref 2026-09-10T19:00+02:00; open Task Z due18:30 and Delivery "
-        "due09:00 are past; Task Z has no purpose"
+        "Advice ref=2026-09-10T19:05+02:00; one-off Task Z event=19:00, reminder scheduled=18:59"
     ) in _SYSTEM
     assert "untimed needs an explicit user choice" in _SYSTEM
     assert "Use unspecified when no time/choice was given so Capture asks" in _SYSTEM
@@ -1616,7 +1651,7 @@ def test_every_prompt_few_shot_example_passes_strict_result_validation() -> None
 
     advice_result = results[4]
     assert isinstance(advice_result, Advice)
-    assert advice_result.summary == "Both are past; clarify Task Z’s purpose."
+    assert advice_result.summary == "Task Z’s purpose is unclear; clarify it before choosing steps."
 
 
 @pytest.mark.asyncio
