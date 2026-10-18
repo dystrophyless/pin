@@ -1,0 +1,9 @@
+# Runtime regression compatibility — 2026-10-18
+
+Root compared the complete native-qualification snapshot with the deployed runtime release using `git diff --name-only` restricted to source, tests, migrations and deployment helpers. The earlier 602-case result remains a result for its frozen snapshot; this comparison does not relabel it as a fresh full-suite run.
+
+The complete changed runtime paths are the Telegram application worker, notification delivery worker and platform jobs. The affected native delivery/reply modules passed 41 cases after policy-deferral changes. The application-worker help/support correction passed 14 presentation/persisted-support cases; its later import-only cleanup passed Ruff and scoped mypy. The runtime release passed Linux CI and deployment, and its host-health service passed after the isolated recovery rehearsal.
+
+Deployment-helper changes are limited to executable backup permissions and the writable private scratch mount for ledger replay. Seventeen focused shell cases passed; actual hosted restore/reconciliation/release/check/cleanup subsequently completed. Changed tests are the corresponding delivery, reply, support and restore-shell modules. No migration changed between these two snapshots. All other tracked source/test/deployment paths in that comparison are unchanged.
+
+This is a compatibility argument combining unchanged-source regression evidence with focused checks of changed paths. It supports assessing existing results without unnecessary identical reruns. It does not replace missing real Telegram integration, provider eligibility, statutory financial-retention evidence or final acceptance. See [hosted recovery](hosted-recovery-20261018.md), [operations/support](operations-acceptance-20261018.md), and the [acceptance matrix](final-acceptance-matrix-20261018.md).
