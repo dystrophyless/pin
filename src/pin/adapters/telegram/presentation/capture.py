@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from datetime import UTC, datetime
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
@@ -157,30 +159,33 @@ def _item_text(item: Mapping[str, object], language: str) -> str:
     title = str(
         details.get("title", "Recurring plan" if language == "en" else "Повторяющийся план")
     )
-    kind_label = str(details.get("kind", kind or "plan"))
+    kind_label = _plan_kind(details.get("kind", kind or "plan"), language)
     lines = [f"{title} — {kind_label}"]
     if kind == "plan":
         event = details.get("starts_at") or details.get("deadline_at")
         local_date = details.get("local_date")
         local_time = details.get("local_time")
         zone = details.get("event_zone")
-        if event:
-            lines.append(f"{_label(language, 'Time', 'Время')}: {event}")
+        if isinstance(event, str) and event:
+            lines.append(f"{_label(language, 'Time', 'Время')}: {_instant_text(event, zone)}")
         elif local_date:
-            lines.append(f"{_label(language, 'Date', 'Дата')}: {local_date}")
-        if local_time and not event:
+            local_schedule = str(local_date)
+            if isinstance(local_time, str) and local_time:
+                local_schedule += f" {_clock(local_time)}"
             lines.append(
-                f"{_label(language, 'Local time', 'Местное время')}: {local_time} ({zone})"
+                f"{_label(language, 'Date', 'Дата')}: {local_schedule}"
             )
         if zone:
             lines.append(f"{_label(language, 'Event zone', 'Часовой пояс события')}: {zone}")
         duration = details.get("duration_seconds")
         if duration:
             lines.append(
-                f"{_label(language, 'Duration', 'Длительность')}: {int(duration) // 60} min"
+                f"{_label(language, 'Duration', 'Длительность')}: "
+                f"{int(duration) // 60} {_label(language, 'min', 'мин')}"
             )
-        lines.extend(_reminder_lines(details, language))
+        lines.extend(_reminder_lines(details, language, event_zone=zone))
     elif kind == "recurring":
+        zone = details.get("event_zone")
         through = details.get("through")
         if through:
             lines.append(f"{_label(language, 'Preview through', 'Предпросмотр до')}: {through}")
@@ -191,20 +196,34 @@ def _item_text(item: Mapping[str, object], language: str) -> str:
                     continue
                 event = occurrence.get("starts_at") or occurrence.get("deadline_at")
                 date_text = occurrence.get("local_date")
-                lines.append(f"• {event or date_text}")
+                sequence = occurrence.get("sequence")
+                prefix = (
+                    f"{_label(language, 'Occurrence', 'Повтор')} {sequence}: "
+                    if isinstance(sequence, int)
+                    else "• "
+                )
+                schedule = (
+                    _instant_text(event, zone)
+                    if isinstance(event, str) and event
+                    else str(date_text or _label(language, 'Date unavailable', 'Дата недоступна'))
+                )
+                lines.append(f"{prefix}{schedule}")
                 gap = occurrence.get("dst_gap_shift_seconds")
                 repeated = occurrence.get("repeated_time_choice")
                 if gap:
                     lines.append(
-                        f"  {_label(language, 'DST adjustment', 'Коррекция перехода времени')}: "
-                        f"+{gap}s"
+                        f"  {_label(language, 'DST gap shift', 'Сдвиг из-за перехода времени')}: "
+                        f"+{gap} {_label(language, 'seconds', 'сек.')}"
                     )
                 if repeated:
+                    repeated_text = {
+                        "earlier": _label(language, "earlier occurrence", "более ранний вариант"),
+                    }.get(str(repeated), str(repeated).replace("_", " "))
                     lines.append(
-                        f"  {_label(language, 'Repeated time', 'Повторяющееся местное время')}: "
-                        f"{repeated}"
+                        f"  {_label(language, 'Repeated local time', 'Повтор местного времени')}: "
+                        f"{repeated_text}"
                     )
-                lines.extend(_reminder_lines(occurrence, language, indent="  "))
+                lines.extend(_reminder_lines(occurrence, language, indent="  ", event_zone=zone))
         if details.get("truncated"):
             lines.append(
                 _label(
@@ -216,7 +235,13 @@ def _item_text(item: Mapping[str, object], language: str) -> str:
     return "\n".join(lines)
 
 
-def _reminder_lines(data: Mapping[str, object], language: str, *, indent: str = "") -> list[str]:
+def _reminder_lines(
+    data: Mapping[str, object],
+    language: str,
+    *,
+    indent: str = "",
+    event_zone: object = None,
+) -> list[str]:
     lines: list[str] = []
     reminders = data.get("reminders")
     if isinstance(reminders, list):
@@ -225,30 +250,175 @@ def _reminder_lines(data: Mapping[str, object], language: str, *, indent: str = 
         for reminder in reminders:
             if not isinstance(reminder, Mapping):
                 continue
+            offset_kind = reminder.get("offset_kind", reminder.get("kind"))
+            amount = reminder.get("amount", reminder.get("offset_amount"))
+            source = reminder.get("source")
+            offset = _offset_text(offset_kind, amount, language)
+            source_text = _source_text(source, language)
+            due_at = reminder.get("due_at")
+            due_text = _instant_text(due_at, event_zone)
             lines.append(
-                f"{indent}{_label(language, 'Reminder', 'Напоминание')}: "
-                f"{reminder.get('due_at')} ({reminder.get('source', 'explicit')}, "
-                f"{reminder.get('offset_kind')} {reminder.get('amount')})"
+                f"{indent}{_label(language, 'Reminder', 'Напоминание')}: {offset}; "
+                f"{source_text}; {_label(language, 'due', 'время')}: {due_text}"
             )
     omissions = data.get("omitted_reminders")
     if isinstance(omissions, list):
         for omission in omissions:
             if isinstance(omission, Mapping):
+                offset = _offset_text(
+                    omission.get("offset_kind", omission.get("kind")),
+                    omission.get("amount", omission.get("offset_amount")),
+                    language,
+                )
+                reason = _omission_reason(omission.get("reason"), language)
                 lines.append(
-                    f"{indent}{_label(language, 'Omitted reminder', 'Не включено')}: "
-                    f"{omission.get('reason')} ({omission.get('offset_kind')} "
-                    f"{omission.get('amount')})"
+                    f"{indent}{_label(language, 'Reminder omitted', 'Напоминание пропущено')}: "
+                    f"{offset}; {reason}"
                 )
     notices = data.get("notices")
     if isinstance(notices, list):
         for notice in notices:
             if isinstance(notice, Mapping):
-                quiet_label = _label(language, "Quiet-hours adjustment", "Перенос из тихих часов")
-                lines.append(
-                    f"{indent}{quiet_label}: "
-                    f"{notice.get('original_due_at')} → {notice.get('due_at')}"
-                )
+                kind = notice.get("kind")
+                original = _instant_text(notice.get("original_due_at"), event_zone)
+                due = _instant_text(notice.get("due_at"), event_zone)
+                if kind == "quiet_conflict":
+                    text = _label(
+                        language,
+                        f"Quiet-hours conflict; kept at {original}",
+                        f"Конфликт с тихими часами; оставлено на {original}",
+                    )
+                elif kind == "quiet_deferred":
+                    text = _label(
+                        language,
+                        f"Moved out of quiet hours: {original} → {due}",
+                        f"Перенесено на время после тихих часов: {original} → {due}",
+                    )
+                else:
+                    text = _label(
+                        language,
+                        f"Quiet-hours notice: {original} → {due}",
+                        f"Уведомление о тихих часах: {original} → {due}",
+                    )
+                lines.append(f"{indent}{text}")
     return lines
+
+
+def _plan_kind(value: object, language: str) -> str:
+    return {
+        "task": _label(language, "Task", "Задача"),
+        "appointment": _label(language, "Appointment", "Встреча"),
+        "deadline": _label(language, "Deadline", "Срок"),
+        "untimed": _label(language, "Untimed task", "Задача без времени"),
+    }.get(str(value), str(value).replace("_", " "))
+
+
+def _offset_text(kind: object, amount: object, language: str) -> str:
+    if type(amount) is not int or amount <= 0:
+        return _label(language, "reminder offset unavailable", "интервал напоминания недоступен")
+    if kind == "calendar_days":
+        return _plural_offset(
+            amount,
+            ("calendar day", "calendar days"),
+            ("календарный день", "календарных дня", "календарных дней"),
+            language,
+        )
+    if kind == "elapsed_seconds":
+        units = (
+            (86_400, "day", "день"),
+            (3_600, "hour", "час"),
+            (60, "minute", "минута"),
+            (1, "second", "секунда"),
+        )
+        divisor, english_unit, russian_unit = next(
+            ((size, en, ru) for size, en, ru in units if amount % size == 0), units[-1]
+        )
+        count = amount // divisor
+        if language == "en":
+            unit = english_unit if count == 1 else f"{english_unit}s"
+            return f"{count} {unit} before (elapsed)"
+        forms = {
+            "день": ("день", "дня", "дней"),
+            "час": ("час", "часа", "часов"),
+            "минута": ("минуту", "минуты", "минут"),
+            "секунда": ("секунду", "секунды", "секунд"),
+        }[russian_unit]
+        return f"за {count} {_russian_plural_form(count, forms)} до события (по истекшему времени)"
+    return _label(language, "reminder offset unavailable", "интервал напоминания недоступен")
+
+
+def _plural_offset(
+    amount: int,
+    english_forms: tuple[str, str],
+    russian_forms: tuple[str, str, str],
+    language: str,
+) -> str:
+    if language == "en":
+        unit = english_forms[0] if amount == 1 else english_forms[1]
+        return f"{amount} {unit} before"
+    return f"за {amount} {_russian_plural_form(amount, russian_forms)} до события"
+
+
+def _russian_plural_form(count: int, forms: tuple[str, str, str]) -> str:
+    remainder_10 = count % 10
+    remainder_100 = count % 100
+    index = 0 if remainder_10 == 1 and remainder_100 != 11 else (
+        1 if 2 <= remainder_10 <= 4 and not 12 <= remainder_100 <= 14 else 2
+    )
+    return forms[index]
+
+
+def _source_text(value: object, language: str) -> str:
+    if value is None:
+        value = "explicit"
+    return {
+        "default": _label(language, "default", "по умолчанию"),
+        "explicit": _label(language, "explicitly requested", "задано явно"),
+    }.get(str(value), _label(language, "source unavailable", "источник недоступен"))
+
+
+def _omission_reason(value: object, language: str) -> str:
+    return {
+        "past": _label(language, "already in the past", "время уже прошло"),
+        "quiet_unusable": _label(
+            language,
+            "would be too late after quiet hours",
+            "после тихих часов будет слишком поздно",
+        ),
+    }.get(
+        str(value),
+        _label(language, "omitted by schedule rules", "пропущено по правилам расписания"),
+    )
+
+
+def _instant_text(value: object, zone: object) -> str:
+    if not isinstance(value, str) or not value:
+        return "—"
+    if not isinstance(zone, str) or not zone:
+        return value
+    try:
+        instant = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if instant.tzinfo is None or instant.utcoffset() is None:
+            return value
+        local = instant.astimezone(ZoneInfo(zone))
+    except (ValueError, ZoneInfoNotFoundError):
+        return value
+    utc = instant.astimezone(UTC)
+    return f"{_wall_datetime(local)} ({zone}; UTC {_wall_datetime(utc)})"
+
+
+def _wall_datetime(value: datetime) -> str:
+    timespec = "seconds" if value.second or value.microsecond else "minutes"
+    return f"{value.date().isoformat()} {value.time().isoformat(timespec=timespec)}"
+
+
+def _clock(value: str) -> str:
+    try:
+        parsed = datetime.fromisoformat(f"2000-01-01T{value}")
+    except ValueError:
+        return value
+    timespec = "seconds" if parsed.second or parsed.microsecond else "minutes"
+    return parsed.time().isoformat(timespec=timespec)
 
 
 def _label(language: str, english: str, russian: str) -> str:
