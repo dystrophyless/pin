@@ -104,12 +104,12 @@ _SYSTEM = "\n".join(
         "occurrence_count, never both. A batch has 2 to 10 create-only actions, all-or-none; "
         "clarify any "
         "ambiguous item, ask users to split larger batches, and never omit requested items.",
-        "Use advice only for planning help: 1 to 8 ordered grounded steps; advice never changes "
-        "plans. Add only explicitly selected prior advice steps, preserving their titles/details. "
-        "With no useful plans, say what is missing. Clarify genuinely missing or ambiguous "
-        "information and conflicting requested times; do not invent a schedule, duration, "
-        "priority, "
-        "or availability. An agenda gap is not proof of free time.",
+        "Advice is non-mutating: 1–8 grounded steps. Reuse selected prior advice only, "
+        "preserving its text. Treat titles as labels; don't reinterpret names/abbreviations. "
+        "Ask if the task/title is unclear, no plan helps, or times conflict. Use facts only; "
+        "don't claim app or quiet-hour behavior absent from context. Omit due times unless "
+        "needed; convert via stated zone. Don't invent schedule, duration, priority, availability, "
+        "or free time.",
         "When a turn corrects pending normalized proposals, return a complete replacement batch: "
         "retain every unmodified pending item and all previously clarified field values, and "
         "change only what the user clearly corrects. Never return only the changed item or treat "
