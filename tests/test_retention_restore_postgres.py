@@ -26,6 +26,9 @@ from pin.adapters.telegram.ingress import TelegramOwnerRecord
 from pin.contexts.billing.infrastructure.models import (
     AccessAccountRecord,
     AccessPeriodRecord,
+    PaymentOrderRecord,
+    PaymentReceiptRecord,
+    PaymentRefundRecord,
     RetainedBillingIdentityRecord,
     TrialActivationRecord,
     UsageReservationRecord,
@@ -54,7 +57,7 @@ from pin.persistence import run_local_async
 from pin.persistence.db import create_engine, create_session_factory
 from pin.platform.contracts import EventEnvelope
 from pin.platform.events import add_outbox_event
-from pin.platform.jobs import JobLane, enqueue_job
+from pin.platform.jobs import JobLane, claim_job, enqueue_job
 from pin.platform.models import Job
 from pin.platform.recovery import RecoveryFenced, require_runtime_recovery_ready
 
@@ -278,9 +281,11 @@ async def _seed_deleted_owner(
 
 async def _seed_started_send_case(
     sessions: async_sessionmaker[AsyncSession], *, at: datetime
-) -> tuple[UUID, UUID]:
+) -> tuple[UUID, UUID, UUID, str, UUID]:
     owner_id, plan_id, occurrence_id, intent_id = uuid4(), uuid4(), uuid4(), uuid4()
+    refund_owner_id = uuid4()
     telegram_id = owner_id.int % 2_000_000_000 + 1
+    refund_telegram_id = refund_owner_id.int % 2_000_000_000 + 1
     starts_at = at + timedelta(hours=3)
     ends_at = starts_at + timedelta(minutes=30)
     due_at = starts_at - timedelta(hours=4)
@@ -310,6 +315,7 @@ async def _seed_started_send_case(
         )
         session.add(TelegramOwnerRecord(bot_id=1, telegram_user_id=telegram_id, owner_id=owner_id))
         session.add(AccessAccountRecord(owner_id=owner_id))
+        session.add(AccessAccountRecord(owner_id=refund_owner_id))
         session.add(
             AccessPeriodRecord(
                 owner_id=owner_id,
@@ -327,7 +333,45 @@ async def _seed_started_send_case(
                 id=plan_id, owner_id=owner_id, kind="appointment", title="survivor reminder"
             )
         )
+        completed_plan_id, completed_occurrence_id = uuid4(), uuid4()
+        cancelled_plan_id, cancelled_occurrence_id = uuid4(), uuid4()
+        for state, plan_key in (
+            ("completed", completed_plan_id),
+            ("cancelled", cancelled_plan_id),
+        ):
+            session.add(
+                PlanItemRecord(
+                    id=plan_key,
+                    owner_id=owner_id,
+                    kind="task",
+                    title=f"snapshot-{state}-{owner_id.hex}",
+                )
+            )
         await session.flush()
+        for state, plan_key, occurrence_key, occurred_at in (
+            ("completed", completed_plan_id, completed_occurrence_id, at - timedelta(days=2)),
+            ("cancelled", cancelled_plan_id, cancelled_occurrence_id, at - timedelta(days=1)),
+        ):
+            session.add(
+                OccurrenceRecord(
+                    id=occurrence_key,
+                    owner_id=owner_id,
+                    plan_item_id=plan_key,
+                    kind="task",
+                    event_zone="UTC",
+                    local_date=occurred_at.date(),
+                    local_time=occurred_at.time().replace(tzinfo=None),
+                    end_local_date=None,
+                    end_local_time=None,
+                    starts_at=occurred_at,
+                    ends_at=None,
+                    deadline_at=None,
+                    duration_seconds=None,
+                    state=state,
+                    version=1,
+                    reminder_preferences_version=1,
+                )
+            )
         session.add(
             OccurrenceRecord(
                 id=occurrence_id,
@@ -391,7 +435,69 @@ async def _seed_started_send_case(
             owner_id=owner_id,
             priority=1_000_000,
         )
-    return owner_id, intent_id
+        charge_id = f"restore-refund-{owner_id.hex}"
+        order_id = uuid4()
+        refund_at = at - timedelta(days=2)
+        session.add(
+            PaymentOrderRecord(
+                id=order_id,
+                owner_id=refund_owner_id,
+                telegram_user_id=refund_telegram_id,
+                invoice_payload=f"restore-payload-{owner_id.hex}",
+                terms_version="restore-test-terms-v1",
+                state="paid",
+                invoice_status="sent",
+                first_charge_id=charge_id,
+                latest_period_end=refund_at,
+                created_at=refund_at - timedelta(minutes=1),
+            )
+        )
+        session.add(
+            PaymentReceiptRecord(
+                telegram_charge_id=charge_id,
+                provider_charge_id=f"synthetic-provider-{owner_id.hex}",
+                order_id=order_id,
+                owner_id=refund_owner_id,
+                telegram_user_id=refund_telegram_id,
+                currency="XTR",
+                total_amount=250,
+                is_recurring=True,
+                is_first_recurring=True,
+                period_starts_at=refund_at - timedelta(days=30),
+                period_ends_at=refund_at,
+                received_at=refund_at - timedelta(days=30),
+                refunded_at=refund_at,
+            )
+        )
+        session.add(
+            PaymentRefundRecord(
+                telegram_charge_id=charge_id,
+                requested_by="synthetic-recovery-fixture",
+                status="confirmed",
+                requested_at=refund_at - timedelta(minutes=2),
+                finished_at=refund_at,
+            )
+        )
+
+    lease_worker_id = f"restore-snapshot-lease-{uuid4().hex[:8]}"
+    async with sessions() as session, session.begin():
+        await enqueue_job(
+            session,
+            lane=JobLane.APPLICATION,
+            kind="conversation.interpret",
+            payload={"fixture": "leased-before-snapshot"},
+            deduplication_key=f"restore-snapshot-lease:{uuid4().hex}",
+            owner_id=owner_id,
+        )
+    async with sessions() as session, session.begin():
+        claim = await claim_job(
+            session,
+            lane=JobLane.APPLICATION,
+            worker_id=lease_worker_id,
+            lease_for=timedelta(minutes=5),
+        )
+    assert claim is not None and claim.owner_id == owner_id
+    return owner_id, intent_id, claim.job_id, lease_worker_id, refund_owner_id
 
 
 def test_dump_restore_replays_deletion_before_recovering_started_send(
@@ -419,7 +525,9 @@ def test_dump_restore_replays_deletion_before_recovering_started_send(
     async def scenario() -> None:
         nonlocal target_engine
         await _seed_deleted_owner(source_sessions, deleted_owner, at=at)
-        send_owner, intent_id = await _seed_started_send_case(source_sessions, at=at)
+        send_owner, intent_id, _, _, _ = await _seed_started_send_case(
+            source_sessions, at=at
+        )
         transport = _UncertainSendTransport()
         worker = asyncio.create_task(
             process_delivery_iteration(
@@ -656,7 +764,13 @@ def test_dump_restore_reconciles_send_absent_from_snapshot_before_release(
     async def scenario() -> None:
         nonlocal target_engine
         await _seed_deleted_owner(source_sessions, deleted_owner, at=at)
-        send_owner, intent_id = await _seed_started_send_case(source_sessions, at=at)
+        (
+            send_owner,
+            intent_id,
+            leased_job_id,
+            lease_worker_id,
+            refund_owner_id,
+        ) = await _seed_started_send_case(source_sessions, at=at)
         async with source_sessions() as session:
             attempts_at_snapshot = await session.scalar(
                 select(func.count())
@@ -664,6 +778,59 @@ def test_dump_restore_reconciles_send_absent_from_snapshot_before_release(
                 .where(DeliveryAttemptRecord.intent_id == intent_id)
             )
             assert attempts_at_snapshot == 0
+            history_rows = (
+                await session.execute(
+                    select(PlanItemRecord.title, OccurrenceRecord.state)
+                    .join(
+                        OccurrenceRecord,
+                        (OccurrenceRecord.plan_item_id == PlanItemRecord.id)
+                        & (OccurrenceRecord.owner_id == PlanItemRecord.owner_id),
+                    )
+                    .where(PlanItemRecord.owner_id == send_owner)
+                    .order_by(PlanItemRecord.title)
+                )
+            ).all()
+            source_history: dict[str, str] = {title: state for title, state in history_rows}
+            assert source_history == {
+                "snapshot-cancelled-" + send_owner.hex: "cancelled",
+                "snapshot-completed-" + send_owner.hex: "completed",
+                "survivor reminder": "open",
+            }
+            receipt = await session.scalar(
+                select(PaymentReceiptRecord).where(
+                    PaymentReceiptRecord.owner_id == refund_owner_id
+                )
+            )
+            assert receipt is not None and receipt.refunded_at is not None
+            refund = await session.scalar(
+                select(PaymentRefundRecord).where(
+                    PaymentRefundRecord.telegram_charge_id == receipt.telegram_charge_id
+                )
+            )
+            assert refund is not None and refund.status == "confirmed"
+            assert refund.finished_at == receipt.refunded_at
+            source_refund_state = (
+                receipt.telegram_charge_id,
+                receipt.owner_id,
+                receipt.refunded_at,
+                refund.status,
+                refund.finished_at,
+            )
+            source_lease = await session.get(Job, leased_job_id)
+            assert source_lease is not None
+            assert source_lease.owner_id == send_owner
+            assert source_lease.status == "leased"
+            assert source_lease.worker_id == lease_worker_id
+            assert source_lease.lease_token is not None and source_lease.lease_until is not None
+            source_lease_state = (
+                source_lease.id,
+                source_lease.owner_id,
+                source_lease.status,
+                source_lease.attempts,
+                source_lease.worker_id,
+                source_lease.lease_token,
+                source_lease.lease_until,
+            )
 
         dump = await asyncio.to_thread(
             _run,
@@ -743,6 +910,52 @@ def test_dump_restore_reconciles_send_absent_from_snapshot_before_release(
         target_sessions = create_session_factory(target_engine)
 
         async with target_sessions() as session:
+            restored_rows = (
+                await session.execute(
+                    select(PlanItemRecord.title, OccurrenceRecord.state)
+                    .join(
+                        OccurrenceRecord,
+                        (OccurrenceRecord.plan_item_id == PlanItemRecord.id)
+                        & (OccurrenceRecord.owner_id == PlanItemRecord.owner_id),
+                    )
+                    .where(PlanItemRecord.owner_id == send_owner)
+                    .order_by(PlanItemRecord.title)
+                )
+            ).all()
+            restored_history: dict[str, str] = {
+                title: state for title, state in restored_rows
+            }
+            assert restored_history == source_history
+            restored_receipt = await session.scalar(
+                select(PaymentReceiptRecord).where(
+                    PaymentReceiptRecord.owner_id == refund_owner_id
+                )
+            )
+            assert restored_receipt is not None
+            restored_refund = await session.get(
+                PaymentRefundRecord, restored_receipt.telegram_charge_id
+            )
+            assert restored_refund is not None
+            restored_refund_state = (
+                restored_receipt.telegram_charge_id,
+                restored_receipt.owner_id,
+                restored_receipt.refunded_at,
+                restored_refund.status,
+                restored_refund.finished_at,
+            )
+            assert restored_refund_state == source_refund_state
+            restored_lease = await session.get(Job, leased_job_id)
+            assert restored_lease is not None
+            restored_lease_state = (
+                restored_lease.id,
+                restored_lease.owner_id,
+                restored_lease.status,
+                restored_lease.attempts,
+                restored_lease.worker_id,
+                restored_lease.lease_token,
+                restored_lease.lease_until,
+            )
+            assert restored_lease_state == source_lease_state
             assert await session.scalar(
                 select(PlanItemRecord.id).where(PlanItemRecord.owner_id == deleted_owner)
             ) is not None, "snapshot must predate the post-snapshot deletion"
