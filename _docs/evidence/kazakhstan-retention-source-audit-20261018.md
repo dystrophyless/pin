@@ -76,3 +76,11 @@ Checked against the current Billing models and owned deletion adapter on 19 Octo
 Source references: [Billing models](../../src/pin/contexts/billing/infrastructure/models.py), [Billing deletion adapter](../../src/pin/contexts/billing/infrastructure/deletion.py). The observed schema is a product receipt ledger, not proof of complete tax accounts or external settlement reconciliation. External payout, conversion, bank and expense documents must be mapped separately where applicable; no live payout was inspected.
 
 A policy decision must identify which records are required evidence, their minimum retained fields, applicable tax period and start trigger, duration and extension/hold rules, and how lawful deletion resumes after expiry. It must distinguish financial evidence from the TR-03 return record and operational deletion-replay tombstones. The sources above do not approve this mapping. Once approved, compare the policy with current deletion behavior before changing retention or closing the gate. No existing data is purged or new TTL adopted by this inventory.
+
+## Separate registration exemption — 2026-10-19
+
+The [official East Kazakhstan DGD FAQ](https://www.gov.kz/org/kgd-vko/press/article/details/233740), published and updated **13 May 2026**, explains Entrepreneurship Code 35(3): a natural person without permanent employees may remain unregistered for self-taxed income, including goods/work/services supplied to non-tax-agents, regardless of income amount. This is separate from the narrower 40-activity self-employed SNR route; registration exemption does not itself establish exemption from tax, reporting or documentation duties.
+
+The [official Adilet-indexed amendment, Law 215-VIII](https://old.adilet.zan.kz/rus/docs/Z2500000215), expressly replaces 35(3)(2) with self-taxed income and separately identifies self-employed SNR income. Current consolidated Article 35 was not retrieved: official endpoints returned JavaScript shells/timeouts.
+
+**Still unresolved:** Pin's subscription/contract classification, tax-agent status and treatment/timing/conversion of Stars and external payouts; applicable tax periods, record classes and retention triggers; and current consolidated amendments. This finding does not establish Pin's eligibility or adopt a tax regime, rate, retention period or policy. No authority inquiry was sent.
