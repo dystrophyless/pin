@@ -30,6 +30,7 @@ from pin.contexts.identity.application.onboarding import OnboardingResult
 from pin.contexts.planning.domain.mutations import (
     MutationAction,
     MutationPreview,
+    MutationReminderProjection,
     MutationRequest,
     MutationScope,
     MutationSeriesProjection,
@@ -37,8 +38,11 @@ from pin.contexts.planning.domain.mutations import (
 )
 from pin.contexts.planning.domain.plans import (
     OccurrenceState,
+    OffsetKind,
     OneOffPlanDraft,
     PlanKind,
+    ReminderOffset,
+    ReminderSchedule,
     resolve_schedule,
 )
 from pin.contexts.planning.domain.recurrence import (
@@ -78,11 +82,25 @@ def _weekly_mutation_preview(*, end_date: date | None) -> MutationPreview:
     owner_id = uuid4()
     series_id = uuid4()
     now = datetime(2026, 10, 18, 12, tzinfo=UTC)
+    offsets = (
+        ReminderOffset(OffsetKind.CALENDAR_DAYS, 1),
+        ReminderOffset(OffsetKind.ELAPSED_SECONDS, 3600),
+    )
     original = OneOffPlanDraft(
-        PlanKind.TASK, "Weekly review", date(2026, 10, 21), time(12), "UTC"
+        PlanKind.TASK,
+        "Weekly review",
+        date(2026, 10, 21),
+        time(12),
+        "UTC",
+        reminders=offsets,
     )
     replacement = OneOffPlanDraft(
-        PlanKind.TASK, "Weekly review", date(2026, 10, 28), time(12), "UTC"
+        PlanKind.TASK,
+        "Weekly review",
+        date(2026, 10, 28),
+        time(12),
+        "UTC",
+        reminders=offsets,
     )
     rule = RecurrenceRule(
         RecurrenceFrequency.WEEKLY, weekdays=(2,), end_date=end_date
@@ -107,6 +125,7 @@ def _weekly_mutation_preview(*, end_date: date | None) -> MutationPreview:
         1,
         OccurrenceState.OPEN,
         original_schedule,
+        reminder_offsets=offsets,
         recurrence_series_id=series_id,
         recurrence_sequence=0,
     )
@@ -138,7 +157,14 @@ def _weekly_mutation_preview(*, end_date: date | None) -> MutationPreview:
         replacement_schedule,
         series,
         None,
-        None,
+        MutationReminderProjection(
+            (
+                ReminderSchedule(offsets[0], datetime(2026, 10, 27, 12, tzinfo=UTC)),
+                ReminderSchedule(offsets[1], datetime(2026, 10, 28, 11, tzinfo=UTC)),
+            ),
+            (),
+            (),
+        ),
         (replacement_schedule,),
         1,
         1,
@@ -166,6 +192,13 @@ def test_mutation_weekly_preview_distinguishes_end_date_from_unbounded(
 
     assert expected in detail
     assert absent not in detail
+    offset_labels = (
+        ("1 calendar day", "1 hour")
+        if language == "en"
+        else ("1 календарный день", "1 час")
+    )
+    assert f"{offset_labels[0]} → 2026-10-27 12:00" in detail
+    assert f"{offset_labels[1]} → 2026-10-28 11:00" in detail
 
 
 def test_markdown_v2_escapes_all_reserved_characters_and_preserves_unicode() -> None:
