@@ -285,11 +285,13 @@ def test_mixed_recurring_batch_has_one_projection_and_separate_exact_proof_parts
             "language": "en",
             "operation": "propose_create_plan",
             "fields": {
-                "title": "Prepare agenda",
+                "title": "Prepare_agenda",
                 "schedule": {
                     "kind": "task",
                     "local_date": "2026-10-15",
-                    "timing": "untimed",
+                    "local_time": "00:30:07",
+                    "timezone": "Asia/Qyzylorda",
+                    "timing": "timed",
                 },
             },
         }
@@ -303,11 +305,11 @@ def test_mixed_recurring_batch_has_one_projection_and_separate_exact_proof_parts
                 "title": "Weekly review",
                 "schedule": {
                     "kind": "appointment",
-                    "local_start": "2026-10-16T14:00:00",
-                    "timezone": "Asia/Qyzylorda",
+                    "local_start": "2026-11-01T01:30:07",
+                    "timezone": "America/New_York",
                     "duration_minutes": 30,
                 },
-                "recurrence": {"frequency": "weekly", "weekdays": [4], "occurrence_count": 4},
+                "recurrence": {"frequency": "weekly", "weekdays": [6], "occurrence_count": 4},
             },
         }
     )
@@ -320,7 +322,23 @@ def test_mixed_recurring_batch_has_one_projection_and_separate_exact_proof_parts
     assert {part.key for part in parts} == {"one_off", "r1"}
     recurrent = cast(dict[str, object], items[1]["details"])
     assert recurrent["title"] == "Weekly review"
+    assert recurrent["event_zone"] == "America/New_York"
     assert recurrent["occurrences"]
+    occurrences = cast(list[dict[str, object]], recurrent["occurrences"])
+    assert occurrences[0]["repeated_time_choice"] == "earlier"
+    reminder_rows = cast(list[dict[str, object]], occurrences[0]["reminders"])
+    assert reminder_rows and {reminder["source"] for reminder in reminder_rows} == {"default"}
+
+    rendered = render_capture_response(
+        {"kind": "preview", "preview": preview}, language="en"
+    )[0]
+    assert "2026-10-15 00:30:07 (Asia/Qyzylorda; UTC 2026-10-14 19:30:07)" in rendered.plain_text
+    assert "2026-11-01 01:30:07 (America/New_York; UTC 2026-11-01 05:30:07)" in rendered.plain_text
+    assert "1 calendar day before; default" in rendered.plain_text
+    assert "1 hour before (elapsed); default" in rendered.plain_text
+    assert "already in the past" in rendered.plain_text
+    assert "Repeated local time: earlier occurrence" in rendered.plain_text
+    assert "Prepare\\_agenda" in rendered.markdown
 
 
 def test_correction_invalidates_ready_projection_and_stale_confirmation() -> None:
@@ -604,6 +622,153 @@ def test_cancel_expiry_and_confirmation_callback_are_fenced() -> None:
     assert len(pages) == 1
     assert "A\\_B" in pages[0].markdown
     assert "Confirm only after reviewing." in pages[0].plain_text
+
+
+@pytest.mark.parametrize("language", ["en", "ru"])
+def test_capture_preview_shows_local_schedules_and_readable_reminder_policy(
+    language: str,
+) -> None:
+    pages = render_capture_response(
+        {
+            "kind": "preview",
+            "preview": {
+                "items": [
+                    {
+                        "kind": "plan",
+                        "details": {
+                            "title": "Night_shift",
+                            "kind": "appointment",
+                            "event_zone": "Asia/Qyzylorda",
+                            "local_date": "2026-10-15",
+                            "local_time": "00:30:07",
+                            "starts_at": "2026-10-14T19:30:07+00:00",
+                            "reminders": [
+                                {
+                                    "offset_kind": "elapsed_seconds",
+                                    "amount": 900,
+                                    "source": "explicit",
+                                    "due_at": "2026-10-14T19:15:07+00:00",
+                                }
+                            ],
+                            "omitted_reminders": [
+                                {
+                                    "offset_kind": "calendar_days",
+                                    "amount": 1,
+                                    "reason": "past",
+                                }
+                            ],
+                            "notices": [
+                                {
+                                    "kind": "quiet_deferred",
+                                    "original_due_at": "2026-10-14T18:00:07+00:00",
+                                    "due_at": "2026-10-14T19:00:07+00:00",
+                                },
+                                {
+                                    "kind": "quiet_conflict",
+                                    "original_due_at": "2026-10-14T19:15:07+00:00",
+                                    "due_at": "2026-10-14T19:15:07+00:00",
+                                },
+                            ],
+                        },
+                    },
+                    {
+                        "kind": "recurring",
+                        "details": {
+                            "title": "Weekly review",
+                            "kind": "task",
+                            "event_zone": "Asia/Qyzylorda",
+                            "through": "2026-12-01",
+                            "occurrences": [
+                                {
+                                    "sequence": 1,
+                                    "local_date": "2026-10-15",
+                                    "starts_at": "2026-10-14T19:30:07+00:00",
+                                    "dst_gap_shift_seconds": 3600,
+                                    "repeated_time_choice": "earlier",
+                                    "reminders": [],
+                                    "omitted_reminders": [],
+                                    "notices": [],
+                                }
+                            ],
+                        },
+                    },
+                ]
+            },
+        },
+        language=language,
+    )
+    text = pages[0].plain_text
+
+    assert "2026-10-15 00:30:07" in text
+    assert "Asia/Qyzylorda; UTC 2026-10-14 19:30:07" in text
+    assert "2026-10-15 00:15:07" in text
+    assert "Night_shift" in text
+
+    if language == "en":
+        assert "Appointment" in text
+        assert "15 minutes before (elapsed); explicitly requested" in text
+        assert "1 calendar day before; already in the past" in text
+        assert "Moved out of quiet hours" in text
+        assert "Quiet-hours conflict; kept at" in text
+        assert "DST gap shift: +3600 seconds" in text
+        assert "Repeated local time: earlier occurrence" in text
+    else:
+        assert "Встреча" in text
+        assert "за 15 минут до события (по истекшему времени); задано явно" in text
+        assert "за 1 календарный день до события; время уже прошло" in text
+        assert "Перенесено на время после тихих часов" in text
+        assert "Конфликт с тихими часами; оставлено на" in text
+        assert "Сдвиг из-за перехода времени: +3600 сек." in text
+        assert "Повтор местного времени: более ранний вариант" in text
+    assert "Night\\_shift" in pages[0].markdown
+
+
+def test_capture_preview_keeps_local_time_and_timestamp_fallbacks() -> None:
+    page = render_capture_response(
+        {
+            "kind": "preview",
+            "preview": {
+                "items": [
+                    {
+                        "kind": "plan",
+                        "details": {
+                            "title": "A_B [local]",
+                            "kind": "untimed",
+                            "event_zone": "Not/AZone",
+                            "local_date": "2026-10-15",
+                            "local_time": "17:05:06",
+                        },
+                    },
+                    {
+                        "kind": "plan",
+                        "details": {
+                            "title": "Naive timestamp",
+                            "kind": "task",
+                            "event_zone": "Not/AZone",
+                            "local_date": "2026-10-16",
+                            "local_time": "18:00:00",
+                            "starts_at": "2026-10-16T18:00:00",
+                            "reminders": [
+                                {
+                                    "offset_kind": "elapsed_seconds",
+                                    "amount": 3600,
+                                    "due_at": "2026-10-16T17:00:00",
+                                }
+                            ],
+                        },
+                    },
+                ]
+            },
+        },
+        language="en",
+    )[0]
+
+    assert "Untimed task" in page.plain_text
+    assert "2026-10-15 17:05:06" in page.plain_text
+    assert "2026-10-16T18:00:00" in page.plain_text
+    assert "2026-10-16T17:00:00" in page.plain_text
+    assert "explicitly requested" in page.plain_text
+    assert "A\\_B \\[local\\]" in page.markdown
 
 
 def test_structured_advice_renders_stable_localized_selection_numbers() -> None:
