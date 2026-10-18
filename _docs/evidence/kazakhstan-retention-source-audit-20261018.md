@@ -59,3 +59,20 @@ The [government guidance updated 24 June 2026](https://www.gov.kz/situations/810
 The [official Prime Minister-hosted annex to Resolution 994](https://primeminister.kz/assets/media/perecen-994.pdf) contains the complete 40-row activity list. It does not expressly list software development or software subscription sales. Row 82990 is limited to services through internet platforms; this is not evidence that Pin qualifies, or that Telegram is the applicable statutory platform/tax agent. The [Adilet act history](https://old.adilet.zan.kz/rus/docs/P2500000994/history) identifies the 21 November 2025 resolution; retrieving the operative Adilet page timed out.
 
 **Unresolved:** legally correct classification of Pin's subscription service, eligibility for an unregistered route, treatment and timing of Stars/payout income, and the record/tax-period mapping needed for retention. No choice of tax regime, registration, rate, exemption or TTL is made by this research. Do not claim that IP is categorically required or that self-employed status is automatically available. Legal validation remains a required closure condition by the owner's explicit answer.
+
+## Technical record inventory for policy review
+
+Checked against the current Billing models and owned deletion adapter on 19 October 2026. These are schema facts, not a statutory classification, a query of actual customer data, or proof that a real payment occurred.
+
+| Technical record | Stored facts relevant to review | Confirmed account-deletion behavior |
+|---|---|---|
+| Payment order | Owner/Telegram identity, invoice payload, terms version, order/invoice/cancellation state and timestamps, charge linkage | Orders without a linked receipt are removed; receipt-linked orders remain. |
+| Payment receipt | Charge identifiers, owner/Telegram identity, XTR amount, recurring flags, covered period, receipt/refund timestamps | Preserved separately from operational deletion. |
+| Refund request | Charge linkage, requesting operator, requested/completed times, confirmed/failed/unknown status | Not removed by Billing's operational purge. |
+| Trial-used history | Owner/Telegram linkage, activation/period/revocation facts | Retained for the approved no-new-trial return behavior; this is not automatically a financial-document class. |
+| Return identity and access period | Minimal owner/Telegram linkage and current paid coverage | Current paid periods remain; return linkage is removed when there is no active paid period at deletion. No statutory duration is inferred. |
+| Usage holds, expiry notices and terms-acceptance rows | Operational quota, notice and consent state | Removed by operational deletion; the receipt-linked order still retains its terms version. Legal sufficiency is not inferred. |
+
+Source references: [Billing models](../../src/pin/contexts/billing/infrastructure/models.py), [Billing deletion adapter](../../src/pin/contexts/billing/infrastructure/deletion.py). The observed schema is a product receipt ledger, not proof of complete tax accounts or external settlement reconciliation. External payout, conversion, bank and expense documents must be mapped separately where applicable; no live payout was inspected.
+
+A policy decision must identify which records are required evidence, their minimum retained fields, applicable tax period and start trigger, duration and extension/hold rules, and how lawful deletion resumes after expiry. It must distinguish financial evidence from the TR-03 return record and operational deletion-replay tombstones. The sources above do not approve this mapping. Once approved, compare the policy with current deletion behavior before changing retention or closing the gate. No existing data is purged or new TTL adopted by this inventory.
