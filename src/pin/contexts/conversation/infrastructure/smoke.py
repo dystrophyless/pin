@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
 from uuid import UUID, uuid4
+from zoneinfo import ZoneInfo
 
 import httpx
 
@@ -357,6 +358,9 @@ def _context_prompt(context: ConversationContext) -> str:
             "text": context.text,
             "reference_date": context.reference_date.isoformat(),
             "reference_instant": context.reference_instant.isoformat(),
+            "reference_local_datetime": context.reference_instant.astimezone(
+                ZoneInfo(context.timezone)
+            ).isoformat(),
             "timezone": context.timezone,
             "plans": [item.model_dump(mode="json") for item in context.plans],
             "preferences": [item.model_dump(mode="json") for item in context.preferences],

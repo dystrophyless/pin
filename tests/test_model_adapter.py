@@ -56,6 +56,7 @@ from pin.contexts.conversation.infrastructure.smoke import (
     SmokeBudgetExceeded,
     SmokeBudgetTransport,
     SmokeCatalogRejected,
+    _context_prompt,
     build_preview,
     fetch_current_catalog_preview,
     preview_payload,
@@ -159,6 +160,7 @@ def _context(
     language: SourceLanguage = SourceLanguage.RU,
     input_kind: InputKind = InputKind.TEXT,
     reference_instant: datetime = NOW,
+    timezone: str = "Asia/Qyzylorda",
     text: str | None = None,
 ) -> ConversationContext:
     return ConversationContext(
@@ -174,9 +176,9 @@ def _context(
                 else "Move it to tomorrow"
             )
         ),
-        reference_date=reference_instant.astimezone(ZoneInfo("Asia/Qyzylorda")).date(),
+        reference_date=reference_instant.astimezone(ZoneInfo(timezone)).date(),
         reference_instant=reference_instant,
-        timezone="Asia/Qyzylorda",
+        timezone=timezone,
         plans=(
             PlanSnapshot(
                 id=PLAN,
@@ -390,16 +392,45 @@ async def test_valid_ru_and_en_inputs_settle_one_turn_and_record_actual_usage(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("language", "input_kind"),
+    ("language", "input_kind", "received_at", "expected_local_datetime", "expected_date"),
     [
-        (SourceLanguage.RU, InputKind.TEXT),
-        (SourceLanguage.EN, InputKind.TRANSCRIPT),
+        (
+            SourceLanguage.RU,
+            InputKind.TEXT,
+            datetime(2026, 10, 18, 14, 51, 24, tzinfo=UTC),
+            "2026-10-18T19:51:24+05:00",
+            "2026-10-18",
+        ),
+        (
+            SourceLanguage.EN,
+            InputKind.TRANSCRIPT,
+            datetime(2026, 10, 18, 14, 51, 24, tzinfo=UTC),
+            "2026-10-18T19:51:24+05:00",
+            "2026-10-18",
+        ),
+        (
+            SourceLanguage.RU,
+            InputKind.TEXT,
+            datetime(2026, 10, 16, 19, 30, tzinfo=UTC),
+            "2026-10-17T00:30:00+05:00",
+            "2026-10-17",
+        ),
+        (
+            SourceLanguage.EN,
+            InputKind.TRANSCRIPT,
+            datetime(2026, 10, 16, 19, 30, tzinfo=UTC),
+            "2026-10-17T00:30:00+05:00",
+            "2026-10-17",
+        ),
     ],
 )
 async def test_outbound_request_carries_receipt_instant_and_receipt_local_date(
-    language: SourceLanguage, input_kind: InputKind
+    language: SourceLanguage,
+    input_kind: InputKind,
+    received_at: datetime,
+    expected_local_datetime: str,
+    expected_date: str,
 ) -> None:
-    received_at = datetime(2026, 10, 16, 19, 30, tzinfo=UTC)
     processing_at = received_at + timedelta(hours=3)
     response = _provider_response(
         json.dumps({"kind": "reply", "language": language.value, "text": "Please clarify."})
@@ -410,10 +441,12 @@ async def test_outbound_request_carries_receipt_instant_and_receipt_local_date(
         language=language,
         input_kind=input_kind,
         reference_instant=received_at,
+        timezone="Asia/Almaty",
         text=(
-            "Current user turn:\nПеренеси задачу через 2 часа"
+            "Current user turn:\nСоздай задачу через 5 минут и напомни за 1 минуту"
             if language is SourceLanguage.RU
-            else "Current user turn:\nCreate a task in 2 hours"
+            else "Current user turn:\nIn five minutes, check the Pin English integration report. "
+            "Remind me one minute before."
         ),
     )
 
@@ -424,19 +457,27 @@ async def test_outbound_request_carries_receipt_instant_and_receipt_local_date(
     messages = cast(list[dict[str, object]], request["messages"])
     payload = json.loads(cast(str, messages[1]["content"]))
     assert payload["text"].endswith(
-        "Current user turn:\nПеренеси задачу через 2 часа"
+        "Current user turn:\nСоздай задачу через 5 минут и напомни за 1 минуту"
         if language is SourceLanguage.RU
-        else "Current user turn:\nCreate a task in 2 hours"
+        else "Current user turn:\nIn five minutes, check the Pin English integration report. "
+        "Remind me one minute before."
     )
-    assert payload["reference_instant"] == "2026-10-16T19:30:00+00:00"
-    assert payload["reference_date"] == "2026-10-17"
-    assert payload["timezone"] == "Asia/Qyzylorda"
+    assert payload["reference_instant"] == received_at.isoformat()
+    assert payload["reference_local_datetime"] == expected_local_datetime
+    assert payload["reference_date"] == expected_date
+    assert payload["timezone"] == "Asia/Almaty"
+    assert json.loads(_context_prompt(context)) == payload
+    system_message = cast(list[dict[str, object]], request["messages"])[0]
+    assert "derive profile-local local_time from reference_local_datetime" in cast(
+        str, system_message["content"]
+    )
     assert allowance.reserved_at == [processing_at]
 
     same_day_later = _context(
         language=language,
         input_kind=input_kind,
         reference_instant=received_at + timedelta(hours=2),
+        timezone="Asia/Almaty",
         text=context.text,
     )
     assert same_day_later.reference_date == context.reference_date
