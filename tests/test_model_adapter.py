@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 
 import httpx
 import pytest
+from pydantic import ValidationError
 
 from pin.bootstrap.config import load_model_smoke_settings
 from pin.contexts.conversation.application.capture import _candidates, _preview
@@ -642,6 +643,110 @@ async def test_create_batch_is_strictly_normalized_and_replayed_without_another_
     assert replay_transport.payloads == []
 
 
+@pytest.mark.asyncio
+async def test_russian_mixed_task_batch_prompt_uses_complete_actions_and_monday_zero() -> None:
+    request_text = (
+        "Создай пакет из двух тестовых планов: 1. «Pin — тест повторений»: каждый понедельник "
+        "в 18:00, начиная 19 октября 2026 года, всего 3 раза. 2. «Pin [пакет]_проверка*»: "
+        "завтра без времени, без напоминаний. Сначала покажи общий предпросмотр."
+    )
+    reference_instant = datetime(2026, 10, 18, 16, 23, tzinfo=UTC)
+    context = ConversationContext(
+        owner_id=OWNER,
+        request_id="russian-mixed-task-batch",
+        language=SourceLanguage.RU,
+        input_kind=InputKind.TEXT,
+        text=f"Current user turn:\n{request_text}",
+        reference_date=date(2026, 10, 18),
+        reference_instant=reference_instant,
+        timezone="Asia/Almaty",
+        preferences=(
+            PreferenceSnapshot(key="profile_version", value="1"),
+            PreferenceSnapshot(key="language", value="ru"),
+            PreferenceSnapshot(key="home_zone", value="Asia/Almaty"),
+            PreferenceSnapshot(key="reminder_calendar_days", value="1"),
+            PreferenceSnapshot(key="reminder_elapsed_hours", value="1"),
+            PreferenceSnapshot(key="quiet_start", value="22:00:00"),
+            PreferenceSnapshot(key="quiet_end", value="08:00:00"),
+            PreferenceSnapshot(key="review_time", value="20:00:00"),
+            PreferenceSnapshot(key="capture_draft_version", value="1"),
+            PreferenceSnapshot(key="capture_draft_state", value="pending"),
+        ),
+    )
+    batch = {
+        "kind": "proposal_batch",
+        "schema_version": 1,
+        "language": "ru",
+        "actions": [
+            {
+                "kind": "proposal",
+                "language": "ru",
+                "operation": "propose_create_plan",
+                "fields": {
+                    "title": "Pin — тест повторений",
+                    "schedule": {
+                        "kind": "task",
+                        "local_date": "2026-10-19",
+                        "local_time": "18:00:00",
+                        "timezone": "Asia/Almaty",
+                        "timing": "timed",
+                    },
+                    "recurrence": {
+                        "frequency": "weekly",
+                        "weekdays": [0],
+                        "occurrence_count": 3,
+                    },
+                },
+            },
+            {
+                "kind": "proposal",
+                "language": "ru",
+                "operation": "propose_create_plan",
+                "fields": {
+                    "title": "Pin [пакет]_проверка*",
+                    "schedule": {
+                        "kind": "task",
+                        "local_date": "2026-10-19",
+                        "timing": "untimed",
+                    },
+                    "reminders": [],
+                },
+            },
+        ],
+    }
+
+    malformed = json.loads(json.dumps(batch))
+    for action in malformed["actions"]:
+        action.pop("kind")
+        action.pop("language")
+    with pytest.raises(ValidationError):
+        _parse_result(json.dumps(malformed, ensure_ascii=False), context)
+
+    transport = FakeTransport(_provider_response(json.dumps(batch, ensure_ascii=False)))
+    assistant, _, _ = _assistant(transport)
+    outcome = await assistant.interpret(context, at=reference_instant)
+
+    assert isinstance(outcome, ModelSuccess)
+    assert isinstance(outcome.result, ProposalBatch)
+    first, second = outcome.result.actions
+    assert first.fields.title == "Pin — тест повторений"
+    assert isinstance(first.fields.schedule, TaskSchedule)
+    assert first.fields.schedule.local_date == date(2026, 10, 19)
+    assert first.fields.schedule.local_time == time(18)
+    assert first.fields.schedule.timezone == "Asia/Almaty"
+    assert first.fields.recurrence is not None
+    assert first.fields.recurrence.weekdays == (0,)
+    assert first.fields.recurrence.occurrence_count == 3
+    assert first.fields.reminders is None
+    assert second.fields.title == "Pin [пакет]_проверка*"
+    assert isinstance(second.fields.schedule, TaskSchedule)
+    assert second.fields.schedule.timing == "untimed"
+    assert second.fields.reminders == ()
+    system_prompt = str(transport.payloads[0]["messages"][0]["content"])
+    assert "Every batch action needs kind=proposal" in system_prompt
+    assert '"weekdays":[0]' in system_prompt
+
+
 def _ten_plan_batch() -> dict[str, object]:
     actions = []
     for index in range(10):
@@ -1231,7 +1336,7 @@ def test_proposal_time_and_repeat_contract_keeps_calendar_elapsed_and_dst_fields
 
 
 @pytest.mark.asyncio
-async def test_timed_task_and_default_reminder_example_is_in_prompt() -> None:
+async def test_timed_task_reminder_omission_and_prompt_contract() -> None:
     content = json.dumps(
         {
             "kind": "proposal",
@@ -1272,9 +1377,9 @@ async def test_timed_task_and_default_reminder_example_is_in_prompt() -> None:
     assert isinstance(messages, list) and isinstance(messages[0], dict)
     system_prompt = messages[0].get("content")
     assert isinstance(system_prompt, str)
-    assert "task date, not a reminder offset" in system_prompt
-    assert "timed task, not an appointment" in system_prompt
-    assert "duration or reminder was requested" in system_prompt
+    assert "A task date/time is not a before-event offset" in system_prompt
+    assert "Tasks have no duration" in system_prompt
+    assert "Every batch action needs kind=proposal" in system_prompt
     assert '"duration_minutes":45' in system_prompt
     assert '"basis":"calendar_day","amount":1,"unit":"day"' in system_prompt
     assert "Ask for duration or end; do not invent it" in system_prompt
@@ -1320,7 +1425,7 @@ def test_every_prompt_few_shot_example_passes_strict_result_validation() -> None
     assert "untimed has no time and needs an explicit user choice" in _SYSTEM
     assert "including a prior clarification" in _SYSTEM
     assert "If no hour or untimed choice was specified, use unspecified" in _SYSTEM
-    assert "time/untimed choice" in _SYSTEM
+    assert "timed/untimed choice" in _SYSTEM
     assert "Examples assume reference_date=2026-10-16" in _SYSTEM
 
     decoder = json.JSONDecoder()
@@ -1332,13 +1437,20 @@ def test_every_prompt_few_shot_example_passes_strict_result_validation() -> None
         examples.append(example)
         offset = end
 
-    assert len(examples) == 5
+    assert len(examples) == 4
     results = []
     for example in examples:
         language_value = example.get("language")
         assert isinstance(language_value, str)
         language = SourceLanguage(language_value)
-        context = _context(language=language)
+        if example.get("kind") == "proposal_batch":
+            context = _context(
+                language=language,
+                reference_instant=datetime(2026, 10, 18, 16, 23, tzinfo=UTC),
+                timezone="Asia/Almaty",
+            )
+        else:
+            context = _context(language=language)
         if example.get("operation") == "propose_complete":
             context = context.model_copy(
                 update={
@@ -1355,21 +1467,7 @@ def test_every_prompt_few_shot_example_passes_strict_result_validation() -> None
         result = _parse_result(json.dumps(example, ensure_ascii=False), context)
         results.append(result)
 
-    date_only_result = results[0]
-    assert isinstance(date_only_result, ActionProposal)
-    assert isinstance(date_only_result.fields.schedule, TaskSchedule)
-    assert date_only_result.fields.schedule.timing == "unspecified"
-    assert date_only_result.fields.schedule.local_date == date(2026, 10, 17)
-    assert date_only_result.fields.reminders is None
-
-    timed_task_result = results[1]
-    assert isinstance(timed_task_result, ActionProposal)
-    assert isinstance(timed_task_result.fields.schedule, TaskSchedule)
-    assert timed_task_result.fields.schedule.timing == "timed"
-    assert timed_task_result.fields.schedule.local_time == time(14)
-    assert timed_task_result.fields.reminders is None
-
-    appointment_result = results[2]
+    appointment_result = results[0]
     assert isinstance(appointment_result, ActionProposal)
     assert isinstance(appointment_result.fields.schedule, AppointmentSchedule)
     assert appointment_result.fields.schedule.duration_minutes == 45
@@ -1378,15 +1476,24 @@ def test_every_prompt_few_shot_example_passes_strict_result_validation() -> None
     assert appointment_result.fields.reminders[0].basis == "calendar_day"
     assert appointment_result.fields.reminders[0].amount == 1
 
-    clarification_result = results[3]
+    clarification_result = results[1]
     assert isinstance(clarification_result, Reply)
     assert clarification_result.text.endswith("?")
 
-    edit_result = results[4]
+    edit_result = results[2]
     assert isinstance(edit_result, ActionProposal)
     assert edit_result.operation.value == "propose_complete"
     assert edit_result.target_id == UUID("00000000-0000-4000-8000-000000000001")
     assert edit_result.expected_version == 3
+
+    batch_result = results[3]
+    assert isinstance(batch_result, ProposalBatch)
+    assert len(batch_result.actions) == 2
+    assert batch_result.actions[0].fields.recurrence is not None
+    assert batch_result.actions[0].fields.recurrence.weekdays == (0,)
+    assert batch_result.actions[1].fields.schedule is not None
+    assert batch_result.actions[1].fields.schedule.model_dump()["timing"] == "untimed"
+    assert batch_result.actions[1].fields.reminders == ()
 
 
 def test_context_validation_rejects_invalid_zone_and_owner_id_in_plan_row() -> None:

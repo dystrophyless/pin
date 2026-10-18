@@ -100,7 +100,8 @@ _SYSTEM = "\n".join(
         "rules; never shift reminders yourself or emit defaults as explicit intent.",
         "Recurrence keys are frequency, interval, weekdays, month_day, last_day, ends_on, "
         "occurrence_count. Frequency is daily|weekly|monthly; interval is positive; weekly needs "
-        "unique weekdays 0=Mon..6=Sun; monthly needs month_day 1..31 or last_day. Use ends_on or "
+        "unique weekdays, 0=Monday through 6=Sunday; monthly needs month_day 1..31 or last_day. "
+        "Use ends_on or "
         "occurrence_count, never both. A batch has 2 to 10 create-only actions, all-or-none; "
         "clarify any "
         "ambiguous item, ask users to split larger batches, and never omit requested items.",
@@ -121,19 +122,6 @@ _SYSTEM = "\n".join(
         "language.",
         "Examples assume reference_date=2026-10-16 and "
         "timezone=Asia/Qyzylorda; use context values:",
-        "RU: «Завтра напомни забрать посылку.» Tomorrow is the task date, not a reminder "
-        "offset. No hour: keep timing unspecified for Capture's time/untimed choice. Omit "
-        "reminders for profile defaults. "
-        '{"kind":"proposal","language":"ru","operation":"propose_create_plan",'
-        '"fields":{"title":"Забрать посылку","schedule":{"kind":"task",'
-        '"local_date":"2026-10-17","timing":"unspecified"}}}',
-        "EN: ‘Pick up the parcel tomorrow at 2 pm.’ If reference_date=2026-10-16 and "
-        "the context timezone is Asia/Qyzylorda, this is a timed task, not an appointment; "
-        "no duration or reminder was requested. "
-        '{"kind":"proposal","language":"en","operation":"propose_create_plan",'
-        '"fields":{"title":"Pick up the parcel","schedule":{"kind":"task",'
-        '"local_date":"2026-10-17","local_time":"14:00:00",'
-        '"timezone":"Asia/Qyzylorda","timing":"timed"}}}',
         "EN: ‘Schedule a dentist appointment on October 18 at 9 for 45 minutes; remind me one "
         "calendar day before.’ If reference_date=2026-10-16 and timezone=Asia/Qyzylorda, the "
         "appointment, duration, and offset are explicit: "
@@ -149,6 +137,18 @@ _SYSTEM = "\n".join(
         "and the user says ‘Complete that task’, use that exact target, never create a duplicate: "
         '{"kind":"proposal","language":"en","operation":"propose_complete",'
         '"target_id":"00000000-0000-4000-8000-000000000001","expected_version":3,"fields":{}}',
+        "Every batch action needs kind=proposal and the batch language. RU (reference_date="
+        "2026-10-18, timezone=Asia/Almaty): a Monday task at 18:00 starting tomorrow, 3 "
+        "occurrences; plus an explicitly untimed task tomorrow with no reminders: "
+        '{"kind":"proposal_batch","schema_version":1,"language":"ru","actions":['
+        '{"kind":"proposal","language":"ru","operation":"propose_create_plan",'
+        '"fields":{"title":"Повтор","schedule":{"kind":"task",'
+        '"local_date":"2026-10-19","local_time":"18:00:00",'
+        '"timezone":"Asia/Almaty","timing":"timed"},"recurrence":{'
+        '"frequency":"weekly","weekdays":[0],"occurrence_count":3}}},'
+        '{"kind":"proposal","language":"ru","operation":"propose_create_plan",'
+        '"fields":{"title":"Без времени","schedule":{"kind":"task",'
+        '"local_date":"2026-10-19","timing":"untimed"},"reminders":[]}}]}',
     )
 )
 
