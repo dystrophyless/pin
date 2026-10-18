@@ -153,6 +153,7 @@ def _hosted_run(
     deploy.mkdir(parents=True)
     script = deploy / "restore_snapshot.sh"
     script.write_bytes((Path(__file__).parents[1] / "deploy" / script.name).read_bytes())
+    script.chmod(0o755)
     (release_dir / "compose.yaml").write_text("services: {}\n", encoding="utf-8")
     runtime_env = tmp_path / "runtime.env"
     runtime_env.write_text("PIN_DB_PASSWORD=synthetic-only\n", encoding="utf-8")
