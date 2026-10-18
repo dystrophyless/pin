@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from pin.contexts.planning.domain.mutations import MutationAction, MutationPreview
-from pin.contexts.planning.domain.plans import ResolvedSchedule
+from pin.contexts.planning.domain.plans import OffsetKind, ReminderOffset, ResolvedSchedule
 
 
 def render_mutation_preview(preview: MutationPreview, language: str) -> tuple[str, str, str, str]:
@@ -124,7 +124,7 @@ def render_mutation_preview(preview: MutationPreview, language: str) -> tuple[st
         assert preview.replacement_schedule is not None
         zone = ZoneInfo(preview.replacement_schedule.event_zone)
         reminder_lines = [
-            f"{item.offset.amount} {item.offset.kind.value} → "
+            f"{_reminder_offset_label(item.offset, language)} → "
             f"{item.due_at.astimezone(zone).strftime('%Y-%m-%d %H:%M')}"
             for item in preview.reminder_projection.scheduled
         ]
@@ -172,3 +172,38 @@ def _schedule_range(schedule: ResolvedSchedule) -> str:
         return start
     end = schedule.ends_at.astimezone(ZoneInfo(schedule.event_zone))
     return f"{start} – {end.strftime('%Y-%m-%d %H:%M')}"
+
+
+def _reminder_offset_label(offset: ReminderOffset, language: str) -> str:
+    amount = offset.amount
+    if offset.kind is OffsetKind.CALENDAR_DAYS:
+        units = ("calendar day", "calendar days") if language != "ru" else (
+            "календарный день",
+            "календарных дня",
+            "календарных дней",
+        )
+        return _quantity_label(amount, units, language)
+
+    if amount % 3600 == 0:
+        value = amount // 3600
+        units = ("hour", "hours") if language != "ru" else ("час", "часа", "часов")
+    elif amount % 60 == 0:
+        value = amount // 60
+        units = ("minute", "minutes") if language != "ru" else ("минута", "минуты", "минут")
+    else:
+        value = amount
+        units = ("second", "seconds") if language != "ru" else ("секунда", "секунды", "секунд")
+    return _quantity_label(value, units, language)
+
+
+def _quantity_label(amount: int, units: tuple[str, ...], language: str) -> str:
+    if language != "ru":
+        unit = units[0] if amount == 1 else units[1]
+    else:
+        last_two = amount % 100
+        unit = units[0] if amount % 10 == 1 and last_two != 11 else (
+            units[1]
+            if amount % 10 in {2, 3, 4} and not 12 <= last_two <= 14
+            else units[2]
+        )
+    return f"{amount} {unit}"
