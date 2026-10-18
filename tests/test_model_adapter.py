@@ -13,7 +13,11 @@ import pytest
 from pydantic import ValidationError
 
 from pin.bootstrap.config import load_model_smoke_settings
-from pin.contexts.conversation.application.capture import _candidates, _preview
+from pin.contexts.conversation.application.capture import (
+    CaptureClarification,
+    _candidates,
+    _preview,
+)
 from pin.contexts.conversation.application.contracts import (
     CallStart,
     CallUsage,
@@ -1382,11 +1386,11 @@ async def test_timed_task_reminder_omission_and_prompt_contract() -> None:
     assert "Every batch action needs kind=proposal" in system_prompt
     assert '"duration_minutes":45' in system_prompt
     assert '"basis":"calendar_day","amount":1,"unit":"day"' in system_prompt
-    assert "Ask for duration or end; do not invent it" in system_prompt
+    assert "if neither, omit both so Capture asks. Never invent duration" in system_prompt
     assert '"target_id":"00000000-0000-4000-8000-000000000001"' in system_prompt
     assert '"expected_version":3' in system_prompt
-    assert "Decision check (do not output)" in system_prompt
-    assert "add no explanation or reasoning field" in system_prompt
+    assert "Before output, check date/time meaning" in system_prompt
+    assert "Return only JSON, no reasoning" in system_prompt
     assert "Canonical output JSON Schema" not in system_prompt
     assert len(system_prompt) < 6_500
     assert transport.payloads[0].get("response_format") == {"type": "json_object"}
@@ -1422,10 +1426,8 @@ def test_observed_invalid_calendar_day_hour_reminder_stays_rejected() -> None:
 
 
 def test_every_prompt_few_shot_example_passes_strict_result_validation() -> None:
-    assert "untimed has no time and needs an explicit user choice" in _SYSTEM
-    assert "including a prior clarification" in _SYSTEM
-    assert "If no hour or untimed choice was specified, use unspecified" in _SYSTEM
-    assert "timed/untimed choice" in _SYSTEM
+    assert "untimed needs an explicit user choice" in _SYSTEM
+    assert "Use unspecified when no time/choice was given so Capture asks" in _SYSTEM
     assert "Examples assume reference_date=2026-10-16" in _SYSTEM
 
     decoder = json.JSONDecoder()
@@ -1450,7 +1452,10 @@ def test_every_prompt_few_shot_example_passes_strict_result_validation() -> None
                 timezone="Asia/Almaty",
             )
         else:
-            context = _context(language=language)
+            context = _context(
+                language=language,
+                reference_instant=datetime(2026, 10, 16, 10, tzinfo=UTC),
+            )
         if example.get("operation") == "propose_complete":
             context = context.model_copy(
                 update={
@@ -1476,9 +1481,12 @@ def test_every_prompt_few_shot_example_passes_strict_result_validation() -> None
     assert appointment_result.fields.reminders[0].basis == "calendar_day"
     assert appointment_result.fields.reminders[0].amount == 1
 
-    clarification_result = results[1]
-    assert isinstance(clarification_result, Reply)
-    assert clarification_result.text.endswith("?")
+    incomplete_appointment = results[1]
+    assert isinstance(incomplete_appointment, ActionProposal)
+    assert isinstance(incomplete_appointment.fields.schedule, AppointmentSchedule)
+    assert incomplete_appointment.fields.schedule.local_start == datetime(2026, 10, 17, 10)
+    assert incomplete_appointment.fields.schedule.duration_minutes is None
+    assert incomplete_appointment.fields.schedule.local_end is None
 
     edit_result = results[2]
     assert isinstance(edit_result, ActionProposal)
@@ -1494,6 +1502,85 @@ def test_every_prompt_few_shot_example_passes_strict_result_validation() -> None
     assert batch_result.actions[1].fields.schedule is not None
     assert batch_result.actions[1].fields.schedule.model_dump()["timing"] == "untimed"
     assert batch_result.actions[1].fields.reminders == ()
+
+
+@pytest.mark.asyncio
+async def test_start_only_appointment_reaches_capture_duration_choices() -> None:
+    text = (
+        "Schedule an appointment titled 'Pin duration integration appointment' on Friday, "
+        "October 23, 2026 at 14:00 in Asia/Almaty. Remind me one calendar day before and "
+        "two hours before."
+    )
+    response = {
+        "kind": "proposal",
+        "language": "en",
+        "operation": "propose_create_plan",
+        "fields": {
+            "title": "Pin duration integration appointment",
+            "schedule": {
+                "kind": "appointment",
+                "local_start": "2026-10-23T14:00:00",
+                "timezone": "Asia/Almaty",
+            },
+            "reminders": [
+                {
+                    "kind": "relative",
+                    "basis": "calendar_day",
+                    "amount": 1,
+                    "unit": "day",
+                    "provenance": "explicit",
+                },
+                {
+                    "kind": "relative",
+                    "basis": "elapsed",
+                    "amount": 2,
+                    "unit": "hour",
+                    "provenance": "explicit",
+                },
+            ],
+        },
+    }
+    context = _context(
+        language=SourceLanguage.EN,
+        reference_instant=datetime(2026, 10, 18, 16, 51, tzinfo=UTC),
+        timezone="Asia/Almaty",
+        text=text,
+    )
+    transport = FakeTransport(_provider_response(json.dumps(response)))
+    assistant, _, _ = _assistant(transport)
+
+    outcome = await assistant.interpret(context, at=context.reference_instant)
+
+    assert isinstance(outcome, ModelSuccess)
+    assert isinstance(outcome.result, ActionProposal)
+    assert isinstance(outcome.result.fields.schedule, AppointmentSchedule)
+    assert outcome.result.fields.schedule.duration_minutes is None
+    assert outcome.result.fields.schedule.local_end is None
+    preferences = PreferencesSnapshot(
+        owner_id=OWNER,
+        language="en",
+        home_zone="Asia/Almaty",
+        reminder_calendar_days=1,
+        reminder_elapsed_hours=1,
+        quiet_start=time(22),
+        quiet_end=time(8),
+        review_time=time(18),
+        version=1,
+    )
+    candidates, clarification = _candidates(
+        (outcome.result,), preferences, context.reference_instant
+    )
+    assert candidates is None
+    assert isinstance(clarification, CaptureClarification)
+    assert "How long is the appointment" in clarification.text
+    assert [choice.id for choice in clarification.choices] == [
+        "appointment:0:duration:30",
+        "appointment:0:duration:60",
+        "appointment:0:ask_duration",
+    ]
+    messages = cast(list[dict[str, object]], transport.payloads[0]["messages"])
+    assert "if neither, omit both so Capture asks" in str(messages[0]["content"])
+    assert text in str(messages[1]["content"])
 
 
 def test_context_validation_rejects_invalid_zone_and_owner_id_in_plan_row() -> None:
