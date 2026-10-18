@@ -1621,9 +1621,10 @@ async def _current_schedule(
         or occurrence.occurrence_version != intent.occurrence_version
         or occurrence.approved_preferences_version != intent.preferences_version
         or occurrence.series_id != intent.series_id
-        or occurrence.series_version != intent.series_version
     ):
         return None
+    # Series.version advances when later occurrences are materialized. The
+    # occurrence, approval, and reminder checks below remain the delivery fence.
     if not any(
         candidate.offset_kind == intent.offset_kind
         and candidate.offset_amount == intent.offset_amount

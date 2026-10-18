@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import os
 import sys
+from collections.abc import Callable
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from typing import cast
@@ -19,14 +20,31 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from pin.adapters.telegram.application_worker import (
     claim_application_job,
     process_application_job,
+    process_pending_reminder_schedules,
 )
-from pin.adapters.telegram.ingress import PostgresTelegramOwnerResolver, persist_update
+from pin.adapters.telegram.delivery_worker import process_delivery_iteration
+from pin.adapters.telegram.ingress import (
+    PostgresTelegramOwnerResolver,
+    TelegramOwnerRecord,
+    persist_update,
+)
 from pin.adapters.telegram.presentation.tokens import TelegramCallbackTokenRecord
 from pin.contexts.billing.infrastructure.models import AccessAccountRecord, AccessPeriodRecord
 from pin.contexts.conversation.infrastructure.models import ProviderCallRecord
 from pin.contexts.identity.infrastructure.models import OnboardingRecord, PreferencesRecord
-from pin.contexts.notifications.infrastructure.models import ReminderIntentRecord
-from pin.contexts.planning.domain.plans import OneOffPlanDraft, PlanKind, resolve_schedule
+from pin.contexts.notifications.application.delivery import ReminderSend, TelegramReplySend
+from pin.contexts.notifications.infrastructure.models import (
+    DeliveryAttemptRecord,
+    ReminderIntentRecord,
+)
+from pin.contexts.planning.domain.plans import (
+    OffsetKind,
+    OneOffPlanDraft,
+    PlanKind,
+    ReminderOffset,
+    propose_plan,
+    resolve_schedule,
+)
 from pin.contexts.planning.domain.recurrence import (
     RecurrenceFrequency,
     RecurrenceRule,
@@ -39,6 +57,7 @@ from pin.contexts.planning.infrastructure.home_zone_change_models import (
 from pin.contexts.planning.infrastructure.models import OccurrenceRecord, PlanItemRecord
 from pin.contexts.planning.infrastructure.series_models import SeriesOccurrenceRecord, SeriesRecord
 from pin.contexts.planning.infrastructure.series_store import SqlAlchemySeriesStore
+from pin.contexts.planning.infrastructure.store import SqlAlchemyPlanningStore
 from pin.persistence import run_local_async
 from pin.persistence.db import create_engine as create_async_engine
 from pin.persistence.db import create_session_factory
@@ -74,6 +93,60 @@ def _database_url() -> str:
     if directory.replace("\\", "/").rstrip("/").casefold() != DATA_DIRECTORY.casefold():
         pytest.fail("home-zone runtime database is outside the assigned disposable cluster")
     return value
+
+
+class _ReminderTransport:
+    def __init__(self) -> None:
+        self.reminders: list[ReminderSend] = []
+        self.replies: list[TelegramReplySend] = []
+
+    async def resolve_destination(self, session: AsyncSession, owner_id: UUID) -> int | None:
+        destination = await session.scalar(
+            select(TelegramOwnerRecord.telegram_user_id).where(
+                TelegramOwnerRecord.owner_id == owner_id
+            )
+        )
+        return int(destination) if destination is not None else None
+
+    async def send_reminder(self, message: ReminderSend) -> str:
+        self.reminders.append(message)
+        return f"language-settings-reminder-{len(self.reminders)}"
+
+    async def send_reply(self, message: TelegramReplySend) -> str:
+        self.replies.append(message)
+        return f"language-settings-reply-{len(self.replies)}"
+
+
+def _fixed_clock(at: datetime) -> Callable[[], datetime]:
+    return lambda: at
+
+
+async def _deliver_until_outcome(
+    sessions: async_sessionmaker[AsyncSession],
+    transport: _ReminderTransport,
+    *,
+    intent_id: UUID,
+    expected_outcome: str,
+    at: datetime,
+) -> None:
+    for _ in range(100):
+        async with sessions() as session:
+            outcomes = list(
+                await session.scalars(
+                    select(DeliveryAttemptRecord.outcome).where(
+                        DeliveryAttemptRecord.intent_id == intent_id
+                    )
+                )
+            )
+        if expected_outcome in outcomes:
+            return
+        await process_delivery_iteration(
+            sessions,
+            transport,
+            worker_id=f"language-settings-{uuid4().hex[:8]}",
+            now=_fixed_clock(at),
+        )
+    raise AssertionError(f"intent {intent_id} did not reach outcome {expected_outcome}")
 
 
 @pytest.fixture(scope="session")
@@ -187,9 +260,16 @@ async def _seed_task(
 
 
 async def _seed_weekly_series(
-    session: AsyncSession, *, owner_id: UUID, at: datetime, title: str = "Zone series"
+    session: AsyncSession,
+    *,
+    owner_id: UUID,
+    at: datetime,
+    title: str = "Zone series",
+    reminders: tuple[ReminderOffset, ...] = (),
+    through: date = date(2026, 12, 1),
+    count: int = 3,
 ) -> tuple[UUID, list[UUID]]:
-    horizon = date(2026, 12, 1)
+    horizon = through
     draft = RecurringPlanDraft(
         kind=PlanKind.TASK,
         title=title,
@@ -197,8 +277,9 @@ async def _seed_weekly_series(
         local_time=time(12),
         event_zone="UTC",
         recurrence=RecurrenceRule(
-            RecurrenceFrequency.WEEKLY, interval=1, weekdays=(0,), count=3
+            RecurrenceFrequency.WEEKLY, interval=1, weekdays=(0,), count=count
         ),
+        reminders=reminders,
     )
     projection = project_recurrence(
         draft,
@@ -215,7 +296,7 @@ async def _seed_weekly_series(
         approved_preferences_version=1,
         draft=draft,
         projection=projection,
-        effective_reminders=(),
+        effective_reminders=reminders,
         default_zone="UTC",
         quiet_zone="UTC",
         quiet_start=time(22),
@@ -243,7 +324,7 @@ async def _seed_weekly_series(
             )
         ).all()
     )
-    assert len(occurrences) == 3
+    assert len(occurrences) == len(projection.occurrences)
     return series.id, [row.id for row in occurrences]
 
 
@@ -254,7 +335,7 @@ async def _persist(
     user_id: int,
     text: str | None = None,
     callback: str | None = None,
-) -> None:
+) -> tuple[UUID, UUID]:
     update_id = uuid4().int % 9_000_000_000_000_000
     if callback is None:
         payload: dict[str, object] = {
@@ -302,6 +383,7 @@ async def _persist(
         )
         assert job is not None
         job.priority = 2_147_483_647
+        return inbox.owner_id, inbox.id
 
 
 async def _dispatch(
@@ -313,9 +395,13 @@ async def _dispatch(
     text: str | None = None,
     callback: str | None = None,
 ) -> tuple[UUID, dict[str, object]]:
-    await _persist(sessions, bot_id=bot_id, user_id=user_id, text=text, callback=callback)
+    owner_id, inbox_id = await _persist(
+        sessions, bot_id=bot_id, user_id=user_id, text=text, callback=callback
+    )
     claim = await claim_application_job(sessions, worker_id=f"home-zone-{uuid4().hex[:12]}")
     assert claim is not None
+    assert claim.owner_id == owner_id
+    assert UUID(str(claim.payload.get("inbox_id"))) == inbox_id
     await process_application_job(sessions, claim, now=at)
     async with sessions() as session:
         event = await session.scalar(
@@ -325,6 +411,7 @@ async def _dispatch(
             )
         )
         assert event is not None
+        assert event.payload["payload"]["source_job_id"] == str(claim.job_id)
         job = await session.get(Job, claim.job_id)
         assert job is not None and job.status == "succeeded"
         return claim.job_id, cast(dict[str, object], event.payload["payload"])
@@ -1096,6 +1183,577 @@ def test_settings_foreign_owner_and_corrected_preview_tokens_do_not_write_plans(
                     )
                     is None
                 )
+        finally:
+            await engine.dispose()
+
+    run_local_async(scenario)
+
+
+@pytest.mark.parametrize(
+    "settings_edit", ["language_only", "no_op_confirmation", "reminder_policy"]
+)
+def test_schedule_neutral_settings_confirmation_preserves_only_current_approved_reminders(
+    home_zone_runtime_database_url: str,
+    settings_edit: str,
+) -> None:
+    async def scenario() -> None:
+        engine = create_async_engine(home_zone_runtime_database_url)
+        sessions = create_session_factory(engine)
+        at = datetime(2026, 10, 18, 17, 45, tzinfo=UTC)
+        edit_at = datetime(2026, 10, 19, 6, 51, tzinfo=UTC)
+        recurring_due_at = datetime(2026, 10, 19, 6, 50, tzinfo=UTC)
+        suffix = uuid4().int % 1_000_000_000
+        bot_id, user_id = 6_300_000_000 + suffix, 7_300_000_000 + suffix
+        transport = _ReminderTransport()
+        try:
+            owner_id = await _seed_owner(sessions, bot_id=bot_id, user_id=user_id)
+            async with sessions() as session, session.begin():
+                profile = await session.get(PreferencesRecord, owner_id)
+                assert profile is not None
+                profile.home_zone = "Asia/Almaty"
+                profile.version = 7
+                offsets = (720, 660) if settings_edit != "reminder_policy" else (720,)
+                draft = OneOffPlanDraft(
+                    kind=PlanKind.TASK,
+                    title=f"Reminder {settings_edit}",
+                    local_date=date(2026, 10, 18),
+                    local_time=time(23),
+                    event_zone="Asia/Almaty",
+                    reminders=tuple(
+                        ReminderOffset(OffsetKind.ELAPSED_SECONDS, amount, "explicit")
+                        for amount in offsets
+                    ),
+                )
+                proposed = propose_plan(
+                    owner_id,
+                    draft,
+                    default_zone=profile.home_zone,
+                    default_reminders=(),
+                    now=at,
+                )
+                stale_draft = OneOffPlanDraft(
+                    kind=PlanKind.TASK,
+                    title=f"Previously stale reminder {settings_edit}",
+                    local_date=date(2026, 10, 18),
+                    local_time=time(23, 5),
+                    event_zone="Asia/Almaty",
+                    reminders=(ReminderOffset(OffsetKind.ELAPSED_SECONDS, 600, "explicit"),),
+                )
+                stale_proposed = propose_plan(
+                    owner_id,
+                    stale_draft,
+                    default_zone=profile.home_zone,
+                    default_reminders=(),
+                    now=at,
+                )
+                await SqlAlchemyPlanningStore(session).persist_confirmed_batch(
+                    owner_id=owner_id,
+                    action_key=f"language-settings-{uuid4().hex}",
+                    payload_sha256="a" * 64,
+                    approved_preferences_version=profile.version,
+                    plans=(proposed, stale_proposed),
+                    at=at,
+                )
+                recurring_reminder = ReminderOffset(
+                    OffsetKind.ELAPSED_SECONDS, 600, "explicit"
+                )
+                recurring_draft = RecurringPlanDraft(
+                    kind=PlanKind.TASK,
+                    title=f"Recurring reminder {settings_edit}",
+                    start_date=date(2026, 10, 19),
+                    local_time=time(12),
+                    event_zone="Asia/Almaty",
+                    reminders=(recurring_reminder,),
+                    recurrence=RecurrenceRule(
+                        RecurrenceFrequency.WEEKLY, interval=1, weekdays=(0,), count=3
+                    ),
+                )
+                recurring_projection = project_recurrence(
+                    recurring_draft,
+                    owner_id=owner_id,
+                    default_zone=profile.home_zone,
+                    default_reminders=(),
+                    at=at,
+                    through=date(2026, 10, 19),
+                )
+                assert len(recurring_projection.occurrences) == 1
+                series_receipt = await SqlAlchemySeriesStore(session).persist_series(
+                    owner_id=owner_id,
+                    action_key=f"language-settings-series-{uuid4().hex}",
+                    payload_sha256="b" * 64,
+                    approved_preferences_version=profile.version,
+                    draft=recurring_draft,
+                    projection=recurring_projection,
+                    effective_reminders=(recurring_reminder,),
+                    default_zone=profile.home_zone,
+                    quiet_zone=profile.home_zone,
+                    quiet_start=profile.quiet_start,
+                    quiet_end=profile.quiet_end,
+                    at=at,
+                    horizon_date=date(2026, 10, 19),
+                )
+                series_id = UUID(str(series_receipt["series_id"]))
+
+            await process_pending_reminder_schedules(sessions, now=at)
+            async with sessions() as session, session.begin():
+                current_due = datetime(2026, 10, 18, 17, 48, tzinfo=UTC)
+                stale_current_due = datetime(2026, 10, 18, 17, 49, tzinfo=UTC)
+                stale_occurrence_due = datetime(2026, 10, 18, 17, 55, tzinfo=UTC)
+                intents = list(
+                    await session.scalars(
+                        select(ReminderIntentRecord)
+                        .join(
+                            OccurrenceRecord,
+                            OccurrenceRecord.id == ReminderIntentRecord.occurrence_id,
+                        )
+                        .where(
+                            ReminderIntentRecord.owner_id == owner_id,
+                            OccurrenceRecord.local_date == date(2026, 10, 18),
+                        )
+                        .order_by(ReminderIntentRecord.due_at)
+                    )
+                )
+                assert len(intents) == len(offsets) + 1
+                assert all(
+                    (row.source, row.state, row.preferences_version) == ("explicit", "scheduled", 7)
+                    for row in intents
+                )
+                valid_intent = next(
+                    row for row in intents if row.due_at == current_due
+                )
+                stale_current_intent = next(
+                    (row for row in intents if row.due_at == stale_current_due),
+                    None,
+                )
+                stale_occurrence_intent = next(
+                    row for row in intents if row.due_at == stale_occurrence_due
+                )
+                stale_occurrence = await session.get(
+                    OccurrenceRecord, stale_occurrence_intent.occurrence_id
+                )
+                assert stale_occurrence is not None and stale_occurrence.state == "open"
+                stale_occurrence.reminder_preferences_version = 6
+                stale_occurrence_intent.preferences_version = 6
+                if stale_current_intent is not None:
+                    # This intent was stale even though its occurrence remains approved.
+                    stale_current_intent.preferences_version = 6
+                valid_intent_id = valid_intent.id
+                occurrence_id = valid_intent.occurrence_id
+                stale_current_intent_id = (
+                    stale_current_intent.id if stale_current_intent is not None else None
+                )
+                stale_occurrence_id = stale_occurrence.id
+                stale_occurrence_intent_id = stale_occurrence_intent.id
+                target_intent_ids = [valid_intent_id, stale_occurrence_intent_id]
+                if stale_current_intent_id is not None:
+                    target_intent_ids.append(stale_current_intent_id)
+                series_intent = await session.scalar(
+                    select(ReminderIntentRecord).where(
+                        ReminderIntentRecord.owner_id == owner_id,
+                        ReminderIntentRecord.series_id == series_id,
+                    )
+                )
+                assert series_intent is not None
+                assert series_intent.state == "scheduled"
+                assert series_intent.due_at == recurring_due_at
+                series_intent_id = series_intent.id
+                confirmed_series_dispatch_version = series_intent.dispatch_version
+
+            await _deliver_until_outcome(
+                sessions,
+                transport,
+                intent_id=valid_intent_id,
+                expected_outcome="confirmed",
+                at=current_due,
+            )
+            if stale_current_intent_id is not None:
+                await _deliver_until_outcome(
+                    sessions,
+                    transport,
+                    intent_id=stale_current_intent_id,
+                    expected_outcome="skipped",
+                    at=stale_current_due,
+                )
+            await _deliver_until_outcome(
+                sessions,
+                transport,
+                intent_id=stale_occurrence_intent_id,
+                expected_outcome="skipped",
+                at=stale_occurrence_due,
+            )
+            await _deliver_until_outcome(
+                sessions,
+                transport,
+                intent_id=series_intent_id,
+                expected_outcome="confirmed",
+                at=recurring_due_at,
+            )
+            assert len(transport.reminders) == 2
+            assert (
+                sum(f"Reminder {settings_edit}" in item.text for item in transport.reminders)
+                == 1
+            )
+            assert (
+                sum(
+                    f"Recurring reminder {settings_edit}" in item.text
+                    for item in transport.reminders
+                )
+                == 1
+            )
+            sends_before_settings_edit = len(transport.reminders)
+
+            async with sessions() as session:
+                initial_draft = await session.get(OnboardingRecord, owner_id)
+                assert initial_draft is not None and initial_draft.step == "complete"
+
+            _, reply = await _dispatch(
+                sessions, bot_id=bot_id, user_id=user_id, at=edit_at, text="/settings"
+            )
+            language = "ru" if settings_edit == "language_only" else "en"
+            keep_label = "Оставить текущие" if language == "ru" else "Keep current"
+            _, reply = await _dispatch(
+                sessions,
+                bot_id=bot_id,
+                user_id=user_id,
+                at=edit_at,
+                callback=_callback_for(reply, "Русский" if language == "ru" else "English"),
+            )
+            _, reply = await _dispatch(
+                sessions,
+                bot_id=bot_id,
+                user_id=user_id,
+                at=edit_at,
+                callback=_callback_for(reply, keep_label),
+            )
+            if settings_edit == "reminder_policy":
+                _, reply = await _dispatch(
+                    sessions,
+                    bot_id=bot_id,
+                    user_id=user_id,
+                    at=edit_at,
+                    text="2, 3",
+                )
+            else:
+                _, reply = await _dispatch(
+                    sessions,
+                    bot_id=bot_id,
+                    user_id=user_id,
+                    at=edit_at,
+                    callback=_callback_for(reply, keep_label),
+                )
+            _, reply = await _dispatch(
+                sessions,
+                bot_id=bot_id,
+                user_id=user_id,
+                at=edit_at,
+                callback=_callback_for(reply, keep_label),
+            )
+            _, reply = await _dispatch(
+                sessions,
+                bot_id=bot_id,
+                user_id=user_id,
+                at=edit_at,
+                callback=await _callback_for_action(
+                    sessions, reply, owner_id=owner_id, action="answer"
+                ),
+            )
+            assert reply["handling"] == "handled"
+
+            future_occurrence_id: UUID | None = None
+            future_intent_id: UUID | None = None
+            async with sessions() as session, session.begin():
+                profile = await session.get(PreferencesRecord, owner_id)
+                occurrence = await session.get(OccurrenceRecord, occurrence_id)
+                confirmed_intent = await session.get(ReminderIntentRecord, valid_intent_id)
+                assert profile is not None and profile.version == 8
+                assert occurrence is not None and occurrence.state == "open"
+                assert confirmed_intent is not None
+                if settings_edit in {"language_only", "no_op_confirmation"}:
+                    assert profile.language == (
+                        "ru" if settings_edit == "language_only" else "en"
+                    )
+                    assert (
+                        profile.home_zone,
+                        profile.reminder_calendar_days,
+                        profile.reminder_elapsed_hours,
+                        profile.quiet_start,
+                        profile.quiet_end,
+                        profile.review_time,
+                    ) == ("Asia/Almaty", 1, 1, time(22), time(8), time(20))
+                    assert occurrence.reminder_preferences_version == 8
+                    assert confirmed_intent.preferences_version == 8
+                else:
+                    assert profile.language == "en"
+                    assert (profile.reminder_calendar_days, profile.reminder_elapsed_hours) == (
+                        2,
+                        3,
+                    )
+                    assert occurrence.reminder_preferences_version == 7
+                    assert confirmed_intent.preferences_version == 7
+                stale_occurrence = await session.get(OccurrenceRecord, stale_occurrence_id)
+                stale_occurrence_intent_record = await session.get(
+                    ReminderIntentRecord, stale_occurrence_intent_id
+                )
+                assert stale_occurrence is not None
+                assert stale_occurrence.reminder_preferences_version == 6
+                assert stale_occurrence_intent_record is not None
+                assert stale_occurrence_intent_record.preferences_version == 6
+                if stale_current_intent_id is not None:
+                    stale_current_intent_record = await session.get(
+                        ReminderIntentRecord, stale_current_intent_id
+                    )
+                    assert stale_current_intent_record is not None
+                    assert stale_current_intent_record.preferences_version == 6
+                series_record = await session.get(SeriesRecord, series_id)
+                assert series_record is not None
+                expected_series_approval = (
+                    8 if settings_edit in {"language_only", "no_op_confirmation"} else 7
+                )
+                assert (
+                    series_record.typed_draft["approved_preferences_version"]
+                    == expected_series_approval
+                )
+                if settings_edit in {"language_only", "no_op_confirmation"}:
+                    assert series_record.version == 2
+                    series_snapshot = await SqlAlchemySeriesStore(session).get_series_snapshot(
+                        owner_id, series_id
+                    )
+                    assert series_snapshot is not None
+                    assert series_snapshot.approved_preferences_version == 8
+                    future_projection = project_recurrence(
+                        series_snapshot.draft,
+                        owner_id=owner_id,
+                        default_zone=series_snapshot.default_zone,
+                        default_reminders=series_snapshot.effective_reminders,
+                        at=at,
+                        through=date(2026, 10, 26),
+                        anchor=series_snapshot.anchor_date,
+                        first_sequence=series_snapshot.next_sequence,
+                        anchor_sequence=series_snapshot.anchor_sequence,
+                        total_count=series_snapshot.total_count,
+                    )
+                    assert len(future_projection.occurrences) == 1
+                    generated = await SqlAlchemySeriesStore(session).generate_occurrences(
+                        owner_id=owner_id,
+                        series_id=series_id,
+                        expected_version=series_snapshot.version,
+                        through=date(2026, 10, 26),
+                        at=at,
+                        projection=future_projection,
+                        approved_preferences_version=series_snapshot.approved_preferences_version,
+                    )
+                    generated_occurrences = cast(
+                        list[dict[str, object]], generated["occurrences"]
+                    )
+                    assert len(generated_occurrences) == 1
+                    future_occurrence_id = UUID(
+                        str(generated_occurrences[0]["occurrence_id"])
+                    )
+                    generated_occurrence = await session.get(
+                        OccurrenceRecord, future_occurrence_id
+                    )
+                    assert generated_occurrence is not None
+                    assert generated_occurrence.reminder_preferences_version == 8
+
+            await process_pending_reminder_schedules(sessions, now=edit_at)
+            assert len(transport.reminders) == sends_before_settings_edit
+            async with sessions() as session:
+                confirmed_series_intent = await session.get(
+                    ReminderIntentRecord, series_intent_id
+                )
+                assert confirmed_series_intent is not None
+                assert (
+                    confirmed_series_intent.dispatch_version
+                    == confirmed_series_dispatch_version
+                )
+                series_attempts = list(
+                    await session.scalars(
+                        select(DeliveryAttemptRecord).where(
+                            DeliveryAttemptRecord.intent_id == series_intent_id
+                        )
+                    )
+                )
+                assert len(series_attempts) == 1
+                assert series_attempts[0].outcome == "confirmed"
+
+                if future_occurrence_id is not None:
+                    future_intent = await session.scalar(
+                        select(ReminderIntentRecord).where(
+                            ReminderIntentRecord.occurrence_id == future_occurrence_id
+                        )
+                    )
+                    assert future_intent is not None
+                    assert future_intent.state == "scheduled"
+                    assert future_intent.preferences_version == 8
+                    assert future_intent.due_at == datetime(
+                        2026, 10, 26, 6, 50, tzinfo=UTC
+                    )
+                    future_intent_id = future_intent.id
+
+            if future_occurrence_id is not None:
+                future_due_at = datetime(2026, 10, 26, 6, 50, tzinfo=UTC)
+                assert future_intent_id is not None
+                await _deliver_until_outcome(
+                    sessions,
+                    transport,
+                    intent_id=future_intent_id,
+                    expected_outcome="confirmed",
+                    at=future_due_at,
+                )
+                assert len(transport.reminders) == sends_before_settings_edit + 1
+                assert sum(
+                    f"Recurring reminder {settings_edit}" in item.text
+                    for item in transport.reminders
+                ) == 2
+            else:
+                assert len(transport.reminders) == sends_before_settings_edit
+                assert sum(
+                    f"Recurring reminder {settings_edit}" in item.text
+                    for item in transport.reminders
+                ) == 1
+            assert sum(
+                f"Reminder {settings_edit}" in item.text for item in transport.reminders
+            ) == 1
+            async with sessions() as session:
+                attempts = list(
+                    await session.scalars(
+                        select(DeliveryAttemptRecord)
+                        .join(
+                            ReminderIntentRecord,
+                            ReminderIntentRecord.id == DeliveryAttemptRecord.intent_id,
+                        )
+                        .where(ReminderIntentRecord.owner_id == owner_id)
+                        .where(ReminderIntentRecord.id.in_(target_intent_ids))
+                        .order_by(ReminderIntentRecord.due_at)
+                    )
+                )
+                if settings_edit in {"language_only", "no_op_confirmation"}:
+                    assert len(attempts) == 3
+                    assert attempts[0].outcome == "confirmed"
+                    assert attempts[1].outcome == "skipped"
+                    assert attempts[1].failure_code == "obsolete_or_incomplete_schedule"
+                    assert attempts[2].outcome == "skipped"
+                    assert attempts[2].failure_code == "obsolete_or_incomplete_schedule"
+                else:
+                    assert len(attempts) == 2
+                    assert attempts[0].outcome == "confirmed"
+                    assert attempts[1].outcome == "skipped"
+                    assert attempts[1].failure_code == "obsolete_or_incomplete_schedule"
+        finally:
+            await engine.dispose()
+
+    run_local_async(scenario)
+
+
+def test_series_generation_before_due_delivery_preserves_single_confirmed_reminder(
+    home_zone_runtime_database_url: str,
+) -> None:
+    async def scenario() -> None:
+        engine = create_async_engine(home_zone_runtime_database_url)
+        sessions = create_session_factory(engine)
+        seeded_at = datetime(2026, 10, 18, 17, 45, tzinfo=UTC)
+        generated_at = datetime(2026, 10, 19, 11, 49, tzinfo=UTC)
+        due_at = datetime(2026, 10, 19, 11, 50, tzinfo=UTC)
+        suffix = uuid4().int % 1_000_000_000
+        bot_id, user_id = 8_300_000_000 + suffix, 9_300_000_000 + suffix
+        transport = _ReminderTransport()
+        reminder = ReminderOffset(OffsetKind.ELAPSED_SECONDS, 600, "explicit")
+        try:
+            owner_id = await _seed_owner(sessions, bot_id=bot_id, user_id=user_id)
+            async with sessions() as session, session.begin():
+                series_id, occurrence_ids = await _seed_weekly_series(
+                    session,
+                    owner_id=owner_id,
+                    at=seeded_at,
+                    title="Generation delivery race",
+                    reminders=(reminder,),
+                    through=date(2026, 10, 19),
+                    count=2,
+                )
+                assert len(occurrence_ids) == 1
+
+            assert await process_pending_reminder_schedules(sessions, now=seeded_at) >= 1
+            async with sessions() as session:
+                intent = await session.scalar(
+                    select(ReminderIntentRecord).where(
+                        ReminderIntentRecord.owner_id == owner_id,
+                        ReminderIntentRecord.series_id == series_id,
+                    )
+                )
+                assert intent is not None
+                assert intent.state == "scheduled"
+                assert intent.due_at == due_at
+                assert intent.series_version == 1
+                intent_id = intent.id
+
+            async with sessions() as session, session.begin():
+                series_store = SqlAlchemySeriesStore(session)
+                snapshot = await series_store.get_series_snapshot(owner_id, series_id)
+                assert snapshot is not None and snapshot.version == 1
+                projection = project_recurrence(
+                    snapshot.draft,
+                    owner_id=owner_id,
+                    default_zone=snapshot.default_zone,
+                    default_reminders=snapshot.effective_reminders,
+                    at=generated_at,
+                    through=date(2026, 10, 26),
+                    anchor=snapshot.anchor_date,
+                    first_sequence=snapshot.next_sequence,
+                    anchor_sequence=snapshot.anchor_sequence,
+                    total_count=snapshot.total_count,
+                )
+                assert len(projection.occurrences) == 1
+                generated = await series_store.generate_occurrences(
+                    owner_id=owner_id,
+                    series_id=series_id,
+                    expected_version=snapshot.version,
+                    through=date(2026, 10, 26),
+                    at=generated_at,
+                    projection=projection,
+                    approved_preferences_version=snapshot.approved_preferences_version,
+                )
+                assert len(cast(list[dict[str, object]], generated["occurrences"])) == 1
+
+            # The new generation event is intentionally still unconsumed here.
+            await _deliver_until_outcome(
+                sessions,
+                transport,
+                intent_id=intent_id,
+                expected_outcome="confirmed",
+                at=due_at,
+            )
+            assert len(transport.reminders) == 1
+            async with sessions() as session:
+                before_reconcile = await session.get(ReminderIntentRecord, intent_id)
+                assert before_reconcile is not None
+                assert before_reconcile.series_version == 1
+                assert before_reconcile.dispatch_version == 1
+
+            assert await process_pending_reminder_schedules(sessions, now=due_at) >= 1
+            for iteration in range(3):
+                await process_delivery_iteration(
+                    sessions,
+                    transport,
+                    worker_id=f"generation-race-drain-{iteration}",
+                    now=_fixed_clock(due_at),
+                )
+
+            async with sessions() as session:
+                after_reconcile = await session.get(ReminderIntentRecord, intent_id)
+                attempts = list(
+                    await session.scalars(
+                        select(DeliveryAttemptRecord).where(
+                            DeliveryAttemptRecord.intent_id == intent_id
+                        )
+                    )
+                )
+                assert after_reconcile is not None
+                assert after_reconcile.series_version == 2
+                assert after_reconcile.dispatch_version == 1
+                assert len(attempts) == 1
+                assert attempts[0].outcome == "confirmed"
+                assert attempts[0].failure_code is None
+                assert len(transport.reminders) == 1
         finally:
             await engine.dispose()
 

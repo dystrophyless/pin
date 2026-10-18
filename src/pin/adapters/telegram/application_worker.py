@@ -9,6 +9,7 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from pin.adapters.telegram.account_deletion import (
@@ -76,14 +77,21 @@ from pin.contexts.billing.api import (
     TrialActivationResult,
     ViewPaymentTerms,
 )
+from pin.contexts.identity.application.contracts import PreferencesSnapshot
 from pin.contexts.identity.application.onboarding import OnboardingResult
 from pin.contexts.identity.infrastructure.store import SqlAlchemyIdentityStore
 from pin.contexts.notifications.application.delivery import DELETED_ACCOUNT_DENIAL_TEXT
+from pin.contexts.notifications.infrastructure.models import ReminderIntentRecord
 from pin.contexts.notifications.infrastructure.outbox_consumer import (
     SqlAlchemyNotificationScheduleEventConsumer,
 )
 from pin.contexts.planning.api import SqlAlchemyReminderScheduleStore
 from pin.contexts.planning.application.home_zone_changes import HomeZoneChangeRejected
+from pin.contexts.planning.infrastructure.models import OccurrenceRecord
+from pin.contexts.planning.infrastructure.series_models import (
+    SeriesOccurrenceRecord,
+    SeriesRecord,
+)
 from pin.platform.contracts import EventEnvelope
 from pin.platform.events import add_outbox_event
 from pin.platform.jobs import (
@@ -237,6 +245,7 @@ async def process_application_job(
             )
 
         store = SqlAlchemyIdentityStore(session)
+        preferences_before_update = await store.get_preferences(inbox.owner_id)
         trial_activator = _BillingTrialActivator(session)
         agenda_reply: AgendaReply | None = None
         if is_callback:
@@ -467,6 +476,13 @@ async def process_application_job(
                         now=now.astimezone(UTC),
                         trial_activator=trial_activator,
                     )
+        if result.onboarding.state == "confirmed":
+            await _carry_forward_schedule_neutral_approval(
+                session,
+                previous=preferences_before_update,
+                current=result.onboarding.preferences,
+                at=now,
+            )
         reply: AgendaReply | OnboardingReply | None = agenda_reply or result.reply
         reply_markup = await _reply_markup(session, store, inbox.owner_id, reply, now)
         if reply is not None:
@@ -515,6 +531,142 @@ async def process_application_job(
                 claim=claim,
             )
         await complete_job(session, claim)
+
+
+async def _carry_forward_schedule_neutral_approval(
+    session: AsyncSession,
+    *,
+    previous: PreferencesSnapshot | None,
+    current: PreferencesSnapshot | None,
+    at: datetime,
+) -> None:
+    """Keep approved open schedules current after a schedule-neutral edit."""
+    if (
+        previous is None
+        or current is None
+        or current.owner_id != previous.owner_id
+        or current.version != previous.version + 1
+        or (
+            current.home_zone,
+            current.reminder_calendar_days,
+            current.reminder_elapsed_hours,
+            current.quiet_start,
+            current.quiet_end,
+            current.review_time,
+        )
+        != (
+            previous.home_zone,
+            previous.reminder_calendar_days,
+            previous.reminder_elapsed_hours,
+            previous.quiet_start,
+            previous.quiet_end,
+            previous.review_time,
+        )
+    ):
+        return
+
+    active_series = await session.scalars(
+        select(SeriesRecord)
+        .where(
+            SeriesRecord.owner_id == previous.owner_id,
+            SeriesRecord.state == "active",
+        )
+        .order_by(SeriesRecord.id)
+        .with_for_update()
+    )
+    for series in active_series:
+        typed_draft = dict(series.typed_draft)
+        if type(typed_draft.get("approved_preferences_version")) is not int:
+            continue
+        if typed_draft["approved_preferences_version"] != previous.version:
+            continue
+        event_zone = typed_draft.get("event_zone") or typed_draft.get("default_zone")
+        if not isinstance(event_zone, str):
+            continue
+        typed_draft["approved_preferences_version"] = current.version
+        series.typed_draft = typed_draft
+        series.version += 1
+        series_occurrences = select(SeriesOccurrenceRecord.occurrence_id).where(
+            SeriesOccurrenceRecord.owner_id == previous.owner_id,
+            SeriesOccurrenceRecord.series_id == series.id,
+        )
+        approved_occurrences = select(OccurrenceRecord.id).where(
+            OccurrenceRecord.owner_id == previous.owner_id,
+            OccurrenceRecord.id.in_(series_occurrences),
+            OccurrenceRecord.state == "open",
+            OccurrenceRecord.reminder_preferences_version == previous.version,
+        )
+        await session.execute(
+            update(ReminderIntentRecord)
+            .where(
+                ReminderIntentRecord.owner_id == previous.owner_id,
+                ReminderIntentRecord.series_id == series.id,
+                ReminderIntentRecord.occurrence_id.in_(approved_occurrences),
+                ReminderIntentRecord.state == "scheduled",
+                ReminderIntentRecord.preferences_version == previous.version,
+                ReminderIntentRecord.series_version == series.version - 1,
+            )
+            .values(series_version=series.version, preferences_version=current.version)
+        )
+        await session.execute(
+            update(OccurrenceRecord)
+            .where(
+                OccurrenceRecord.owner_id == previous.owner_id,
+                OccurrenceRecord.id.in_(series_occurrences),
+                OccurrenceRecord.state == "open",
+                OccurrenceRecord.reminder_preferences_version == previous.version,
+            )
+            .values(
+                reminder_preferences_version=current.version,
+            )
+        )
+        await add_outbox_event(
+            session,
+            EventEnvelope(
+                id=uuid4(),
+                event_type="planning.series_approval_updated",
+                schema_version=1,
+                aggregate_id=series.id,
+                aggregate_version=series.version,
+                owner_id=series.owner_id,
+                occurred_at=at.astimezone(UTC),
+                payload={
+                    "series_id": str(series.id),
+                    "plan_item_id": str(series.plan_item_id),
+                    "approved_preferences_version": current.version,
+                    "quiet_zone": current.home_zone,
+                    "quiet_start": current.quiet_start.isoformat(),
+                    "quiet_end": current.quiet_end.isoformat(),
+                    "event_zone": event_zone,
+                    "reason": "schedule_neutral_preferences_edit",
+                },
+            ),
+        )
+
+    eligible_occurrences = select(OccurrenceRecord.id).where(
+        OccurrenceRecord.owner_id == previous.owner_id,
+        OccurrenceRecord.state == "open",
+        OccurrenceRecord.reminder_preferences_version == previous.version,
+    )
+    await session.execute(
+        update(ReminderIntentRecord)
+        .where(
+            ReminderIntentRecord.owner_id == previous.owner_id,
+            ReminderIntentRecord.occurrence_id.in_(eligible_occurrences),
+            ReminderIntentRecord.state == "scheduled",
+            ReminderIntentRecord.preferences_version == previous.version,
+        )
+        .values(preferences_version=current.version)
+    )
+    await session.execute(
+        update(OccurrenceRecord)
+        .where(
+            OccurrenceRecord.owner_id == previous.owner_id,
+            OccurrenceRecord.state == "open",
+            OccurrenceRecord.reminder_preferences_version == previous.version,
+        )
+        .values(reminder_preferences_version=current.version)
+    )
 
 
 async def run_application_worker(
