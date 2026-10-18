@@ -2,6 +2,8 @@
 
 ## Active checkpoint — 2026-10-19 local
 
+**Latest owner launch decision:** commercial launch now, Vercel free/Hobby, without IP/TOO registration in Kazakhstan. Personal-pilot versus commercial intent is resolved. This does not establish an exception to Vercel's non-commercial-only Hobby terms or an applicable financial-retention policy. No upgrade/migration is authorized; eligibility/policy and final owner acceptance remain unresolved.
+
 Goal: implement and complete all remaining issues; overall owner acceptance is not established. Repository dystrophyless/pin, main; verify the active checkout. Preserve unrelated untracked output/ and the two earlier operator drafts. Use Ponytail and the existing Luna Executor/Publisher workflow; no separate implementation Reviewer.
 
 **Active AWS runtime: a045682**, [CI/deployment 39160565275](https://github.com/dystrophyless/pin/actions/runs/39160565275), including successful temporary SSH cleanup. Root observed the exact release, explicitly completed host-health success/exit zero, and received actual Russian /help. A transient stale-lane failure during the earlier ea50e72 container replacement recovered after startup; the queued settings command was processed once. No zero-downtime claim.

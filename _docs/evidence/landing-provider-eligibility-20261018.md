@@ -16,3 +16,7 @@
 The owner must select an eligible hosting arrangement or obtain provider confirmation before this commercial-hosting gate can pass. In the dated follow-up, the owner chose **remain on Vercel; decide the plan separately**. This confirms the provider choice, not commercial eligibility or authorization to buy a plan. Do not silently remove the approved paid offer or declare the product non-commercial to bypass this decision. Functional HTTPS, referral links, Git-triggered deployment, and RU/EN rendering remain separate, previously observed facts.
 
 This finding belongs to the existing deployment/paid/release gates. It does not reinstate actual Stars transaction testing or the removed quantitative model benchmark.
+
+## Owner follow-up — 2026-10-19
+
+The owner explicitly selected commercial launch now while retaining Vercel free/Hobby and operating without IP/TOO registration. The hosting preference is now decided; compatibility with provider terms is not. The official [Hobby plan documentation](https://vercel.com/docs/plans/hobby), retrieved again on 2026-10-19, states that Hobby is restricted to non-commercial personal use. Owner authorization does not establish an exception from the provider. No upgrade, migration, or publication change was performed. Commercial eligibility remains blocked pending an eligible arrangement or provider permission. This decision does not establish legal financial-retention policy or final acceptance.
