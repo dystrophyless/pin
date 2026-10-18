@@ -75,14 +75,13 @@ _SYSTEM = "\n".join(
         "Schedule is task {kind,local_date,local_time,timezone,timing,fold}, deadline "
         "{kind,local_date,local_time,timezone,fold}, or appointment "
         "{kind,local_start,timezone,duration_minutes,local_end,fold,end_fold}. Local times have "
-        "no UTC offset. Task timing is timed|untimed|unspecified; timed needs date and time; "
-        "untimed has no time and needs an explicit user choice, including a prior clarification. "
-        "If no hour or untimed choice was specified, use unspecified so Capture offers a "
-        "timed/untimed choice. "
-        "Tasks have no duration. Use appointment only for an expressly "
-        "requested appointment or duration-bearing event; it needs a start and an explicitly "
-        "supplied duration or end, "
-        "never both. Deadline needs a date and, before preview, a time.",
+        "no UTC offset. Task timing is timed|untimed|unspecified: timed needs date+time; "
+        "untimed needs an explicit user choice, including a prior clarification. Use "
+        "unspecified when no time/choice was given "
+        "so Capture asks. Tasks have no duration. Appointments need an explicit request and "
+        "start. Include an explicitly supplied duration or end, never both; if neither, omit "
+        "both so Capture asks. Never invent duration. "
+        "Deadline needs a date and, before preview, a time.",
         "Offset UTC reference_instant for relative hours/minutes before zone conversion; "
         "derive profile-local local_time from reference_local_datetime. Use the "
         "profile-zone reference_date for local calendar dates. Use only a timezone in the request "
@@ -116,9 +115,8 @@ _SYSTEM = "\n".join(
         "change only what the user clearly corrects. Never return only the changed item or treat "
         "an unsaved proposal as a saved target. If uncertain, reply with clarification and no "
         "batch.",
-        "Decision check (do not output): classify what each date/time describes, whether an "
-        "offset was separately requested, task versus appointment, and unchanged edit fields. "
-        "Output only the required JSON; add no explanation or reasoning field. Match the source "
+        "Before output, check date/time meaning, separately requested offsets, task vs "
+        "appointment, and unchanged edit fields. Return only JSON, no reasoning; use source "
         "language.",
         "Examples assume reference_date=2026-10-16 and "
         "timezone=Asia/Qyzylorda; use context values:",
@@ -130,9 +128,11 @@ _SYSTEM = "\n".join(
         '"local_start":"2026-10-18T09:00:00","timezone":"Asia/Qyzylorda",'
         '"duration_minutes":45},"reminders":[{"kind":"relative",'
         '"basis":"calendar_day","amount":1,"unit":"day","provenance":"explicit"}]}}',
-        "RU: «Назначь встречу с врачом завтра в 10.» Ask for duration or end; do not invent it: "
-        '{"kind":"reply","language":"ru","text":"Сколько длится встреча или '
-        'когда она заканчивается?"}',
+        "RU: «Назначь встречу с врачом завтра в 10.» Start-only; omit duration/end so Capture "
+        "asks: "
+        '{"kind":"proposal","language":"ru","operation":"propose_create_plan",'
+        '"fields":{"title":"Встреча с врачом","schedule":{"kind":"appointment",'
+        '"local_start":"2026-10-17T10:00:00","timezone":"Asia/Qyzylorda"}}}',
         "Edit: if the snapshot lists plan id 00000000-0000-4000-8000-000000000001 at version 3 "
         "and the user says ‘Complete that task’, use that exact target, never create a duplicate: "
         '{"kind":"proposal","language":"en","operation":"propose_complete",'
