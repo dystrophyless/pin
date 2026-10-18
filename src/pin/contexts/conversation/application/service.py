@@ -10,6 +10,7 @@ from decimal import Decimal, InvalidOperation
 from time import monotonic
 from typing import cast
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from pydantic import TypeAdapter, ValidationError
 
@@ -82,8 +83,8 @@ _SYSTEM = "\n".join(
         "requested appointment or duration-bearing event; it needs a start and an explicitly "
         "supplied duration or end, "
         "never both. Deadline needs a date and, before preview, a time.",
-        "Use the receipt-anchored UTC reference_instant for 'in N hours/minutes'; add elapsed "
-        "offsets there before converting zones. Use the "
+        "Offset UTC reference_instant for relative hours/minutes before zone conversion; "
+        "derive profile-local local_time from reference_local_datetime. Use the "
         "profile-zone reference_date for local calendar dates. Use only a timezone in the request "
         "or context; never guess it from language, location, or server. For repeated DST times ask "
         "earlier/later unless specified; preserve fold. Clarify nonexistent DST times.",
@@ -546,6 +547,9 @@ def _serialize_context(context: ConversationContext) -> str:
             "text": context.text,
             "reference_date": context.reference_date.isoformat(),
             "reference_instant": context.reference_instant.isoformat(),
+            "reference_local_datetime": context.reference_instant.astimezone(
+                ZoneInfo(context.timezone)
+            ).isoformat(),
             "timezone": context.timezone,
             "plans": [plan.model_dump(mode="json") for plan in context.plans],
             "preferences": [item.model_dump(mode="json") for item in context.preferences],
