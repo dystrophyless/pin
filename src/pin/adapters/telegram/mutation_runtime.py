@@ -127,9 +127,7 @@ async def process_mutation_command(
         pieces = argument.split()
         occurrence_id = UUID(pieces[0])
     except (ValueError, IndexError):
-        return MutationMessage(
-            _msg(lang, "Укажите задачу кнопкой из списка.", "Choose a task from the list buttons.")
-        )
+        return await _target_menu(session, owner_id, action, lang, now)
     if action is not MutationAction.RESCHEDULE and len(pieces) > 1:
         return MutationMessage(
             _msg(

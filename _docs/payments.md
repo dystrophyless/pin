@@ -28,13 +28,15 @@ invoice payload is an opaque, server-generated order key.
    Replays are idempotent. Renewal receipts use Telegram's expiration date;
    overlap, stale periods, wrong identities, amount/currency mismatch, and
    unconfirmed or non-recurring updates cannot add coverage.
-5. Bare `/cancel` queues the Bot API renewal cancellation. A confirmed
-   cancellation stops future renewal and keeps existing paid coverage through
-   its end date. A task cancellation names its occurrence (`/cancel <UUID>`)
-   and still requires the task preview confirmation; reminder Cancel
-   buttons remain available. The same bare command cannot safely open a task
-   menu for paid users because it is the approved renewal command. A general
-   task-cancel menu or a disambiguation prompt remains an unresolved UX choice.
+5. Outside onboarding, bare `/cancel` queues the Bot API renewal cancellation.
+   A confirmed cancellation stops future renewal and keeps existing paid
+   coverage through its end date. During onboarding, the existing onboarding
+   abort flow retains ownership of bare `/cancel`. A task cancellation may name
+   its occurrence directly (`/cancel <UUID>`) and still requires the task
+   preview confirmation; reminder Cancel buttons remain available. Owner
+   decision (2026-10-18): `/cancel <non-UUID title>` opens an owner-scoped task
+   list; choosing a task opens its preview, and only the explicit confirmation
+   mutates it. Do not infer a task from title text or mutate from the list.
    `/paysupport` shows `PIN_PAYMENT_SUPPORT_CONTACT` when configured and asks
    the user for the Telegram charge ID. Do not request bank details in Telegram.
 
