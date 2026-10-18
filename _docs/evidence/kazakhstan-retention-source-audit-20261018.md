@@ -49,3 +49,13 @@ This follow-up supersedes the earlier inability to retrieve the Tax Code's opera
 - Article 65 contains category-specific limitation periods, extensions and suspensions. Its shorter ordinary limitation period does not remove Article 206's stated five-year minimum.
 
 **Gate remains unresolved.** Current consolidation, applicability to the actual unregistered commercial operator, the relevant tax and tax period, mapping of Pin receipts/refunds and external payout records to statutory document classes, archive-list applicability and approved holds/deletion policy still require validation. No numeric TTL is adopted or implemented. The owner explicitly reaffirmed that legal validation remains mandatory for issue closure; it is not delegated out of acceptance. The current bot-only phase defers the landing, not this financial-record requirement.
+
+## Natural-person operating route — 2026-10-19
+
+This section examines conditional routes for an individual operator. It does not record personal residency information or establish eligibility for Pin. Absence of IP registration alone does not prove an exemption from tax documentation duties.
+
+The [government guidance updated 24 June 2026](https://www.gov.kz/situations/810/1707) describes a self-employed route for qualifying natural persons without IP registration, subject to permitted activities, no employees and a monthly income ceiling. The retrieved KGD-hosted Code snapshot's Articles 718, 720 and 721 were also read directly: eligibility and income recording are conditional; platform-mediated activity is not automatically exempt.
+
+The [official Prime Minister-hosted annex to Resolution 994](https://primeminister.kz/assets/media/perecen-994.pdf) contains the complete 40-row activity list. It does not expressly list software development or software subscription sales. Row 82990 is limited to services through internet platforms; this is not evidence that Pin qualifies, or that Telegram is the applicable statutory platform/tax agent. The [Adilet act history](https://old.adilet.zan.kz/rus/docs/P2500000994/history) identifies the 21 November 2025 resolution; retrieving the operative Adilet page timed out.
+
+**Unresolved:** legally correct classification of Pin's subscription service, eligibility for an unregistered route, treatment and timing of Stars/payout income, and the record/tax-period mapping needed for retention. No choice of tax regime, registration, rate, exemption or TTL is made by this research. Do not claim that IP is categorically required or that self-employed status is automatically available. Legal validation remains a required closure condition by the owner's explicit answer.
