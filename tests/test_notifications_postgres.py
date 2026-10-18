@@ -511,7 +511,10 @@ def test_worker_reconciles_committed_schedule_events_and_replays_current_snapsho
             assert series_intent.state == "scheduled"
             assert series_intent.due_at == series_due
             assert series_intent.series_version == 2
-            assert series_intent.dispatch_version == 2
+            # Stopping future generation advances series metadata only; the
+            # already-materialized reminder must not be rearmed.
+            assert series_intent.dispatch_version == 1
+            assert series_intent.source_event_id == series_stopped.id
 
     run_local_async(scenario)
 

@@ -111,7 +111,6 @@ class SqlAlchemyNotificationsStore(ReminderIntentStore):
                 or existing.occurrence_version != occurrence.occurrence_version
                 or existing.preferences_version != occurrence.approved_preferences_version
                 or existing.series_id != occurrence.series_id
-                or existing.series_version != occurrence.series_version
             )
             if changed:
                 existing.state = "scheduled"
@@ -126,6 +125,14 @@ class SqlAlchemyNotificationsStore(ReminderIntentStore):
                 existing.dispatch_version += 1
                 existing.not_before_at = None
                 existing.invalidated_at = None
+                updated += 1
+            elif existing.series_version != occurrence.series_version:
+                # Series generation may advance its metadata version without
+                # changing an already-materialized occurrence's reminder.
+                # Keep the delivery fence current without rearming a confirmed
+                # attempt by incrementing dispatch_version.
+                existing.series_version = occurrence.series_version
+                existing.source_event_id = change.event_id
                 updated += 1
 
         desired_keys = set(desired)
