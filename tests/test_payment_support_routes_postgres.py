@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Iterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
 from uuid import UUID, uuid4
@@ -24,16 +24,18 @@ from pin.adapters.telegram.ingress import (
     TelegramOwnerRecord,
     persist_update,
 )
-from pin.contexts.billing.api import SqlAlchemyAccessUsageStore, StartTrial
+from pin.contexts.billing.api import ReadSubscriptionStatus, SqlAlchemyAccessUsageStore, StartTrial
 from pin.contexts.billing.domain.payments import TERMS_VERSION
 from pin.contexts.billing.infrastructure.models import (
     AccessPeriodRecord,
     PaymentOrderRecord,
     PaymentReceiptRecord,
     TermsAcceptanceRecord,
+    UsageReservationRecord,
 )
 from pin.contexts.identity.domain.preferences import Preferences
 from pin.contexts.identity.infrastructure.store import SqlAlchemyIdentityStore
+from pin.contexts.planning.infrastructure.models import PlanItemRecord
 from pin.persistence import run_local_async
 from pin.persistence.db import create_engine, create_session_factory
 from pin.platform.models import InboxUpdate, Job, OutboxEvent
@@ -110,8 +112,11 @@ def test_bilingual_terms_acceptance_and_payment_support_are_persisted_routes(
     support_sessions: async_sessionmaker[AsyncSession],
 ) -> None:
     ru_owner, en_owner = uuid4(), uuid4()
+    expired_ru_owner, expired_en_owner = uuid4(), uuid4()
     ru_user = 741_000_000 + ru_owner.int % 10_000_000
     en_user = 751_000_000 + en_owner.int % 10_000_000
+    expired_ru_user = 761_000_000 + expired_ru_owner.int % 10_000_000
+    expired_en_user = 771_000_000 + expired_en_owner.int % 10_000_000
     bot_id = 876_543 + ru_owner.int % 100_000
     worker_id = f"issue20-support-{uuid4().hex[:12]}"
 
@@ -124,6 +129,23 @@ def test_bilingual_terms_acceptance_and_payment_support_are_persisted_routes(
             )
             await SqlAlchemyAccessUsageStore(session).activate_trial(
                 StartTrial(owner_id, telegram_user_id, NOW)
+            )
+            saved = await SqlAlchemyIdentityStore(session).save_preferences(
+                owner_id=owner_id,
+                expected_version=None,
+                preferences=Preferences(language=language, home_zone="UTC"),
+            )
+            assert saved is not None
+
+    async def seed_expired_owner(owner_id: UUID, telegram_user_id: int, language: str) -> None:
+        async with support_sessions() as session, session.begin():
+            session.add(
+                TelegramOwnerRecord(
+                    bot_id=bot_id, telegram_user_id=telegram_user_id, owner_id=owner_id
+                )
+            )
+            await SqlAlchemyAccessUsageStore(session).activate_trial(
+                StartTrial(owner_id, telegram_user_id, NOW - timedelta(days=31))
             )
             saved = await SqlAlchemyIdentityStore(session).save_preferences(
                 owner_id=owner_id,
@@ -196,6 +218,68 @@ def test_bilingual_terms_acceptance_and_payment_support_are_persisted_routes(
     async def scenario() -> None:
         await seed_owner(ru_owner, ru_user, "ru")
         await seed_owner(en_owner, en_user, "en")
+        await seed_expired_owner(expired_ru_owner, expired_ru_user, "ru")
+        await seed_expired_owner(expired_en_owner, expired_en_user, "en")
+
+        for update_id, owner_id, user_id, command_text, expected in (
+            (20, expired_ru_owner, expired_ru_user, "/help", ("/today", "/support")),
+            (
+                21,
+                expired_ru_owner,
+                expired_ru_user,
+                "/support",
+                ("Связь с поддержкой:", "@pin_appbot"),
+            ),
+            (
+                22,
+                expired_ru_owner,
+                expired_ru_user,
+                "/paysupport",
+                ("Возвраты рассматриваются вручную", "укажите Telegram charge ID"),
+            ),
+            (23, expired_en_owner, expired_en_user, "/help", ("today's plans", "/support")),
+            (
+                24,
+                expired_en_owner,
+                expired_en_user,
+                "/support",
+                ("Contact support:", "@pin_appbot"),
+            ),
+            (
+                25,
+                expired_en_owner,
+                expired_en_user,
+                "/paysupport",
+                ("Refunds are reviewed manually", "Telegram charge ID"),
+            ),
+        ):
+            reply = await command_route(update_id, owner_id, user_id, command_text)
+            assert all(marker in reply["plain_text"] for marker in expected)
+            async with support_sessions() as session:
+                status = await SqlAlchemyAccessUsageStore(session).read_subscription_status(
+                    ReadSubscriptionStatus(owner_id, NOW)
+                )
+                assert not status.active
+                assert not (
+                    await session.scalars(
+                        select(AccessPeriodRecord).where(
+                            AccessPeriodRecord.owner_id == owner_id,
+                            AccessPeriodRecord.policy_kind == "paid",
+                        )
+                    )
+                ).all()
+                assert not (
+                    await session.scalars(
+                        select(UsageReservationRecord).where(
+                            UsageReservationRecord.owner_id == owner_id
+                        )
+                    )
+                ).all()
+                assert not (
+                    await session.scalars(
+                        select(PlanItemRecord).where(PlanItemRecord.owner_id == owner_id)
+                    )
+                ).all()
 
         foreign_acceptance = await command_route(1, en_owner, en_user, "/acceptterms")
         assert "read the subscription terms first" in foreign_acceptance["plain_text"]

@@ -56,6 +56,12 @@ from pin.adapters.telegram.presentation.payments import (
     render_terms_accepted,
 )
 from pin.adapters.telegram.presentation.subscription import render_subscription_status
+from pin.adapters.telegram.presentation.templates import (
+    plain_help,
+    plain_support,
+    render_help,
+    render_support,
+)
 from pin.adapters.telegram.presentation.tokens import SqlAlchemyCallbackTokenStore
 from pin.contexts.billing.api import (
     AcceptPaymentTerms,
@@ -302,6 +308,7 @@ async def process_application_job(
                 else None
             )
             cancel_onboarding = active_draft is not None and active_draft.step != "complete"
+            command_language = command_profile.language if command_profile else "en"
             # Bare /cancel belongs to Billing; a named occurrence is a task mutation.
             payment_reply = (
                 await _handle_payment_command(
@@ -311,7 +318,7 @@ async def process_application_job(
                     command=command,
                     now=now.astimezone(UTC),
                     payment_support_contact=payment_support_contact,
-                    language=command_profile.language if command_profile else "en",
+                    language=command_language,
                 )
                 if (
                     isinstance(message_text, str)
@@ -320,6 +327,18 @@ async def process_application_job(
                 )
                 else None
             )
+            support_contact = payment_support_contact or "@pin_appbot"
+            if command.casefold() == "/help":
+                presentation_reply = OnboardingReply(
+                    render_help(command_language), plain_help(command_language)
+                )
+            elif command.casefold() == "/support":
+                presentation_reply = OnboardingReply(
+                    render_support(command_language, support_contact),
+                    plain_support(command_language, support_contact),
+                )
+            else:
+                presentation_reply = None
             profile = command_profile if view is not None or subscription else None
             if isinstance(successful_payment, dict):
                 pass
@@ -328,6 +347,12 @@ async def process_application_job(
                     DispatchDisposition.HANDLED,
                     OnboardingResult("unhandled", preferences=command_profile),
                     payment_reply,
+                )
+            elif presentation_reply is not None:
+                result = PrivateMessageResult(
+                    DispatchDisposition.HANDLED,
+                    OnboardingResult("unhandled", preferences=command_profile),
+                    presentation_reply,
                 )
             elif command.casefold() == "/delete_account":
                 if len(words) != 1:
