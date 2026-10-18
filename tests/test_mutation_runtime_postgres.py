@@ -277,6 +277,70 @@ async def test_command_menu_is_owner_scoped_and_confirmation_is_a_separate_step(
 
 
 @pytest.mark.asyncio
+async def test_named_cancel_uses_owner_menu_then_requires_preview_confirmation(runtime_sessions):
+    at = datetime(2026, 10, 14, 9, tzinfo=UTC)
+    owner_id, foreign_owner = uuid4(), uuid4()
+    async with runtime_sessions() as session, session.begin():
+        await _seed_user(session, owner_id, at=at)
+        owned_id = await _seed_task(
+            session, owner_id=owner_id, title="Cancel this task", at=at, day=date(2026, 10, 20)
+        )
+        foreign_id = await _seed_task(
+            session,
+            owner_id=foreign_owner,
+            title="Foreign private task",
+            at=at,
+            day=date(2026, 10, 21),
+        )
+        menu = await process_mutation_command(
+            session,
+            owner_id=owner_id,
+            text="/cancel Cancel this task",
+            language="en",
+            now=at,
+        )
+        assert menu is not None and menu.keyboard is not None
+        menu_labels = str(menu.keyboard["inline_keyboard"])
+        assert "Cancel this task" in menu_labels
+        assert "Foreign private task" not in menu_labels
+        selection = menu.keyboard["inline_keyboard"][0][0]["callback_data"]
+        assert isinstance(selection, str) and selection.startswith("pm:")
+        owned = await session.get(OccurrenceRecord, owned_id)
+        foreign = await session.get(OccurrenceRecord, foreign_id)
+        assert owned is not None and (owned.state, owned.version) == ("open", 1)
+        assert foreign is not None and (foreign.state, foreign.version) == ("open", 1)
+        assert (
+            await session.scalar(
+                select(MutationPreviewRecord.id).where(MutationPreviewRecord.owner_id == owner_id)
+            )
+            is None
+        )
+
+    async with runtime_sessions() as session, session.begin():
+        preview = await process_mutation_callback(
+            session, owner_id=owner_id, data=selection, language="en", now=at
+        )
+        assert preview.keyboard is not None
+        assert "Cancel this task" in preview.text
+        assert "Cancel this occurrence?" in preview.text
+        occurrence = await session.get(OccurrenceRecord, owned_id)
+        assert occurrence is not None and (occurrence.state, occurrence.version) == ("open", 1)
+        mutation_preview = await session.scalar(
+            select(MutationPreviewRecord).where(MutationPreviewRecord.owner_id == owner_id)
+        )
+        assert mutation_preview is not None and mutation_preview.state == "pending"
+        assert mutation_preview.owner_id == owner_id
+        confirm = preview.keyboard["inline_keyboard"][0][0]["callback_data"]
+        assert isinstance(confirm, str)
+
+    confirmed = await _click(runtime_sessions, owner_id=owner_id, callback=confirm, at=at)
+    assert "Task cancelled." in confirmed.text
+    async with runtime_sessions() as session:
+        occurrence = await session.get(OccurrenceRecord, owned_id)
+        assert occurrence is not None and (occurrence.state, occurrence.version) == ("cancelled", 2)
+
+
+@pytest.mark.asyncio
 async def test_new_preview_supersedes_old_confirmation_and_dismiss_cancels_sibling_token(
     runtime_sessions,
 ):
