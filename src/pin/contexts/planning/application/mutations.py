@@ -37,6 +37,7 @@ from pin.contexts.planning.domain.plans import (
     resolve_reminder_projection,
     resolve_schedule,
 )
+from pin.contexts.planning.domain.recurrence import RecurrenceFrequency, recurrence_date
 from pin.contexts.planning.recurrence_api import (
     RecurrenceExceptionDraft,
     RecurrenceExceptionScope,
@@ -150,7 +151,7 @@ async def preview_mutation(
                     "recurrence series is missing or belongs to another owner"
                 )
             _ensure_not_started(target, snapshot, request, now)
-            change = _series_change(request, target, effective_replacement)
+            change = _series_change(request, target, effective_replacement, snapshot)
             through = _exception_through(snapshot, effective_replacement.local_date)
             exception = preview_recurrence_exception(
                 snapshot,
@@ -322,7 +323,9 @@ async def confirm_mutation(
             if series_snapshot is None or series_snapshot.version < 1:
                 raise MutationStalePreview("recurrence series changed after preview")
             _ensure_not_started(target, series_snapshot, preview.request, now)
-            change = _series_change(preview.request, target, effective_replacement)
+            change = _series_change(
+                preview.request, target, effective_replacement, series_snapshot
+            )
             exception = preview_recurrence_exception(
                 series_snapshot,
                 change,
@@ -410,7 +413,10 @@ def _effective_replacement(requested: OneOffPlanDraft, target: MutationTarget) -
 
 
 def _series_change(
-    request: MutationRequest, target: MutationTarget, replacement: OneOffPlanDraft
+    request: MutationRequest,
+    target: MutationTarget,
+    replacement: OneOffPlanDraft,
+    snapshot: SeriesSnapshot,
 ) -> RecurrenceExceptionDraft:
     scope = (
         RecurrenceExceptionScope.THIS_AND_FUTURE
@@ -418,7 +424,29 @@ def _series_change(
         else RecurrenceExceptionScope.SINGLE
     )
     assert target.recurrence_sequence is not None
-    return RecurrenceExceptionDraft(scope, target.recurrence_sequence, replacement)
+    rule = snapshot.draft.recurrence
+    new_pattern = None
+    if (
+        scope is RecurrenceExceptionScope.THIS_AND_FUTURE
+        and rule.frequency is RecurrenceFrequency.WEEKLY
+    ):
+        original_weekday = recurrence_date(
+            snapshot.anchor_date,
+            rule,
+            target.recurrence_sequence - snapshot.anchor_sequence,
+        ).weekday()
+        new_pattern = replace(
+            rule,
+            weekdays=tuple(
+                sorted(
+                    (set(rule.weekdays) - {original_weekday})
+                    | {replacement.local_date.weekday()}
+                )
+            ),
+        )
+    return RecurrenceExceptionDraft(
+        scope, target.recurrence_sequence, replacement, new_pattern=new_pattern
+    )
 
 
 def _cancellation_projection(

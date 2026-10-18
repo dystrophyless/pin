@@ -20,6 +20,7 @@ from sqlalchemy.orm.attributes import flag_modified
 
 import pin.adapters.telegram.mutation_runtime as mutation_runtime
 from pin.adapters.telegram.mutation_runtime import (
+    MutationMessage,
     prepare_proposed_mutation,
     process_mutation_callback,
     process_mutation_command,
@@ -46,8 +47,9 @@ from pin.contexts.planning.infrastructure.models import (
     ReminderRuleRecord,
 )
 from pin.contexts.planning.infrastructure.mutation_models import MutationPreviewRecord
-from pin.contexts.planning.infrastructure.series_models import SeriesRecord
+from pin.contexts.planning.infrastructure.series_models import SeriesOccurrenceRecord, SeriesRecord
 from pin.contexts.planning.infrastructure.series_store import SqlAlchemySeriesStore
+from pin.platform.contracts import EventEnvelope
 from pin.platform.models import OutboxEvent
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -93,11 +95,18 @@ def runtime_sessions() -> Iterator[async_sessionmaker[AsyncSession]]:
     asyncio.run(engine.dispose())
 
 
-async def _seed_user(session: AsyncSession, owner_id: UUID, *, at: datetime) -> None:
+async def _seed_user(
+    session: AsyncSession,
+    owner_id: UUID,
+    *,
+    at: datetime,
+    language: str = "en",
+    home_zone: str = "UTC",
+) -> None:
     await SqlAlchemyIdentityStore(session).save_preferences(
         owner_id=owner_id,
         expected_version=None,
-        preferences=Preferences(language="en", home_zone="UTC"),
+        preferences=Preferences(language=language, home_zone=home_zone),
     )
     await SqlAlchemyAccessUsageStore(session).activate_trial(
         StartTrial(owner_id, telegram_user_id=owner_id.int % 2_000_000_000 + 1, at=at)
@@ -152,18 +161,29 @@ async def _seed_task(
     return occurrence_id
 
 
-async def _seed_weekly_series(session: AsyncSession, *, owner_id: UUID, at: datetime) -> UUID:
+async def _seed_weekly_series(
+    session: AsyncSession,
+    *,
+    owner_id: UUID,
+    at: datetime,
+    start_date: date = date(2026, 10, 19),
+    local_time: time = time(12),
+    event_zone: str = "UTC",
+    interval: int = 1,
+    count: int = 3,
+    weekdays: tuple[int, ...] | None = None,
+) -> UUID:
     draft = RecurringPlanDraft(
         kind=PlanKind.TASK,
         title="Weekly review",
-        start_date=date(2026, 10, 19),
-        local_time=time(12),
-        event_zone="UTC",
+        start_date=start_date,
+        local_time=local_time,
+        event_zone=event_zone,
         recurrence=RecurrenceRule(
             RecurrenceFrequency.WEEKLY,
-            interval=1,
-            weekdays=(0,),
-            count=3,
+            interval=interval,
+            weekdays=weekdays or (start_date.weekday(),),
+            count=count,
         ),
     )
     projection = project_recurrence(
@@ -172,7 +192,7 @@ async def _seed_weekly_series(session: AsyncSession, *, owner_id: UUID, at: date
         default_zone="UTC",
         default_reminders=(),
         at=at,
-        through=date(2026, 12, 1),
+        through=start_date + timedelta(days=366),
     )
     await SqlAlchemySeriesStore(session).persist_series(
         owner_id=owner_id,
@@ -187,7 +207,7 @@ async def _seed_weekly_series(session: AsyncSession, *, owner_id: UUID, at: date
         quiet_start=time(22),
         quiet_end=time(7),
         at=at,
-        horizon_date=date(2026, 12, 1),
+        horizon_date=start_date + timedelta(days=366),
     )
     series = await session.scalar(select(SeriesRecord).where(SeriesRecord.owner_id == owner_id))
     assert series is not None
@@ -195,12 +215,26 @@ async def _seed_weekly_series(session: AsyncSession, *, owner_id: UUID, at: date
 
 
 async def _click(
-    sessions: async_sessionmaker[AsyncSession], *, owner_id: UUID, callback: str, at: datetime
-):
+    sessions: async_sessionmaker[AsyncSession],
+    *,
+    owner_id: UUID,
+    callback: str,
+    at: datetime,
+    language: str = "en",
+) -> MutationMessage:
     async with sessions() as session, session.begin():
         return await process_mutation_callback(
-            session, owner_id=owner_id, data=callback, language="en", now=at
+            session, owner_id=owner_id, data=callback, language=language, now=at
         )
+
+
+def _callback(message: MutationMessage, *, row: int = 0) -> str:
+    assert message.keyboard is not None
+    markup = message.keyboard
+    rows = cast(list[list[dict[str, object]]], markup["inline_keyboard"])
+    callback = rows[row][0]["callback_data"]
+    assert isinstance(callback, str)
+    return callback
 
 
 @pytest.mark.asyncio
@@ -728,6 +762,366 @@ async def test_recurring_cancel_requires_scope_choice_before_preview(runtime_ses
     )
     assert series_preview.keyboard is not None
     assert "2026-10-19" in series_preview.text and "2026-10-23 13:00" in series_preview.text
+
+
+@pytest.mark.parametrize(
+    (
+        "at",
+        "start_date",
+        "interval",
+        "count",
+        "pattern_weekdays",
+        "expected_pattern_weekdays",
+        "completed_count",
+        "selected_index",
+        "replacement_date",
+        "expected_dates",
+        "language",
+        "single_exception_first",
+    ),
+    [
+        (
+            datetime(2026, 10, 18, 16, 44, tzinfo=UTC),
+            date(2026, 10, 19),
+            1,
+            3,
+            (0,),
+            (2,),
+            1,
+            1,
+            "2026-10-28",
+            ["2026-10-28", "2026-11-04"],
+            "ru",
+            False,
+        ),
+        (
+            datetime(2026, 10, 18, 16, 44, tzinfo=UTC),
+            date(2026, 10, 19),
+            1,
+            3,
+            (0,),
+            (2,),
+            0,
+            1,
+            "2026-10-28",
+            ["2026-10-28", "2026-11-04"],
+            "en",
+            False,
+        ),
+        (
+            datetime(2026, 5, 30, 0, tzinfo=UTC),
+            date(2026, 6, 1),
+            2,
+            3,
+            (0,),
+            (0,),
+            0,
+            0,
+            "2026-06-08",
+            ["2026-06-08", "2026-06-22", "2026-07-06"],
+            "en",
+            False,
+        ),
+        (
+            datetime(2026, 10, 18, 16, 44, tzinfo=UTC),
+            date(2026, 10, 19),
+            1,
+            3,
+            (0,),
+            (2,),
+            1,
+            1,
+            "2026-10-28",
+            ["2026-10-28", "2026-11-04"],
+            "ru",
+            True,
+        ),
+        (
+            datetime(2026, 10, 18, 16, 44, tzinfo=UTC),
+            date(2026, 10, 19),
+            1,
+            10,
+            (0,),
+            (2,),
+            4,
+            4,
+            "2026-11-18",
+            [
+                "2026-11-18",
+                "2026-11-25",
+                "2026-12-02",
+                "2026-12-09",
+                "2026-12-16",
+                "2026-12-23",
+            ],
+            "ru",
+            False,
+        ),
+        (
+            datetime(2026, 10, 18, 16, 44, tzinfo=UTC),
+            date(2026, 10, 19),
+            1,
+            5,
+            (0, 2),
+            (1, 2),
+            0,
+            0,
+            "2026-10-20",
+            [
+                "2026-10-20",
+                "2026-10-21",
+                "2026-10-27",
+                "2026-10-28",
+                "2026-11-03",
+            ],
+            "ru",
+            False,
+        ),
+    ],
+    ids=(
+        "weekday-shift-after-completed-history",
+        "weekday-shift-english-preview",
+        "same-weekday-two-week-reanchor",
+        "weekday-shift-after-single-occurrence-exception",
+        "tr02-count-ten-four-completed-and-localized-preview",
+        "replace-only-selected-multiweekday-pattern-day",
+    ),
+)
+@pytest.mark.asyncio
+async def test_runtime_reschedule_this_and_future_weekly_pattern(
+    runtime_sessions: async_sessionmaker[AsyncSession],
+    at: datetime,
+    start_date: date,
+    interval: int,
+    count: int,
+    pattern_weekdays: tuple[int, ...],
+    expected_pattern_weekdays: tuple[int, ...],
+    completed_count: int,
+    selected_index: int,
+    replacement_date: str,
+    expected_dates: list[str],
+    language: str,
+    single_exception_first: bool,
+) -> None:
+    owner_id = uuid4()
+    async with runtime_sessions() as session, session.begin():
+        await _seed_user(session, owner_id, at=at, language=language, home_zone="Asia/Almaty")
+        await _seed_weekly_series(
+            session,
+            owner_id=owner_id,
+            at=at,
+            start_date=start_date,
+            local_time=time(18),
+            event_zone="Asia/Almaty",
+            interval=interval,
+            count=count,
+            weekdays=pattern_weekdays,
+        )
+        occurrences = (
+            await session.scalars(
+                select(OccurrenceRecord)
+                .where(OccurrenceRecord.owner_id == owner_id)
+                .order_by(OccurrenceRecord.local_date)
+            )
+        ).all()
+        assert len(occurrences) == count
+        assert occurrences[0].local_date == start_date
+        prior_dates = [item.local_date.isoformat() for item in occurrences[:selected_index]]
+        original_ids = [item.id for item in occurrences]
+        original_keys = list(
+            await session.scalars(
+                select(SeriesOccurrenceRecord.recurrence_key)
+                .where(SeriesOccurrenceRecord.occurrence_id.in_(original_ids))
+                .order_by(SeriesOccurrenceRecord.sequence)
+            )
+        )
+    for occurrence_id in original_ids[:completed_count]:
+        async with runtime_sessions() as session, session.begin():
+            done = await process_mutation_command(
+                session,
+                owner_id=owner_id,
+                text=f"/done {occurrence_id}",
+                language=language,
+                now=at,
+            )
+            assert done is not None and done.keyboard is not None
+            done_callback = _callback(done)
+        completed = await _click(
+            runtime_sessions, owner_id=owner_id, callback=done_callback, at=at, language=language
+        )
+        assert (
+            "выполненной" in completed.text.lower()
+            if language == "ru"
+            else "marked done" in completed.text.lower()
+        )
+
+    if single_exception_first:
+        async with runtime_sessions() as session, session.begin():
+            single_scope = await process_mutation_command(
+                session,
+                owner_id=owner_id,
+                text=f"/reschedule {original_ids[selected_index]}",
+                language=language,
+                now=at,
+            )
+            assert single_scope is not None and single_scope.keyboard is not None
+            single_callback = _callback(single_scope, row=0)
+        prompt = await _click(
+            runtime_sessions, owner_id=owner_id, callback=single_callback, at=at, language=language
+        )
+        assert prompt.keyboard is None
+        async with runtime_sessions() as session, session.begin():
+            single_preview = await process_mutation_command(
+                session,
+                owner_id=owner_id,
+                text="2026-10-27 18:00",
+                language=language,
+                now=at,
+            )
+            assert single_preview is not None and single_preview.keyboard is not None
+            assert "2026-10-27 18:00" in single_preview.text
+            single_confirm = _callback(single_preview)
+        single_result = await _click(
+            runtime_sessions, owner_id=owner_id, callback=single_confirm, at=at, language=language
+        )
+        assert "расписание задачи обновлено" in single_result.text.lower()
+
+    async with runtime_sessions() as session, session.begin():
+        scope_menu = await process_mutation_command(
+            session,
+            owner_id=owner_id,
+            text=f"/reschedule {original_ids[selected_index]}",
+            language=language,
+            now=at,
+        )
+        assert scope_menu is not None and scope_menu.keyboard is not None
+        scope_callback = _callback(scope_menu, row=1)
+
+    prompt = await _click(
+        runtime_sessions, owner_id=owner_id, callback=scope_callback, at=at, language=language
+    )
+    assert prompt.keyboard is None
+    async with runtime_sessions() as session, session.begin():
+        preview = await process_mutation_command(
+            session,
+            owner_id=owner_id,
+            text=f"{replacement_date} 18:00",
+            language=language,
+            now=at,
+        )
+        assert preview is not None and preview.keyboard is not None
+        assert f"{replacement_date} 18:00" in preview.text
+        for expected_date in expected_dates:
+            assert expected_date in preview.text
+        if language == "ru":
+            assert "Эта и все будущие задачи" in preview.text
+            weekday_names = (
+                "понедельникам",
+                "вторникам",
+                "средам",
+                "четвергам",
+                "пятницам",
+                "субботам",
+                "воскресеньям",
+            )
+            expected_pattern = ", ".join(
+                weekday_names[day] for day in expected_pattern_weekdays
+            )
+            assert f"по {expected_pattern}" in preview.text
+            assert f"осталось {len(expected_dates)} (всего {count})" in preview.text
+        else:
+            assert "This and all future occurrences" in preview.text
+            expected_weekday = "Monday" if interval == 2 else "Wednesday"
+            pattern_label = (
+                f"Every {interval} weeks on {expected_weekday}"
+                if interval != 1
+                else f"Weekly on {expected_weekday}"
+            )
+            assert pattern_label in preview.text
+            assert f"{len(expected_dates)} remaining ({count} total)" in preview.text
+        confirm = _callback(preview)
+        saved_rows = (
+            await session.scalars(
+                select(MutationPreviewRecord).where(MutationPreviewRecord.owner_id == owner_id)
+            )
+        ).all()
+        saved = next(
+            row
+            for row in saved_rows
+            if cast(dict[str, Any], row.payload)["request"]["action"] == "reschedule"
+            and cast(dict[str, Any], row.payload)["request"]["scope"] == "this_and_future"
+        )
+        saved_payload = cast(dict[str, Any], saved.payload)
+        saved_schedules = cast(list[dict[str, Any]], saved_payload["series_preview_schedules"])
+        assert [item["local_date"] for item in saved_schedules] == expected_dates
+        before_confirm = (
+            await session.scalars(
+                select(OccurrenceRecord)
+                .where(OccurrenceRecord.owner_id == owner_id)
+                .order_by(OccurrenceRecord.local_date)
+            )
+        ).all()
+        assert [(item.state, item.version) for item in before_confirm] == [
+            ("completed", 2)
+            if index < completed_count
+            else (
+                "open",
+                2 if single_exception_first and index == selected_index else 1,
+            )
+            for index in range(len(before_confirm))
+        ]
+
+    confirmed = await _click(
+        runtime_sessions, owner_id=owner_id, callback=confirm, at=at, language=language
+    )
+    assert (
+        "расписание задачи обновлено" in confirmed.text.lower()
+        if language == "ru"
+        else "task rescheduled" in confirmed.text.lower()
+    )
+    async with runtime_sessions() as session:
+        final = (
+            await session.scalars(
+                select(OccurrenceRecord)
+                .where(OccurrenceRecord.owner_id == owner_id)
+                .order_by(OccurrenceRecord.local_date)
+            )
+        ).all()
+        assert [item.id for item in final] == original_ids
+        final_keys = list(
+            await session.scalars(
+                select(SeriesOccurrenceRecord.recurrence_key)
+                .where(SeriesOccurrenceRecord.occurrence_id.in_(original_ids))
+                .order_by(SeriesOccurrenceRecord.sequence)
+            )
+        )
+        assert final_keys == original_keys
+        assert [item.local_date.isoformat() for item in final] == prior_dates + expected_dates
+        expected_final = []
+        for index in range(len(final)):
+            state = "completed" if index < completed_count else "open"
+            if index < selected_index:
+                version = 2 if state == "completed" else 1
+            else:
+                version = 3 if single_exception_first and index == selected_index else 2
+            expected_final.append((time(18), state, version))
+        assert [(item.local_time, item.state, item.version) for item in final] == expected_final
+        series = await session.scalar(select(SeriesRecord).where(SeriesRecord.owner_id == owner_id))
+        assert series is not None
+        assert (series.anchor_date.isoformat(), series.anchor_sequence, series.total_count) == (
+            expected_dates[0],
+            selected_index,
+            count,
+        )
+        exception_event = await session.scalar(
+            select(OutboxEvent).where(
+                OutboxEvent.owner_id == owner_id,
+                OutboxEvent.event_type == "planning.series_exception_applied",
+            )
+        )
+        assert exception_event is not None
+        event_payload = EventEnvelope.from_dict(exception_event.payload).payload
+        assert event_payload["remaining_count"] == len(expected_dates)
 
 
 @pytest.mark.asyncio
