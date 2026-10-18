@@ -1,5 +1,11 @@
 # Pin handoff
 
+## Current phase amendment v0.20 — 2026-10-19
+
+**Owner-confirmed:** pause landing work and focus exclusively on the Telegram bot. Landing design/content, hosting migration or upgrade, site CI/CD, referral/browser checks and Vercel commercial eligibility are outside the current bot phase. This is a phase deferral, not deletion of the eventual landing requirement or a claim of provider permission. Existing sites, deployments and integrations are left unchanged; this instruction does not authorize unpublishing them.
+
+For the current phase, AC15's landing portion and landing-specific dependencies in deployment, paid integration and release acceptance do not block Telegram-bot implementation or its phase verdict. Retain bot onboarding, subscription/offer presentation, synthetic payment/entitlement checks, support, privacy/deletion, operations and recovery. The owner's commercial intent and operation without IP/TOO are unchanged. Applicable financial-record policy and final bot-phase acceptance remain separate unresolved requirements. Historical full-MVP task text still applies to the later whole-product phase; it must not be mistaken for the current bot-only completion boundary. Actual Stars testing and the formal quantitative benchmark remain removed, not deferred. No new provider calls or spending are authorized.
+
 ## Active checkpoint — 2026-10-19 local
 
 **Latest owner launch decision:** commercial launch now, Vercel free/Hobby, without IP/TOO registration in Kazakhstan. Personal-pilot versus commercial intent is resolved. This does not establish an exception to Vercel's non-commercial-only Hobby terms or an applicable financial-retention policy. No upgrade/migration is authorized; eligibility/policy and final owner acceptance remain unresolved.

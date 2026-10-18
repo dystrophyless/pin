@@ -312,3 +312,7 @@ These sources were consulted during the brainstorm. Revalidate mutable pricing a
 ## Owner launch direction — 2026-10-19
 
 **Confirmed owner decision:** commercial launch now, retain Vercel free/Hobby, and operate without an IP/TOO registration in Kazakhstan. This supersedes the unresolved personal-pilot versus commercial-launch choice. It does not establish provider permission, statutory financial-retention applicability, or final MVP acceptance. No paid hosting upgrade or provider migration is authorized. The requested Vercel plan conflicts with its documented non-commercial-only restriction; an eligible arrangement or explicit provider exception remains unresolved. Financial-record policy remains unapproved; no period or legal conclusion is inferred from the absence of registration.
+
+## Current focus — 2026-10-19
+
+**Owner-confirmed:** pause the landing topic and work only on the Telegram bot for now. Landing hosting, migrations, upgrades and browser/referral acceptance are deferred from this phase; no site shutdown is requested. Commercial intent and no IP/TOO registration remain as previously stated. Bot payments, synthetic verification, support and data handling remain in scope; applicable financial-record policy is not resolved by deferring the site. See SPEC-001 v0.20 for the phase boundary.
