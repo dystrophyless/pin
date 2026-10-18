@@ -74,7 +74,10 @@ from pin.contexts.notifications.application.delivery import (
     TelegramReplySend,
     UnknownDeliveryFailure,
 )
-from pin.contexts.notifications.infrastructure.delivery_worker import enqueue_due_reply_jobs
+from pin.contexts.notifications.infrastructure.delivery_worker import (
+    DELIVERY_RECOVERY_SUMMARY_JOB_KIND,
+    enqueue_due_reply_jobs,
+)
 from pin.contexts.notifications.infrastructure.models import (
     DeliveryAttemptRecord,
     ReminderIntentRecord,
@@ -286,10 +289,12 @@ def test_trial_warning_quiet_hours_expiry_and_saved_plan_are_composed(
     transport = _LocalDeliveryTransport()
     owner_id: UUID
     trial_end: datetime
+    recovery_episode_key: str
+    quiet_notice_job_id: UUID
     reminder_id: UUID
 
     async def scenario() -> None:
-        nonlocal owner_id, trial_end, reminder_id
+        nonlocal owner_id, trial_end, recovery_episode_key, quiet_notice_job_id, reminder_id
         async with paid_lifecycle_sessions() as session, session.begin():
             owner_id = await PostgresTelegramOwnerResolver().resolve(
                 session, bot_id=EXPIRY_BOT_ID, telegram_user_id=EXPIRY_TELEGRAM_USER_ID
@@ -299,6 +304,7 @@ def test_trial_warning_quiet_hours_expiry_and_saved_plan_are_composed(
             )
             assert trial.status is TrialActivationStatus.ACTIVATED
             assert trial.period_id is not None
+            recovery_episode_key = str(trial.period_id)
             trial_end = base + PlanPolicy.trial().duration
             warning_at = trial_end - timedelta(hours=24)
             quiet_start = (warning_at - timedelta(minutes=30)).time().replace(tzinfo=None)
@@ -366,7 +372,32 @@ def test_trial_warning_quiet_hours_expiry_and_saved_plan_are_composed(
                 processed_any = True
             raise AssertionError("delivery worker did not become idle within the bounded drain")
 
-        assert await drain_delivery(base)
+        assert await process_delivery_iteration(
+            paid_lifecycle_sessions,
+            transport,
+            worker_id="issue26-expiry-local",
+            now=lambda: base,
+        )
+        async with paid_lifecycle_sessions() as session, session.begin():
+            summary_job = await session.scalar(
+                select(Job).where(
+                    Job.owner_id == owner_id,
+                    Job.kind == DELIVERY_RECOVERY_SUMMARY_JOB_KIND,
+                )
+            )
+            db_now = await session.scalar(select(func.clock_timestamp()))
+            assert summary_job is not None and db_now is not None
+            expected_summary_defer_at = base + timedelta(minutes=90)
+            assert summary_job.payload.get("episode_key") == recovery_episode_key
+            assert summary_job.status == "pending"
+            assert summary_job.available_at == expected_summary_defer_at
+            live_retry_delay = summary_job.available_at - base
+            assert live_retry_delay == timedelta(minutes=90)
+            assert transport.sent == [] and transport.replies == 0
+            summary_job.available_at = db_now + live_retry_delay
+            assert summary_job.available_at - db_now == live_retry_delay
+
+        assert not await drain_delivery(base)
         assert transport.sent == [] and transport.replies == 0
         async with paid_lifecycle_sessions() as session, session.begin():
             assert await schedule_access_notices(session, transport, at=warning_at) == 1
@@ -424,13 +455,24 @@ def test_trial_warning_quiet_hours_expiry_and_saved_plan_are_composed(
             )
             db_now = await session.scalar(select(func.clock_timestamp()))
             assert db_now is not None
-            assert deferred.status == "pending" and deferred.last_error == "quiet_hours"
-            assert timedelta(minutes=59) <= deferred.available_at - db_now <= timedelta(hours=1)
-            # The worker retry uses PostgreSQL's live clock; project that verified retry
-            # onto this historical fixture timeline before testing the quiet-end delivery.
-            deferred.available_at = warning_at + timedelta(hours=1)
+            assert deferred.status == "pending" and deferred.last_error is None
+            assert deferred.available_at == warning_at + timedelta(minutes=90)
+            quiet_delay = deferred.available_at - warning_at
+            quiet_notice_job_id = deferred.id
+            deferred.available_at = db_now + quiet_delay
+            assert deferred.available_at - db_now == quiet_delay
 
         clock.at = warning_at + timedelta(hours=2)
+        async with paid_lifecycle_sessions() as session, session.begin():
+            later_deferred = await session.get(Job, quiet_notice_job_id)
+            db_now = await session.scalar(select(func.clock_timestamp()))
+            assert later_deferred is not None and db_now is not None
+            assert clock.at >= warning_at + timedelta(minutes=90)
+            later_deferred.available_at = warning_at + timedelta(minutes=90) + (db_now - clock.at)
+            assert (
+                later_deferred.available_at - db_now
+                == warning_at + timedelta(minutes=90) - clock.at
+            )
         assert await drain_delivery(clock.now())
         assert len(transport.reply_texts) == 1
         assert "After expiry" in transport.reply_texts[0]
