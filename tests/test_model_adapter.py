@@ -305,15 +305,15 @@ async def test_structured_ru_en_advice_is_bounded_and_contains_explicit_handoff_
     assert replay_transport.payloads == []
     assert replay_allowance.settled == [(OWNER, context.request_id)]
     system_prompt = str(transport.payloads[0]["messages"][0]["content"])
-    assert "no tools, calendar, or external access" in system_prompt
+    assert "No tools, calendar, or external access" in system_prompt
     assert "target id/version" in system_prompt
-    assert "Complete/cancel use fields={}" in system_prompt
+    assert "Complete/cancel fields={}" in system_prompt
     assert "all-or-none" in system_prompt
-    assert "reuse prior advice verbatim only when selected" in system_prompt
+    assert "reuse prior advice verbatim only when user-selected" in system_prompt
     assert "event_anchor_relation_to_reference" in system_prompt
-    assert "scheduled, not proof of delivery" in system_prompt
-    assert "is_recurring/series_id show series presence" in system_prompt
-    assert "output is strictly validated" in system_prompt
+    assert "scheduled, not delivery" in system_prompt
+    assert "is_recurring/series_id show series, not cadence" in system_prompt
+    assert "Return validated ru/en JSON" in system_prompt
     assert str(OWNER) not in str(transport.payloads[0]["messages"])
 
 
@@ -419,7 +419,7 @@ async def test_advice_prompt_treats_saved_titles_as_labels_and_times_as_zoned_fa
     messages = cast(list[dict[str, object]], transport.payloads[0]["messages"])
     system_prompt = str(messages[0]["content"])
     assert "Titles are labels" in system_prompt
-    assert "Don't invent plan purpose" in system_prompt
+    assert "Don't invent purpose/capabilities" in system_prompt
     serialized_context = cast(dict[str, object], json.loads(str(messages[1]["content"])))
     assert serialized_context["timezone"] == "Asia/Almaty"
     assert serialized_context["reference_local_datetime"] == "2026-10-18T23:41:00+05:00"
@@ -471,7 +471,7 @@ async def test_hostile_calendar_instructions_remain_untrusted_context_data() -> 
     system = str(transport.payloads[0]["messages"][0]["content"])
     user = str(transport.payloads[0]["messages"][1]["content"])
     assert "untrusted data" in system
-    assert "no tools" in system
+    assert "No tools" in system
     assert hostile in user
     assert hostile not in system
     assert allowance.settled == [(OWNER, context.request_id)]
@@ -521,7 +521,7 @@ async def test_valid_ru_and_en_inputs_settle_one_turn_and_record_actual_usage(
     assert "2026-10-13" in prompt
     assert "propose_change_occurrence" in prompt
     assert "propose_complete" in prompt
-    assert "Relative intent is" in prompt
+    assert "Relative:" in prompt
     assert "basis:calendar_day|elapsed" in prompt
     assert "provenance:explicit" in prompt
 
@@ -612,7 +612,7 @@ async def test_outbound_request_carries_receipt_instant_and_receipt_local_date(
             reminder.pop("scheduled_local_datetime")
     assert json.loads(_context_prompt(context)) == base_payload
     system_message = cast(list[dict[str, object]], request["messages"])[0]
-    assert "derive profile-local local_time from reference_local_datetime" in cast(
+    assert "reference_local_datetime for local time" in cast(
         str, system_message["content"]
     )
     assert allowance.reserved_at == [processing_at]
@@ -692,12 +692,12 @@ async def test_english_create_works_without_any_existing_plan_or_target() -> Non
     assert outcome.result.fields.title == "Project review"
     assert isinstance(outcome.result.fields.schedule, AppointmentSchedule)
     system_prompt = str(transport.payloads[0]["messages"][0]["content"])
-    assert "does not require any existing plan or target" in system_prompt
+    assert "Create: title/schedule, no target" in system_prompt
     assert _RESULT_SCHEMA_JSON not in system_prompt
     proposal_schema = json.loads(_RESULT_SCHEMA_JSON)["$defs"]["ActionProposal"]
     assert "target_id" not in proposal_schema["required"]
     assert "expected_version" not in proposal_schema["required"]
-    assert "IDs and versions are only for non-create operations" in system_prompt
+    assert "Changes need owner-filtered target id/version/kind" in system_prompt
 
 
 @pytest.mark.asyncio
@@ -770,7 +770,7 @@ async def test_create_batch_is_strictly_normalized_and_replayed_without_another_
     assert outcome.result.actions[0].fields.reminders == ()
     assert outcome.result.actions[1].fields.reminder_mode == "override"
     system_prompt = str(transport.payloads[0]["messages"][0]["content"])
-    assert "2 to 10 create-only actions" in system_prompt
+    assert "Batch: 2-10 create-only actions" in system_prompt
 
     replay_transport = FakeTransport()
     replay_assistant, _, _ = _assistant(
@@ -1020,8 +1020,8 @@ async def test_batch_correction_prompt_requires_complete_replacement_and_can_cla
     assert replacement.result.actions[1] == initial.result.actions[1]
     correction_messages = cast(list[dict[str, str]], transport.payloads[1]["messages"])
     system_prompt = correction_messages[0]["content"]
-    assert "return all pending items with clarified values" in system_prompt
-    assert "Unsaved proposals are never targets" in system_prompt
+    assert "Corrections return all pending proposals" in system_prompt
+    assert "unsaved proposals aren't targets" in system_prompt
     assert "Pending normalized plan proposals" in str(transport.payloads[1]["messages"])
 
     clarification_context = correction_context.model_copy(
@@ -1517,18 +1517,21 @@ async def test_timed_task_reminder_omission_and_prompt_contract() -> None:
     assert isinstance(messages, list) and isinstance(messages[0], dict)
     system_prompt = messages[0].get("content")
     assert isinstance(system_prompt, str)
-    assert "A task date/time is not a before-event offset" in system_prompt
-    assert "Tasks have no duration" in system_prompt
+    assert (
+        "Task date/time is not a before-event offset unless requested separately" in system_prompt
+    )
+    assert "No task duration" in system_prompt
     assert "Every batch action needs kind=proposal" in system_prompt
     assert '"duration_minutes":45' in system_prompt
     assert '"basis":"calendar_day","amount":1,"unit":"day"' in system_prompt
-    assert "if neither, omit both so Capture asks. Never invent duration" in system_prompt
+    assert "include supplied duration or end, never both" in system_prompt
+    assert "If neither, omit both so Capture asks; never invent duration" in system_prompt
     assert '"target_id":"00000000-0000-4000-8000-000000000001"' in system_prompt
     assert '"expected_version":3' in system_prompt
-    assert "Check date/time, offsets, kind, unchanged fields" in system_prompt
-    assert "Return source-language JSON only" in system_prompt
+    assert "change clear values, preserve rest" in system_prompt
+    assert "Return source-language JSON" in system_prompt
     assert "Canonical output JSON Schema" not in system_prompt
-    assert len(system_prompt) < 6_500
+    assert len(system_prompt) < 6_000
     assert transport.payloads[0].get("response_format") == {"type": "json_object"}
 
 
@@ -1562,13 +1565,10 @@ def test_observed_invalid_calendar_day_hour_reminder_stays_rejected() -> None:
 
 
 def test_every_prompt_few_shot_example_passes_strict_result_validation() -> None:
-    assert len(_SYSTEM) <= 6_500
-    assert (
-        "Advice ref=2026-09-10T19:05+02:00; one-off Task Z event=19:00, reminder scheduled=18:59"
-    ) in _SYSTEM
-    assert "untimed needs an explicit user choice" in _SYSTEM
-    assert "Use unspecified when no time/choice was given so Capture asks" in _SYSTEM
-    assert "Examples assume reference_date=2026-10-16" in _SYSTEM
+    assert len(_SYSTEM) <= 6_000
+    assert "untimed needs explicit choice" in _SYSTEM
+    assert "unspecified means no time/choice, so Capture asks" in _SYSTEM
+    assert "Examples: reference_date=2026-10-16" in _SYSTEM
 
     decoder = json.JSONDecoder()
     examples: list[dict[str, object]] = []
@@ -1579,7 +1579,7 @@ def test_every_prompt_few_shot_example_passes_strict_result_validation() -> None
         examples.append(example)
         offset = end
 
-    assert len(examples) == 5
+    assert len(examples) == 7
     results = []
     for example in examples:
         language_value = example.get("language")
@@ -1591,7 +1591,7 @@ def test_every_prompt_few_shot_example_passes_strict_result_validation() -> None
                 reference_instant=datetime(2026, 10, 18, 16, 23, tzinfo=UTC),
                 timezone="Asia/Almaty",
             )
-        elif example.get("kind") == "advice":
+        elif example.get("kind") in {"advice", "reply"}:
             context = _context(
                 language=language,
                 reference_instant=datetime(2026, 9, 10, 17, 0, tzinfo=UTC),
@@ -1649,9 +1649,18 @@ def test_every_prompt_few_shot_example_passes_strict_result_validation() -> None
     assert batch_result.actions[1].fields.schedule.model_dump()["timing"] == "untimed"
     assert batch_result.actions[1].fields.reminders == ()
 
-    advice_result = results[4]
-    assert isinstance(advice_result, Advice)
-    assert advice_result.summary == "Task Z’s purpose is unclear; clarify it before choosing steps."
+    known_purpose_advice = results[4]
+    assert isinstance(known_purpose_advice, Advice)
+    assert "before 09:00" in known_purpose_advice.summary
+    assert "reminder is scheduled only" in known_purpose_advice.summary
+
+    opaque_past_reply = results[5]
+    assert isinstance(opaque_past_reply, Reply)
+    assert "What does Task Z mean?" in opaque_past_reply.text
+
+    unknown_cadence_reply = results[6]
+    assert isinstance(unknown_cadence_reply, Reply)
+    assert "What repeat schedule did you choose?" in unknown_cadence_reply.text
 
 
 @pytest.mark.asyncio
@@ -1729,7 +1738,7 @@ async def test_start_only_appointment_reaches_capture_duration_choices() -> None
         "appointment:0:ask_duration",
     ]
     messages = cast(list[dict[str, object]], transport.payloads[0]["messages"])
-    assert "if neither, omit both so Capture asks" in str(messages[0]["content"])
+    assert "If neither, omit both so Capture asks" in str(messages[0]["content"])
     assert text in str(messages[1]["content"])
 
 
