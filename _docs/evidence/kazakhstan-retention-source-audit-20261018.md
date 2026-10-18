@@ -39,3 +39,13 @@ Research was bounded to primary Kazakhstan legal/government sources listed above
 ## Owner follow-up — 2026-10-19
 
 The owner now explicitly intends commercial launch without IP/TOO registration. Personal-pilot versus commercial intent is resolved as commercial. This supplies operating intent, not a legal determination of whether registration is required, a tax regime, a document-class inventory, or an applicable approved retention schedule. The unresolved policy gate remains; no numeric retention period is adopted.
+
+## Full-text source retrieval — 2026-10-19
+
+This follow-up supersedes the earlier inability to retrieve the Tax Code's operative provisions; the historical findings above are retained. The [KGD publication dated 11 June 2026](https://www.gov.kz/org/kgd-kyzylorda/documents/details/1025385?lang=ru) links a [complete official-hosted DOCX](https://www.gov.kz/uploads/2026/6/11/552221df7cf54bc8c0dbf38744fd912c_original.1042764.docx). Its document XML was downloaded and read directly, including Articles 65, 202 and 206. This is a published source snapshot; subsequent amendments/current consolidated text as of 19 October are not yet verified.
+
+- Article 202 includes accounting/tax documents and other records used to determine taxable objects or tax liabilities. This does not classify all Pin conversation data as tax documentation.
+- Article 206(3) sets a minimum five-year retention period for the relevant tax documentation, tied to Article 65's limitation period. The retention clock starts with the tax period following the period in which the documentation was used to calculate the tax liability. Paragraphs 4 and 5 address special cases; this is not a flat five-year interval from a Telegram charge or account deletion.
+- Article 65 contains category-specific limitation periods, extensions and suspensions. Its shorter ordinary limitation period does not remove Article 206's stated five-year minimum.
+
+**Gate remains unresolved.** Current consolidation, applicability to the actual unregistered commercial operator, the relevant tax and tax period, mapping of Pin receipts/refunds and external payout records to statutory document classes, archive-list applicability and approved holds/deletion policy still require validation. No numeric TTL is adopted or implemented. The owner explicitly reaffirmed that legal validation remains mandatory for issue closure; it is not delegated out of acceptance. The current bot-only phase defers the landing, not this financial-record requirement.
