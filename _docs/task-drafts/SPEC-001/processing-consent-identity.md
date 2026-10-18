@@ -10,7 +10,7 @@ Product increment with a reusable Identity authorization capability.
 
 ## Workflow status
 
-ready
+in progress
 
 ## Requirement and specification
 
