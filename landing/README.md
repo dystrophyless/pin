@@ -6,7 +6,7 @@ This is a standalone static RU/EN presentation for issue 21. Runtime and local p
 
 Create a Vercel project from the repository and set its **Root Directory** to `landing`. Leave the framework as Other/None; `vercel.json` stages only `index.html`, `privacy.html`, `terms.html`, `app.js`, `styles.css`, and `site-config.json` into `public/` for static output. The README and Python validation/test files are not published. No Vercel runtime environment variables or secrets are needed; the bot and database remain on AWS.
 
-Link the project to the intended GitHub repository and branch to enable Vercel's normal preview and production deployments. The `*.vercel.app` HTTPS address becomes available after the first successful deployment. Deployment has not been run or verified yet.
+The `pin-landing` project is linked to this repository's `main` branch. Its production URL is https://pin-landing-xi.vercel.app/; the first production deployment was verified on 2026-10-18. Vercel reports that pushes to `main` update production. See [hosting evidence](../_docs/evidence/vercel-landing-20261018.md) for the observed deployment and checks.
 
 ## Local preview
 
