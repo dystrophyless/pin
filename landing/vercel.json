@@ -1,0 +1,5 @@
+{
+  "framework": null,
+  "buildCommand": "mkdir -p public && cp index.html privacy.html terms.html app.js styles.css site-config.json public/",
+  "outputDirectory": "public"
+}
