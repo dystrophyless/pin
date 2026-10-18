@@ -472,6 +472,23 @@ async def complete_job(session: AsyncSession, claim: JobClaim) -> None:
         )
 
 
+async def defer_job(session: AsyncSession, claim: JobClaim, *, until: datetime) -> None:
+    """Release a live claim until a policy deadline without spending a retry."""
+    if until.tzinfo is None or until.utcoffset() is None:
+        raise ValueError("deferral deadline must be timezone-aware")
+    await complete_job(session, claim)
+    await session.execute(
+        update(Job)
+        .where(Job.id == claim.job_id)
+        .values(
+            status="pending",
+            finished_at=None,
+            available_at=until,
+            attempts=func.greatest(Job.attempts - 1, 0),
+        )
+    )
+
+
 async def fail_job(
     session: AsyncSession,
     claim: JobClaim,

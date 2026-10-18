@@ -59,6 +59,7 @@ from pin.platform.jobs import (
     JobClaim,
     JobLane,
     complete_job,
+    defer_job,
     enqueue_job,
     fail_job,
     lock_job_for_effects,
@@ -1000,11 +1001,10 @@ async def _prepare_reply_message(
     # and the subsequent attempt-start after it returns.
     await lock_job_for_effects(session, claim)
     if decision.deferred_until is not None:
-        await fail_job(
+        await defer_job(
             session,
             claim,
-            error=decision.reason or "reply_deferred",
-            retry_after=max(timedelta(seconds=1), decision.deferred_until - now().astimezone(UTC)),
+            until=decision.deferred_until,
         )
         return None, None
     if decision.message is not None:
@@ -1163,11 +1163,10 @@ async def deliver_recovery_summary_job(
                         preferences.quiet_end,
                     )
                     if quiet_end is not None:
-                        await fail_job(
+                        await defer_job(
                             session,
                             claim,
-                            error="quiet_hours_deferred",
-                            retry_after=max(quiet_end - now().astimezone(UTC), timedelta(0)),
+                            until=quiet_end,
                         )
                     else:
                         if not overdue:
@@ -1216,14 +1215,10 @@ async def deliver_recovery_summary_job(
                                     preferences.quiet_end,
                                 )
                             ) is not None:
-                                await fail_job(
+                                await defer_job(
                                     session,
                                     claim,
-                                    error="quiet_hours_deferred",
-                                    retry_after=max(
-                                        boundary_quiet_end - authorized_at.astimezone(UTC),
-                                        timedelta(0),
-                                    ),
+                                    until=boundary_quiet_end,
                                 )
                             else:
                                 attempt_number = await _next_recovery_attempt_number(

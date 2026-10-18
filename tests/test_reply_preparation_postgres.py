@@ -320,7 +320,7 @@ def test_defer_schedules_job_without_an_attempt_or_transport_call(
         claim = await _claim_reply(reply_sessions, event_id, worker_id="reply-prep-defer")
         transport = _transport(reply_sessions, event_id)
         now = datetime.now(UTC)
-        deferred_until = now + timedelta(seconds=45)
+        deferred_until = now + timedelta(hours=10)
 
         async def prepare(_session, _envelope, _fallback, _at):
             return ReplyPreparation(deferred_until=deferred_until, reason="wait_for_access_window")
@@ -349,6 +349,7 @@ def test_defer_schedules_job_without_an_attempt_or_transport_call(
             )
             assert attempts == []
             assert job is not None and job.status == "pending"
+            assert job.attempts == 0
             assert (
                 deferred_until - timedelta(seconds=1)
                 <= job.available_at

@@ -1484,6 +1484,50 @@ def test_recovery_summary_uses_current_overdue_rows_and_never_replays_terminal_s
     run_local_async(scenario)
 
 
+def test_recovery_quiet_hours_waits_until_morning_without_spending_retry(delivery_sessions) -> None:
+    async def scenario() -> None:
+        at = datetime.now(UTC).replace(hour=23, minute=0, second=0, microsecond=0)
+        until = (at + timedelta(days=1)).replace(hour=8)
+        fixture = await _seed_reminder_case(delivery_sessions, at=at, enqueue=False)
+        request = RecoverySummaryRequest(fixture.owner_id, "quiet-hours-last-attempt")
+        async with delivery_sessions() as session, session.begin():
+            job = await enqueue_recovery_summary_job(session, request)
+            job.priority = 2_147_483_647
+            job.max_attempts = 1
+            job_id = job.id
+        async with delivery_sessions() as session, session.begin():
+            claim = await claim_job(
+                session,
+                lane=JobLane.DELIVERY,
+                worker_id="recovery-quiet-hours",
+                lease_for=timedelta(minutes=2),
+            )
+            assert claim is not None and claim.job_id == job_id
+        transport = _RecoverySummaryTransport()
+        await deliver_recovery_summary_job(
+            delivery_sessions,
+            claim,
+            transport,
+            identity_store_factory=SqlAlchemyIdentityStore,
+            now=lambda: at,
+        )
+        assert transport.replies == []
+        async with delivery_sessions() as session:
+            job = await session.get(Job, job_id)
+            assert job is not None and job.status == "pending"
+            assert job.available_at == until and job.attempts == 0
+            assert job.finished_at is None and job.lease_token is None
+            assert job.last_error is None
+            assert await session.scalar(
+                select(func.count()).select_from(DeliveryAttemptRecord).where(
+                    DeliveryAttemptRecord.owner_id == fixture.owner_id,
+                    DeliveryAttemptRecord.recovery_episode_key == request.episode_key,
+                )
+            ) == 0
+
+    run_local_async(scenario)
+
+
 def test_reply_deletion_after_authoritative_check_waits_for_started_boundary(
     delivery_sessions,
 ) -> None:
