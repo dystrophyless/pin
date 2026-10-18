@@ -308,11 +308,72 @@ async def test_structured_ru_en_advice_is_bounded_and_contains_explicit_handoff_
     assert "target id/version" in system_prompt
     assert "Complete/cancel use fields={}" in system_prompt
     assert "all-or-none" in system_prompt
-    assert "explicitly selected prior advice steps" in system_prompt
-    assert "conflicting requested times" in system_prompt
-    assert "agenda gap is not proof of free time" in system_prompt
+    assert "Reuse selected prior advice only" in system_prompt
+    assert "times conflict" in system_prompt
+    assert "or free time" in system_prompt
     assert "output is strictly validated" in system_prompt
     assert str(OWNER) not in str(transport.payloads[0]["messages"])
+
+
+@pytest.mark.asyncio
+async def test_advice_prompt_treats_saved_titles_as_labels_and_times_as_zoned_facts() -> None:
+    text = (
+        "Using my saved task ‘Pin проверка тихих часов’, suggest two practical preparation "
+        "steps and explain what to prioritize. Do not add, complete, cancel, or reschedule any "
+        "plan. You only know the plans I shared here, not my external calendar."
+    )
+    context = _context(
+        language=SourceLanguage.EN,
+        reference_instant=datetime(2026, 10, 18, 16, 0, tzinfo=UTC),
+        timezone="Asia/Almaty",
+        text=text,
+    ).model_copy(
+        update={
+            "plans": (
+                PlanSnapshot(
+                    id=PLAN,
+                    version=1,
+                    title="Pin проверка тихих часов",
+                    due_at=datetime(2026, 10, 18, 17, 49, tzinfo=UTC),
+                    status="open",
+                ),
+            ),
+            "targets": (
+                TargetSnapshot(
+                    id=PLAN,
+                    version=1,
+                    kind="occurrence",
+                    title="Pin проверка тихих часов",
+                ),
+            ),
+        }
+    )
+    response = {
+        "kind": "advice",
+        "language": "en",
+        "summary": "Prepare the check using only its stated purpose.",
+        "steps": [
+            {"title": "Confirm the expected result", "reason": "Make the check's goal explicit."},
+            {"title": "Gather test inputs", "reason": "Have the relevant task details ready."},
+        ],
+    }
+    transport = FakeTransport(_provider_response(json.dumps(response)))
+    assistant, _, _ = _assistant(transport)
+
+    outcome = await assistant.interpret(context, at=context.reference_instant)
+
+    assert isinstance(outcome, ModelSuccess)
+    assert isinstance(outcome.result, Advice)
+    messages = cast(list[dict[str, object]], transport.payloads[0]["messages"])
+    system_prompt = str(messages[0]["content"])
+    assert "Treat titles as labels" in system_prompt
+    assert "don't reinterpret names/abbreviations" in system_prompt
+    assert "don't claim app or quiet-hour behavior absent from context" in system_prompt
+    assert "Omit due times unless needed; convert via stated zone" in system_prompt
+    serialized_context = json.loads(str(messages[1]["content"]))
+    assert serialized_context["timezone"] == "Asia/Almaty"
+    assert serialized_context["reference_local_datetime"] == "2026-10-18T21:00:00+05:00"
+    assert serialized_context["plans"][0]["due_at"] == "2026-10-18T17:49:00Z"
 
 
 @pytest.mark.asyncio
