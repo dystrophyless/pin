@@ -42,6 +42,7 @@ Unresolved: the exact time meant by “one day before” must be defined or clar
 - One-off appointments and tasks.
 - Deadlines.
 - Recurring tasks, such as exercising every Monday.
+- Owner clarification, 2026-10-18: for Monday/Wednesday repeats, moving Monday to Tuesday with “this and future” replaces only Monday, giving Tuesday/Wednesday; the other weekday stays unchanged. Preserve the approved remaining-count and completed-history rules. See SPEC-001 TR-02 for the shared contract and verification fixtures.
 - Untimed tasks that remain in a particular day's plan without a timed reminder.
 - Help breaking tasks into steps, prioritizing, and rescheduling missed work.
 - Daily and weekly plan views were requested; exact commands, layouts, and other periods remain to be designed.

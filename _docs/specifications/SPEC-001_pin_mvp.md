@@ -1,7 +1,7 @@
 # SPEC-001: Pin overall MVP
 
 Status: **approved**
-Version: 0.18
+Version: 0.19
 Created: 2026-10-13 (Asia/Qyzylorda)
 Owner: Pin product owner (the user)
 Requirements source: [PROJECT_BRAINSTORM.md](../PROJECT_BRAINSTORM.md)
@@ -34,6 +34,8 @@ Amendment v0.16,2026-10-16: the owner narrowed the current local voice check to 
 Amendment v0.17,2026-10-16: the owner selected the user's persisted RU/EN profile language as the language supplied to voice recognition. Missing or unsupported profile language fails before inference and refunds the voice reservation; automatic language detection does not override the selected preference. This does not establish mixed-language recognition quality or broader TR-04 accuracy.
 
 Amendment v0.18, 2026-10-17: the owner removed the 99% model-quality target, mandatory 400-request corpus, and actual-host/provider performance/economics benchmark from required MVP acceptance, not deferred. Existing two-clip RU/EN smoke and prior bounded live/offline observations remain limited evidence; none is a generalized quality, capacity or economics PASS. Further corpus/provider evaluation is optional and nonblocking, subject to separate authorization. AWS account/resource inspection, lowest-cost workable server selection/creation, app deployment and GitHub Actions CI/CD are authorized; inspect current resources, credit eligibility and costs before creating a server. Operational health, security, hosted recovery, applicable legal retention, integrated acceptance and final owner acceptance remain in scope.
+
+Amendment v0.19, 2026-10-18: the owner clarified weekly multi-weekday this-and-future edits: moving Monday to Tuesday in a Monday/Wednesday series replaces only Monday, producing Tuesday/Wednesday. Other selected weekdays remain unchanged; the whole weekday set is not rotated. Existing remaining-count, new-interval-anchor, history, confirmation and DST requirements remain in force. The resulting weekday set and affected dates must appear before confirmation. This owner decision does not assert implementation or acceptance.
 
 ## 1. Purpose, authority, and evidence boundary
 
@@ -426,6 +428,7 @@ Additional owner clarification, 2026-10-15: Pin's intended legal operating juris
 
 - **TR-01 recovery after an appointment:** If an outage ends after an appointment's expected end and no initial completion check was delivered, send a late completion check. The normal maximum of one follow-up applies; its timer starts one hour after confirmed late-check delivery, and quiet hours defer it. If a recovery summary is also sent, it may report the unresolved item but must not create a second check/nudge campaign. Preserve the existing one-summary deduplication and never revive an exhausted cycle.
 - **TR-02 this-and-future weekly count:** For a weekly workout series with count 10 and four completed occurrences, moving occurrence five from Monday to Wednesday with this-and-future moves the six remaining occurrences to Wednesdays. This-and-future edits preserve the remaining occurrence count; the count does not restart. The owner additionally confirmed the N-interval anchor choice using a two-week fixture: dates June 1, June 15 and June 29 become June 8, June 22 and July 6 when June 1 moves to June 8 with this-and-future. Future interval counting starts from the newly selected occurrence date; the remaining count does not restart, and prior history remains unchanged. Existing supported weekday/monthly-pattern and DST rules still apply; any changed pattern fields and the resulting future dates must be displayed in the confirmed preview.
+- **TR-02 multi-weekday clarification (owner-confirmed, 2026-10-18):** For Monday/Wednesday repeats, moving a Monday occurrence to Tuesday with this-and-future produces Tuesday/Wednesday. Replace only the selected occurrence's weekday in the future pattern; keep the other selected weekdays. Do not rotate the entire pattern. The original total/remaining-count, prior-history and new-interval-anchor rules above remain unchanged. Display the resulting weekday set and future dates before confirmation.
 - **TR-03 return after deletion:** If the same Telegram identity returns after account deletion, retain only the minimum identity-linked record needed to remember prior trial use and any currently active paid coverage. Restore access for that active paid coverage, but do not restore deleted plans. These are the only approved purposes for the retained return record. Keep the prior-trial and active-coverage facts available as needed to enforce this no-reset/restore rule. No numeric retention period was selected; do not invent one or treat this policy marker as a legal financial-retention rule. This detail does not block independent foundation work. Statutory/financial record retention remains a separate, actual-jurisdiction evidence requirement.
 
 ### Historical TR-04 owner decisions (2026-10-16; evaluation requirements superseded by v0.18)
