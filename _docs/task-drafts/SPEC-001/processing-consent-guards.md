@@ -10,7 +10,7 @@ Product increment.
 
 ## Workflow status
 
-blocked by #29
+in progress
 
 ## Requirement and specification
 
