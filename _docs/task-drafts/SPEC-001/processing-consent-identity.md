@@ -1,5 +1,7 @@
 # Record explicit processing consent through Telegram onboarding and privacy controls
 
+**Owner scope amendment, 2026-10-20:** MVP v0.21 waives jurisdiction-specific financial-retention/entity/tax validation as an acceptance/closure gate (WAIVED / NOT ASSESSED). Preserve all technical AC, native/integrated and delivery requirements, Terms of Use/Privacy Policy, consent, support/payment transparency, operational retention/deletion/recovery and minimized payment evidence. No numeric TTL or financial deletion is authorized. This local contract amendment has not been synchronized to the live issue.
+
 <!-- pin-task: SPEC-001/processing-consent-identity -->
 
 Publication: synchronized with issue #29 (https://github.com/dystrophyless/pin/issues/29) on 2026-10-19 after package READY. This is a local draft status update only; no remote issue was changed.
@@ -30,7 +32,7 @@ A Telegram user can give the current explicit consent while finishing initial on
 
 ## Out of scope
 
-Provider/voice/Capture/reply enforcement and restore-release wiring belong to [the dependent guarded-processing task](https://github.com/dystrophyless/pin/issues/30). No landing, provider calls, Stars, service startup, live data, payment-policy change, invented retention period, KGD request, deployment, or Git operations. Applicable financial/legal release gates remain open.
+Provider/voice/Capture/reply enforcement and restore-release wiring belong to [the dependent guarded-processing task](https://github.com/dystrophyless/pin/issues/30). No landing, provider calls, Stars, service startup, live data, payment-policy change, invented retention period, KGD request, deployment, or Git operations. Financial legal validation is waived under v0.21; remaining technical/product-policy release requirements remain open.
 
 ## Implementation anchors and invariants
 
@@ -48,7 +50,7 @@ Callback token consumption and consent/draft updates commit together or roll bac
 - Blocks: [processing-consent-guards.md](https://github.com/dystrophyless/pin/issues/30) and [processing-consent-gate.md](https://github.com/dystrophyless/pin/issues/31).
 - Owner: assigned Luna Executor; one product writer. Own the Identity capability/migration, Telegram onboarding/privacy controls and their focused tests. The guarded-processing task may subsequently extend shared adapters/migrations sequentially.
 - Priority: high within this consent increment; no priority change to unrelated issues.
-- Blocking decisions: none for this bounded local implementation after package readiness. Native execution requires the Orchestrator's disposable-fixture slot and current authorization. Financial/statutory retention remains a separate release blocker.
+- Blocking decisions: none for this bounded local implementation after package readiness. Native execution requires the Orchestrator's disposable-fixture slot and current authorization. Financial statutory validation is waived under v0.21; functional retention and technical release dependencies remain required.
 - You are not alone in the codebase. Preserve other edits and untracked operator documents/output; do not overwrite the parent's work or run a service. No implementation Reviewer is required by the current owner override; the Orchestrator checks raw evidence.
 
 ## Acceptance criteria
@@ -68,7 +70,7 @@ Available command shape: `.\.venv\Scripts\python.exe -m pytest -q tests/test_ide
 
 ## Delivery conditions and completion record
 
-Local verification and the Orchestrator's recorded delegated acceptance establish only this capability's completion; the dependent AI-guard task and integration gate are required before representing consent enforcement as complete. No intermediate rollout, commit, publication, merge, or deployment is authorized by this draft. Preserve the original bot release/financial/legal gates. Append implementation/evidence/acceptance records to the real issue after authorized publication; no implementation or runtime proof exists in this draft.
+Local verification and the Orchestrator's recorded delegated acceptance establish only this capability's completion; the dependent AI-guard task and integration gate are required before representing consent enforcement as complete. No intermediate rollout, commit, publication, merge, or deployment is authorized by this draft. Preserve the remaining bot technical/product-policy release gates; financial statutory validation is waived under v0.21. Append implementation/evidence/acceptance records to the real issue after authorized publication; no implementation or runtime proof exists in this draft.
 
 
 ## Grooming correction record

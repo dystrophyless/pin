@@ -1,6 +1,6 @@
 # Kazakhstan retention source audit — 2026-10-18
 
-**Status:** evidence draft for the retention-policy gate. This is a bounded source audit, not a legal opinion, compliance assessment, or approved retention policy. No retention period is adopted here.
+**Current scope — owner amendment v0.21, 2026-10-20:** jurisdiction-specific financial-retention/entity/tax validation is **WAIVED / NOT ASSESSED** as an acceptance/closure gate. The source findings and earlier mandatory-gate statements below are historical research, superseded only as to that gating requirement; actual legal unknowns remain unassessed. No further legal research or authority inquiry is required for this waived gate. Preserve functional retention/deletion/backups and minimized payment evidence. Terms of Use, Privacy Policy, explicit processing consent, support/payment transparency and data deletion remain required. No numeric TTL, financial deletion or compliance certification is adopted here.
 
 ## Confirmed inputs
 
@@ -84,3 +84,16 @@ The [official East Kazakhstan DGD FAQ](https://www.gov.kz/org/kgd-vko/press/arti
 The [official Adilet-indexed amendment, Law 215-VIII](https://old.adilet.zan.kz/rus/docs/Z2500000215), expressly replaces 35(3)(2) with self-taxed income and separately identifies self-employed SNR income. Current consolidated Article 35 was not retrieved: official endpoints returned JavaScript shells/timeouts.
 
 **Still unresolved:** Pin's subscription/contract classification, tax-agent status and treatment/timing/conversion of Stars and external payouts; applicable tax periods, record classes and retention triggers; and current consolidated amendments. This finding does not establish Pin's eligibility or adopt a tax regime, rate, retention period or policy. No authority inquiry was sent.
+
+
+## Independent official June snapshot comparison — 2026-10-19
+
+Retrieved the [East Kazakhstan DGD publication dated 17 June 2026](https://www.gov.kz/org/kgd-vko/documents/details/1027827?lang=ru) and its [official DOCX attachment](https://www.gov.kz/uploads/2026/6/17/e3be05c6b01e51e26d3b145345d8f682_original.1030648.docx). Attachment SHA-256: `f182cef94aef9121d3687650398219446ab061b78e1435eaee60cb875534f4b6`; 1,030,648 bytes. This is another published snapshot, not confirmation of the current October consolidation.
+
+Compared extracted Word paragraphs with the previously retrieved 11 June snapshot, normalizing whitespace, quotation marks and dash variants. Articles 202, 206, 405, 407 and 415 match after that normalization. Article 65's only remaining difference is a missing space in the following paragraph heading, rather than an identified change to its operative provisions. This corroborates the previously recorded conditional retention basis; it does not establish its application to every Pin record.
+
+Article 382 contains five additional annotations referring to temporary replacement of specified provisions by Article 841 until 1 January 2028. These annotations require transition-rule review before applying the digital-asset provisions to the planned TON route. They do not classify Stars rewards or determine Pin's recognition/valuation event. No rate, exemption, tax regime or retention policy is adopted here.
+
+A retrieved [Pavlodar DGD explanation](https://www.gov.kz/org/kgd-pavlodar/press/news/details/1170518) discusses gains on disposal of digital assets and distinguishes occasional disposal from systematic trading. Its reporting example addresses 2025 income; it is not a ruling on a bot subscription or Fragment rewards. Do not apply that example to Pin's service revenue, or treat receiving TON and later disposing of it as the same event without the required analysis.
+
+Current consolidated text and the Stars/Fragment/TON classification remain unverified. No KGD inquiry, actual payout or financial deletion was performed.

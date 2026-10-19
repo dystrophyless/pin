@@ -1,5 +1,7 @@
 # SPEC-001: Explicit consent for external AI processing
 
+**Owner scope amendment, 2026-10-20:** [MVP v0.21](SPEC-001_pin_mvp.md) waives jurisdiction-specific financial-retention/entity/tax validation as an acceptance/closure gate (WAIVED / NOT ASSESSED). Required Terms of Use, Privacy Policy, explicit processing consent, support/payment transparency, functional retention/deletion/recovery and technical delivery remain. This changes no C1–C5 enforcement invariant, runtime behavior or retained-data lifetime; historical review records remain attributable to their original revision.
+
 Status: draft for independent specification review
 Created: 2026-10-19
 Scope owner: Pin owner
@@ -129,11 +131,11 @@ The independent review found shared-contract revision `615621317edce703e58317fe3
 |---|---|
 | Explicit onboarding consent; concise vendor-neutral summary; external text/transcript/plan context; OpenRouter in details; no separate checkbox; existing-user consent; revocability | Owner choices supplied in the dispatch. Implement within this contract after review. |
 | In-Telegram details; tuple/revision fences; deny/resend behavior; conservative restored-grant invalidation | Proposed minimal engineering contract in this draft; review before decomposition. They do not create a retention period or claim legal sufficiency. |
-| Applicable Kazakhstan financial/statutory record policy, without IP/TOO registration | Unresolved mandatory bot release/acceptance gate. Processing consent does not resolve it. Obtain an owner-approved applicable policy/source separately; no KGD request or invented period. Independent consent implementation may proceed after review. |
-| Legal sufficiency of disclosure/consent and any applicable provider-account requirements | Not established by implementation or this plan. Preserve the existing release gates and distinguish functional consent evidence from legal approval. |
+| Jurisdiction-specific financial-retention/entity/tax validation | WAIVED / NOT ASSESSED as an acceptance/closure gate by the owner under MVP v0.21 (2026-10-20). Preserve existing minimized financial evidence and operational retention/deletion/backups; no new TTL, financial deletion or legal PASS. |
+| Required disclosures/controls and applicable bot-provider/account requirements | Terms of Use, Privacy Policy, consent, support/payment transparency and data deletion remain required. Implementation evidence is not a legal-compliance certification. Preserve remaining technical/delivery gates; the financial legal-validation gate is waived under v0.21. |
 | Additional provider calls, real Stars, landing, deployment/restore, and final acceptance | Not authorized here; provider allowance exhausted, actual Stars removed, landing deferred. Use offline fakes and separately authorized disposable checks; leave unproved delivery/acceptance explicit. |
 
-Delivery requires the affected specification/package review and meaningful implementation evidence against the final source, plus separately authorized release actions. Local correctness does not close unresolved financial/legal gates or imply the bot is deployed. No owner question is needed to choose a checkbox or payment behavior: those choices are already settled. The remaining substantive owner decision is the applicable financial-record policy and its acceptance evidence; infrastructure/native-test access is an execution blocker, not a product-policy answer.
+Delivery requires meaningful implementation/integrated evidence against final source and separately authorized release actions. Terms of Use, Privacy Policy, consent/support/payment/deletion requirements and existing technical release dependencies remain; local correctness does not imply deployment or final acceptance. Jurisdiction-specific financial legal validation is waived under MVP v0.21, not passed. No checkbox, payment behavior or financial legal-policy question is pending for this increment; unavailable native proof remains an execution blocker.
 
 ## Review correspondence
 

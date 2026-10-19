@@ -1,5 +1,7 @@
 # Prove the integrated Telegram processing-consent contract
 
+**Owner scope amendment, 2026-10-20:** MVP v0.21 waives jurisdiction-specific financial-retention/entity/tax validation as an acceptance/closure gate (WAIVED / NOT ASSESSED). Preserve all technical AC, native/integrated and delivery requirements, Terms of Use/Privacy Policy, consent, support/payment transparency, operational retention/deletion/recovery and minimized payment evidence. No numeric TTL or financial deletion is authorized. This local contract amendment has not been synchronized to the live issue.
+
 <!-- pin-task: SPEC-001/processing-consent-gate -->
 
 Publication: synchronized with issue #31 (https://github.com/dystrophyless/pin/issues/31) on 2026-10-19 after package READY.
@@ -10,7 +12,7 @@ Verification gate.
 
 ## Workflow status
 
-blocked by #29 and #30
+Locally verified by the Orchestrator; source remains uncommitted/undeployed and remote delivery reconciliation remains open. See [local integrated acceptance](../../evidence/processing-consent-integrated-20261020.md).
 
 ## Requirement and specification
 
@@ -18,7 +20,7 @@ blocked by #29 and #30
 
 ## Increment and context
 
-Produce one source-bound integrated verdict showing that the explicit consent UX actually controls the deployed-code-equivalent processing composition, survives replay/deletion/recovery and leaves deterministic/Billing functions intact. This gate proves the local increment; it neither replaces missing implementation nor resolves financial/legal launch policy.
+Produce one source-bound integrated verdict showing that the explicit consent UX actually controls the deployed-code-equivalent processing composition, survives replay/deletion/recovery and leaves deterministic/Billing functions intact. This gate proves the local increment; it does not replace missing implementation, technical delivery or final acceptance. Financial legal validation is waived under v0.21, not resolved as compliant.
 
 ## Scope
 
@@ -40,7 +42,7 @@ Use the final changed source, including preserved prior privacy work. Synthetic 
 ## Dependencies and ownership
 
 - Depends on: [processing-consent-identity.md](https://github.com/dystrophyless/pin/issues/29) and [processing-consent-guards.md](https://github.com/dystrophyless/pin/issues/30), with verified final-source outputs and reviewed package.
-- Blocks: representing this consent increment as integrated/accepted; evidence is subsequently reconciled into the existing bot privacy/recovery/release issue gates by the Orchestrator/authorized Publisher. Existing financial/legal blockers remain.
+- Blocks: representing this consent increment as integrated/accepted; evidence is subsequently reconciled into the existing bot privacy/recovery/release issue gates by the Orchestrator/authorized Publisher. The financial legal-validation gate is waived under v0.21; existing technical/product-policy dependencies remain.
 - Owner: assigned Luna Executor for test/evidence production; Orchestrator checks raw artifacts and makes the delegated acceptance decision. No separate implementation Reviewer under the owner override.
 - Write ownership: only consent integration tests/evidence and necessary test fixtures after predecessors release their files; no product changes without a separate scoped fix dispatch. You are not alone; preserve others' work.
 - Priority: high within this increment.
@@ -48,11 +50,11 @@ Use the final changed source, including preserved prior privacy work. Synthetic 
 
 ## Acceptance criteria
 
-- [ ] AC-01: Fresh RU/EN flows show the correct concise notice/Details/current preview and one explicit initial action; replay/restart saves consent/preferences/trial once. Existing-profile denial makes zero processing calls, acceptance preserves access/preferences and requires a newly admitted request. This maps PC-01/PC-02/PC-08.
-- [ ] AC-02: Withdrawal/regrant scenarios demonstrate immutable admission provenance, no additional repair after first call, accurate provider receipts/user holds, suppression of obsolete returned/cached/proposed/saved/replied AI artifacts, and honest already-started attempt handling. Native barriers cover provider marker, result/proof application, Save/Confirm and reply marker in both race orders. Include bounded liveness/state checks for the mapped direct/application, ordinary-delivery, deletion/maintenance/replay entries, absence, admission mapping-conflict retry and exact-generation recovery completion; no second-owner fence or target-before-F wait is permitted. This maps PC-03/PC-04.
-- [ ] AC-03: Without consent, actual persisted deterministic help/privacy/support/settings/agenda/subscription/payment-control/deletion/confirmed-task/reminder paths retain their approved behavior and do not fabricate a grant or payment authorization. Synthetic payment events only; no Stars. This maps PC-05.
-- [ ] AC-04: Deletion/TR-03 return and actual disposable older-snapshot restore cannot resurrect consent or old-grant work; fresh consent permits only new input, restore retry is idempotent and failure remains fenced. Existing deletion/delivery/payment/usage prerequisites remain enforced. This maps PC-06/PC-07.
-- [ ] AC-05: All PC-01–PC-08 rows have compatible final-source proof, no unresolved implementation defect and an honest environment/delivery verdict. Missing required native or integrated proof yields blocked/partial, never a blanket PASS. Financial/legal release gates remain unresolved even if the local consent increment passes.
+- [x] AC-01: Fresh RU/EN flows show the correct concise notice/Details/current preview and one explicit initial action; replay/restart saves consent/preferences/trial once. Existing-profile denial makes zero processing calls, acceptance preserves access/preferences and requires a newly admitted request. This maps PC-01/PC-02/PC-08.
+- [x] AC-02: Withdrawal/regrant scenarios demonstrate immutable admission provenance, no additional repair after first call, accurate provider receipts/user holds, suppression of obsolete returned/cached/proposed/saved/replied AI artifacts, and honest already-started attempt handling. Native barriers cover provider marker, result/proof application, Save/Confirm and reply marker in both race orders. Include bounded liveness/state checks for the mapped direct/application, ordinary-delivery, deletion/maintenance/replay entries, absence, admission mapping-conflict retry and exact-generation recovery completion; no second-owner fence or target-before-F wait is permitted. This maps PC-03/PC-04.
+- [x] AC-03: Without consent, actual persisted deterministic help/privacy/support/settings/agenda/subscription/payment-control/deletion/confirmed-task/reminder paths retain their approved behavior and do not fabricate a grant or payment authorization. Synthetic payment events only; no Stars. This maps PC-05.
+- [x] AC-04: Deletion/TR-03 return and actual disposable older-snapshot restore cannot resurrect consent or old-grant work; fresh consent permits only new input, restore retry is idempotent and failure remains fenced. Existing deletion/delivery/payment/usage prerequisites remain enforced. This maps PC-06/PC-07.
+- [x] AC-05: All PC-01–PC-08 rows have compatible final-source proof, no unresolved implementation defect and an honest environment/delivery verdict. Missing required native or integrated proof yields blocked/partial, never a blanket PASS. The financial legal-validation gate is waived under v0.21; missing technical/delivery proof and remaining product-policy requirements still block acceptance.
 
 ## Verification plan
 
@@ -64,7 +66,7 @@ The evidence packet contains a PC-to-proof matrix, raw JUnit/stdout, race-order 
 
 ## Delivery conditions and completion record
 
-The gate can receive local consent-increment acceptance only after the Orchestrator inspects the final-source raw evidence and records the rule-based decision and remaining limits. Do not imply the human personally reviewed it. Local success does not mean merged/deployed, hosted-tested, legally approved or commercially accepted. Existing release issue dependencies and mandatory Kazakhstan financial/statutory-retention decision remain open. Any later delivery action needs its own authorization. No evidence was executed or acceptance granted by this draft.
+The gate can receive local consent-increment acceptance only after the Orchestrator inspects the final-source raw evidence and records the rule-based decision and remaining limits. Do not imply the human personally reviewed it. Local success does not mean merged/deployed, hosted-tested, legally approved or commercially accepted. Existing technical release issue dependencies remain open. The former mandatory Kazakhstan financial/statutory-validation decision is waived under v0.21, not assessed as passed. Any later delivery action needs its own authorization. No evidence was executed or acceptance granted by this draft.
 
 
 ## Grooming correction record

@@ -1,5 +1,7 @@
 # Enforce processing consent across AI work, withdrawal, deletion and recovery
 
+**Owner scope amendment, 2026-10-20:** MVP v0.21 waives jurisdiction-specific financial-retention/entity/tax validation as an acceptance/closure gate (WAIVED / NOT ASSESSED). Preserve all technical AC, native/integrated and delivery requirements, Terms of Use/Privacy Policy, consent, support/payment transparency, operational retention/deletion/recovery and minimized payment evidence. No numeric TTL or financial deletion is authorized. This local contract amendment has not been synchronized to the live issue.
+
 <!-- pin-task: SPEC-001/processing-consent-guards -->
 
 Publication: synchronized with issue #30 (https://github.com/dystrophyless/pin/issues/30) on 2026-10-19 after package READY.
@@ -10,7 +12,7 @@ Product increment.
 
 ## Workflow status
 
-in progress
+Locally verified by the Orchestrator; source remains uncommitted/undeployed and remote delivery reconciliation remains open. See [local integrated acceptance](../../evidence/processing-consent-integrated-20261020.md).
 
 ## Requirement and specification
 
@@ -71,17 +73,17 @@ A committed provider or Telegram dispatch-attempt marker defines already-started
 - Blocks: [processing-consent-gate.md](https://github.com/dystrophyless/pin/issues/31).
 - Owner: assigned Luna Executor, sole sequential product writer for the enforcement/lifecycle slice; may extend predecessor-owned adapters/tests/migrations only after that task releases them. You are not alone: preserve all other edits and protected output/operator drafts.
 - Priority: high within this increment.
-- Blocking decisions: none for bounded implementation after package readiness. Native execution waits for the Orchestrator's sole disposable-fixture slot; no service startup/restart or unassigned DB work. Financial/legal gates remain unresolved for release.
+- Blocking decisions: none for bounded implementation after package readiness. Native execution waits for the Orchestrator's sole disposable-fixture slot; no service startup/restart or unassigned DB work. Financial legal validation is waived under v0.21; remaining technical/product-policy release requirements remain open.
 
 ## Acceptance criteria
 
-- [ ] AC-01: Trusted admission stamps grants exactly once; duplicate/legacy/unconsented text or voice never gains authorization from later acceptance. Denied work completes with a usable localized prompt/resend flow and no download/transcription/provider call or user AI-turn use before first dispatch.
-- [ ] AC-02: The actual configured assistant checks every attempt, including repair/retry and speech/direct/smoke composition; `with_allowance` preserves the authorizer. Fake counters prove zero before first dispatch and no additional call after withdrawal between first response and repair. Provider receipts/unknown costs and existing Billing settlement/refund outcomes remain independently accurate.
-- [ ] AC-03: Native barriers after final authorization but before protected commit prove atomic ordering with withdrawal for provider-start markers, AI result/proposal/proof storage/application, AI-derived Save/Confirm and reply-attempt markers. Either the protected commit precedes withdrawal acknowledgement or withdrawal wins and the commit is denied. Tests cover both orders, regrant and absence/storage failure; no stale lease bypasses either fence. The concrete map above is implemented at its outer entries; native concurrent consent/ordinary-delivery/deletion/maintenance-replay cases prove completion without a reverse lock wait or batch-owner lock accumulation.
-- [ ] AC-04: Queued/restarted text, stored transcripts, cached results, clarifications/proofs and replies retain provenance; withdrawal/regrant suppresses obsolete effects without implicit resend or replay. Downloaded audio is cleaned even on cancellation/failure. No I/O/inference holds the authorization transaction open.
-- [ ] AC-05: Deterministic onboarding/settings/help/privacy/support, agenda, Billing terms/receipts/cancellation/refund handling, deterministic confirmed plan changes and ordinary reminders remain functional without consent under existing access rules. No blanket Capture/Planning/Notifications prerequisite is introduced.
-- [ ] AC-06: Deletion immediately fences authorization and purges consent/artifacts; tombstone replay/TR-03 return preserves only approved trial/current-paid facts and later legitimate generations, requiring fresh consent. An old result with a reused canonical owner ID is denied.
-- [ ] AC-07: Migration from old profiles/queues grants nobody. A restored older grant is invalidated before release, restore retries are idempotent, and failure leaves the runtime fenced with all pre-existing recovery prerequisites intact. Fresh post-release consent authorizes only newly admitted work. Compatible deployment and fenced rollback are documented without executing them.
+- [x] AC-01: Trusted admission stamps grants exactly once; duplicate/legacy/unconsented text or voice never gains authorization from later acceptance. Denied work completes with a usable localized prompt/resend flow and no download/transcription/provider call or user AI-turn use before first dispatch.
+- [x] AC-02: The actual configured assistant checks every attempt, including repair/retry and speech/direct/smoke composition; `with_allowance` preserves the authorizer. Fake counters prove zero before first dispatch and no additional call after withdrawal between first response and repair. Provider receipts/unknown costs and existing Billing settlement/refund outcomes remain independently accurate.
+- [x] AC-03: Native barriers after final authorization but before protected commit prove atomic ordering with withdrawal for provider-start markers, AI result/proposal/proof storage/application, AI-derived Save/Confirm and reply-attempt markers. Either the protected commit precedes withdrawal acknowledgement or withdrawal wins and the commit is denied. Tests cover both orders, regrant and absence/storage failure; no stale lease bypasses either fence. The concrete map above is implemented at its outer entries; native concurrent consent/ordinary-delivery/deletion/maintenance-replay cases prove completion without a reverse lock wait or batch-owner lock accumulation.
+- [x] AC-04: Queued/restarted text, stored transcripts, cached results, clarifications/proofs and replies retain provenance; withdrawal/regrant suppresses obsolete effects without implicit resend or replay. Downloaded audio is cleaned even on cancellation/failure. No I/O/inference holds the authorization transaction open.
+- [x] AC-05: Deterministic onboarding/settings/help/privacy/support, agenda, Billing terms/receipts/cancellation/refund handling, deterministic confirmed plan changes and ordinary reminders remain functional without consent under existing access rules. No blanket Capture/Planning/Notifications prerequisite is introduced.
+- [x] AC-06: Deletion immediately fences authorization and purges consent/artifacts; tombstone replay/TR-03 return preserves only approved trial/current-paid facts and later legitimate generations, requiring fresh consent. An old result with a reused canonical owner ID is denied.
+- [x] AC-07: Migration from old profiles/queues grants nobody. A restored older grant is invalidated before release, restore retries are idempotent, and failure leaves the runtime fenced with all pre-existing recovery prerequisites intact. Fresh post-release consent authorizes only newly admitted work. Compatible deployment and fenced rollback are documented without executing them.
 
 ## Verification plan
 
@@ -93,7 +95,7 @@ Run `.\.venv\Scripts\python.exe -m pytest -q tests/test_processing_consent_postg
 
 ## Delivery conditions and completion record
 
-Completion requires all scoped enforcement/lifecycle AC with raw local evidence checked directly by the Orchestrator under the owner override. The final integrated gate still owns package acceptance. Keep local, committed, merged and deployed states explicit; this draft authorizes none of those delivery actions beyond a later explicit Executor dispatch. Financial-record/legal-release gates and existing release issue conditions remain open. Append execution/evidence/acceptance to the published issue after authorization; no runtime result exists in this draft.
+Completion requires all scoped enforcement/lifecycle AC with raw local evidence checked directly by the Orchestrator under the owner override. The final integrated gate still owns package acceptance. Keep local, committed, merged and deployed states explicit; this draft authorizes none of those delivery actions beyond a later explicit Executor dispatch. The waived financial legal-validation gate is not a dependency; all remaining technical/product-policy release issue conditions remain open. Append execution/evidence/acceptance to the published issue after authorization; no runtime result exists in this draft.
 
 
 ## Grooming correction record
