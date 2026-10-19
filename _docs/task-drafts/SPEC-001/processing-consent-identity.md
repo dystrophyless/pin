@@ -2,7 +2,7 @@
 
 <!-- pin-task: SPEC-001/processing-consent-identity -->
 
-Publication: synchronized with issue #29 (https://github.com/dystrophyless/pin/issues/29) on 2026-10-19 after package READY.
+Publication: synchronized with issue #29 (https://github.com/dystrophyless/pin/issues/29) on 2026-10-19 after package READY. This is a local draft status update only; no remote issue was changed.
 
 ## Task kind
 
@@ -10,7 +10,7 @@ Product increment with a reusable Identity authorization capability.
 
 ## Workflow status
 
-in progress
+locally verified; dependent processing-consent-guards task #30 pending
 
 ## Requirement and specification
 
@@ -73,4 +73,10 @@ Local verification and the Orchestrator's recorded delegated acceptance establis
 
 ## Grooming correction record
 
-PCR-P01 MEDIUM is addressed by this explicit Identity/application entry ownership and the common [Guards map](https://github.com/dystrophyless/pin/issues/30#common-transaction-order-and-entry-ownership). The independent package recheck is READY; no implementation/native proof is asserted.
+PCR-P01 MEDIUM is addressed by this explicit Identity/application entry ownership and the common [Guards map](https://github.com/dystrophyless/pin/issues/30#common-transaction-order-and-entry-ownership). The independent package recheck is READY.
+
+## Local completion record — 2026-10-19
+
+The Orchestrator recorded delegated local acceptance for AC-01–AC-06 after the focused native PostgreSQL run passed all 21 tests with zero failures, errors, or skips. The run covered 12 onboarding/Identity tests, 2 support-route tests, and 7 privacy-presentation tests. Ruff, architecture checks, full `src` mypy (222 files), and `git diff --check` passed. See [processing-consent Identity evidence](../../evidence/processing-consent-identity-20261019.md) for the AC-to-test map, source hashes, and cleanup receipt summary.
+
+Workflow status is locally verified for this Identity increment. Guarded enforcement across every AI-processing path remains assigned to dependent task #30, and the integrated gate remains #31. This completion record is not a human review, remote issue closure, deployment, legal/retention approval, or overall release acceptance. Product source remains local and uncommitted; do not deploy this intermediate state.
