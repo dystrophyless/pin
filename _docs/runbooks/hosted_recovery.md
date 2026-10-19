@@ -172,6 +172,15 @@ same persisted snapshot/fence times are retained after release so any later
 discovered old queued item still takes the unknown path. Unknown outcomes are
 terminal and do not trigger a check-in follow-up timer.
 
+Before releasing the gate, the `pin-recovery release` command first invalidates
+every restored processing grant, one owner per fenced database transaction, and
+records that completion against the exact snapshot and newer-ledger IDs. It does
+not hold the global recovery row while waiting for an owner lock. A retry while
+the same generation is fenced resumes safely; after the gate is ready, a repeated
+release cannot invalidate consent granted later. Restored queued work and AI
+artifacts retain their old or missing grant provenance and cannot be replayed;
+users must grant consent again and submit new work after cutover.
+
 Before releasing the gate, reconcile the entire interval from the snapshot time
 through the fence time against independently retained sources:
 
@@ -230,6 +239,11 @@ cut runtime over using the normal release procedure. Compose reads
 database health check; when unset it remains `pin`, preserving the production
 default. Backup and initialization helpers use Compose's `POSTGRES_DB`, so
 they follow the same selected database.
+
+Consent enforcement requires a release containing the provenance migration and
+guarded workers. Keep the recovery/runtime gate fenced during rollback to an
+older worker release; older workers do not enforce the provenance fields and
+must not run against a ready restored database.
 
 For a cutover, use a pinned release whose `compose.yaml` supports
 `PIN_DATABASE_NAME`, set that variable in the protected

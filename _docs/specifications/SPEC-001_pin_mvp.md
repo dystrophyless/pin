@@ -1,13 +1,21 @@
 # SPEC-001: Pin overall MVP
 
+## Owner scope amendment v0.21 — 2026-10-20
+
+**Owner decision:** jurisdiction-specific validated statutory financial-retention, entity-form and tax analysis is waived as a bot-phase acceptance/issue-closure gate. The owner explicitly prioritized Terms of Use, Privacy Policy and the required user protections. This supersedes earlier statements that such financial legal validation was mandatory. Its disposition is **WAIVED / NOT ASSESSED**, never PASS or a legal-compliance certification.
+
+Terms of Use, Privacy Policy, explicit revocable processing consent, support, payment/offer transparency and data deletion remain required and accessible within the bot phase. Preserve the adopted functional deletion/retention/backup behavior, minimized separate payment evidence, TR-03 return facts and deletion-replay tombstones. This decision authorizes no financial-record deletion, new numeric TTL, tax/entity determination or new feature.
+
+Landing remains deferred under v0.20. Actual Stars tests and the formal 99%/corpus/capacity/economics benchmark remain removed from acceptance. Consent enforcement, native/integrated proof, compatible release/delivery checks, existing technical dependencies and recorded final acceptance still apply; the waiver supplies no technical PASS or issue closure. No further legal-source investigation or authority inquiry is required for this waived gate.
+
 ## Current phase amendment v0.20 — 2026-10-19
 
 **Owner-confirmed:** pause landing work and focus exclusively on the Telegram bot. Landing design/content, hosting migration or upgrade, site CI/CD, referral/browser checks and Vercel commercial eligibility are outside the current bot phase. This is a phase deferral, not deletion of the eventual landing requirement or a claim of provider permission. Existing sites, deployments and integrations are left unchanged; this instruction does not authorize unpublishing them.
 
-For the current phase, AC15's landing portion and landing-specific dependencies in deployment, paid integration and release acceptance do not block Telegram-bot implementation or its phase verdict. Retain bot onboarding, subscription/offer presentation, synthetic payment/entitlement checks, support, privacy/deletion, operations and recovery. The owner's commercial intent and operation without IP/TOO are unchanged. Applicable financial-record policy and final bot-phase acceptance remain separate unresolved requirements. Historical full-MVP task text still applies to the later whole-product phase; it must not be mistaken for the current bot-only completion boundary. Actual Stars testing and the formal quantitative benchmark remain removed, not deferred. No new provider calls or spending are authorized.
+For the current phase, AC15's landing portion and landing-specific dependencies in deployment, paid integration and release acceptance do not block Telegram-bot implementation or its phase verdict. Retain bot onboarding, subscription/offer presentation, synthetic payment/entitlement checks, support, privacy/deletion, operations and recovery. The owner's commercial intent and operation without IP/TOO are unchanged. The financial legal-validation gate is waived under v0.21; functional retention/recovery, processing consent and final bot-phase acceptance remain required. Historical full-MVP task text still applies to the later whole-product phase; it must not be mistaken for the current bot-only completion boundary. Actual Stars testing and the formal quantitative benchmark remain removed, not deferred. No new provider calls or spending are authorized.
 
 Status: **approved**
-Version: 0.20
+Version: 0.21
 Created: 2026-10-13 (Asia/Qyzylorda)
 Owner: Pin product owner (the user)
 Requirements source: [PROJECT_BRAINSTORM.md](../PROJECT_BRAINSTORM.md)
@@ -319,10 +327,10 @@ Section 11 records exact choices and routine implementation defaults. The prior 
 | O13 | Trial/paid expiry pauses reminders/new planning; allow viewing, completion and cancellation; useful recovery on renewal. |
 | O14 | Pin, Russian/English responsive referral landing, product examples and truthful price; no website checkout or analytics. |
 | O15 | Executor adopts referenced modular-monolith technical design; dependency/provider locks verified during implementation. |
-| O16 | Audio deleted after processing, text 30 days, plans until deletion, backup seven days; explicit qualification/recovery/financial-retention gates. |
+| O16 | Audio deleted after processing, text 30 days, plans until deletion, backup seven days; functional deletion/retention and recovery gates; financial legal validation waived under v0.21. |
 | O17 | Private bot chats only. |
 
-No unanswered MVP behavior choice is used as an implementation prerequisite. Real-host qualification, payment eligibility, legal financial-record retention, secrets/domain provisioning, and cost/recovery evidence remain release gates; answering product questions cannot prove those facts.
+No unanswered MVP behavior choice is used as an implementation prerequisite. Applicable bot-phase deployment, payment-provider eligibility, secrets provisioning and operational recovery evidence remain required; landing/domain dependencies are deferred under v0.20, and jurisdiction-specific financial legal validation is waived under v0.21. Answering product questions does not prove runtime behavior.
 
 ## 8. Implementation phases and exit conditions
 
@@ -336,7 +344,7 @@ No live progress, issue numbers, or assignees are allocated here. Section 11 res
 | PH4 Accountability | End/deadline/review check-ins and one extra nudge with actions | PH3; O06 and F08 policies | AC07/AC08/AC12, confirmed-delivery versus silence tests |
 | PH5 Voice and model integration | Shared text/voice command flow; bounded local recognition; provider usage and failure behavior | PH2; O07/O12/O15/O16; integrate PH3/PH4 for functional seams | AC03/AC16; functional route and confirmation boundaries; no quality/capacity benchmark required by v0.18 |
 | PH6 Paid access and landing | Trial/subscription/payment/allowance boundaries plus referral page | PH2–PH5; O11–O14 and provider rules verification | AC14/AC15/AC19, duplicate/failed payment and exhaustion integration checks |
-| PH7 Overall acceptance | End-to-end complete public MVP and operational recovery | All applicable decisions approved; PH1-PH6 integrated | Remaining AC evidence, backup restore, restart/unknown sends, operational health/security/legal retention, and owner acceptance; no model-quality/capacity/economics benchmark is required under v0.18 |
+| PH7 Overall acceptance | End-to-end complete public MVP and operational recovery | All applicable decisions approved; PH1-PH6 integrated | Remaining AC evidence, backup restore, restart/unknown sends, operational health/security/functional retention, and owner acceptance; no model-quality/capacity/economics benchmark is required under v0.18 |
 
 Build scheduling first against validated commands; add AI as a proposal adapter rather than letting it define persistence. Speech and reminders need independent worker capacity. Development trials may use explicit fixtures; those fixtures must not turn into trial/pricing defaults. A staging system is for verification, not an implicit public launch.
 
@@ -381,7 +389,7 @@ Per-check evidence must record the command/scenario, date, environment, tested r
 | R14 | F10 | AC15 | Not created / not executed |
 | R15/C-DDD + assumptions | Architecture, data model, K01–K11, PH1–PH7 | AC16–AC20 and architecture checks | Not created / not executed |
 
-Release conditions: owner-approved spec and resolved launch blockers; successful phase integration and recorded end-to-end acceptance; current platform and synthetic payment-behavior checks; working authorized deployment with operational health/security controls; tested restore and incident procedures; applicable legal financial-retention evidence; truthful pricing/limits/privacy disclosures. AWS server creation, app deployment and GitHub Actions CI/CD are authorized subject to inspect-first, lowest-cost selection. Model-quality/corpus/actual-host benchmarking is not a release condition; authorization and local evidence do not themselves establish deployment or overall acceptance.
+Release conditions: owner-approved spec and resolved launch blockers; successful phase integration and recorded end-to-end acceptance; current platform and synthetic payment-behavior checks; working authorized deployment with operational health/security controls; tested restore and incident procedures; accessible Terms of Use, Privacy Policy and support/deletion controls; explicit processing-consent enforcement; truthful pricing/limits/privacy disclosures. Jurisdiction-specific financial legal validation is WAIVED / NOT ASSESSED under v0.21. AWS server creation, app deployment and GitHub Actions CI/CD are authorized subject to inspect-first, lowest-cost selection. Model-quality/corpus/actual-host benchmarking is not a release condition; authorization and local evidence do not themselves establish deployment or overall acceptance.
 
 ### Local self-review, 2026-10-13
 
@@ -495,7 +503,7 @@ These complete implementable contracts without changing the choices above; they 
 - Purchases require accepted terms and a validated receipt. Reject accidental overlapping subscriptions; upgrading from trial begins a fresh paid period. Renewals follow provider-confirmed paid periods. Refunds do not delete tasks; adjust access to remove the refunded coverage while preserving any separate valid period. Preserve a minimal charge/period audit record for reconciliation.
 - Use the referenced modular monolith, owned schemas, per-command UoW, durable inbox/outbox and leased worker lanes. Choose compatible locked releases during foundation work. Provider adapter targets OpenRouter/Qwen3.7 Flash initially; future substitution requires contract evaluation. Use clock injection, one-second due-work polling, bounded retries, four model calls per turn maximum, and one repair within that budget. Record costs, failures, lease recovery, and unknown sends.
 - Instrument worker health, queue age, dispatch latency, provider usage, speech wait, memory/disk and CPU burst capacity for operational visibility. Inspect AWS resources, credits and costs before creating a server and choose the lowest-cost workable configuration. The 50-DAU traffic profile, p95 targets, model-quality corpus and actual-host/provider cost/capacity benchmark are not required acceptance under v0.18; do not infer those results from local evidence.
-- Encrypted daily off-host backups, seven-day retention, RPO <=24 hours/RTO <=4 hours, proven by restore. Account deletion removes user-linked operational data; backup copies age out within seven days and restore reapplies deletion tombstones. Financial records use data minimization and a separately validated retention schedule for the actual operating jurisdiction; this is a prelaunch compliance/evidence gate, not permission to erase charges needed for disputes.
+- Encrypted daily off-host backups, seven-day retention, RPO <=24 hours/RTO <=4 hours, proven by restore. Account deletion removes user-linked operational data; backup copies age out within seven days and restore reapplies deletion tombstones. Preserve minimized separate financial records and existing operational retention behavior. Jurisdiction-specific validation of a statutory financial-retention schedule is waived as an acceptance gate under v0.21; no numeric financial TTL or financial-record erasure is authorized, and no legal sufficiency is asserted.
 - Landing is static HTML/CSS with minimal JavaScript, Caddy HTTPS, accessible readable styling, language choice and the configured bot deep link. Prices display Stars/30-day period and limits, not a guaranteed USD equivalent. The server/application deployment authorized by v0.18 follows inspect-first, lowest-cost selection; do not publish placeholders or invent account eligibility.
 
 ### Disposition of earlier review findings
