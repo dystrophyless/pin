@@ -6,7 +6,7 @@
 
 Terms of Use, Privacy Policy, explicit revocable processing consent, support, payment/offer transparency and data deletion remain required and accessible within the bot phase. Preserve the adopted functional deletion/retention/backup behavior, minimized separate payment evidence, TR-03 return facts and deletion-replay tombstones. This decision authorizes no financial-record deletion, new numeric TTL, tax/entity determination or new feature.
 
-Landing remains deferred under v0.20. Actual Stars tests and the formal 99%/corpus/capacity/economics benchmark remain removed from acceptance. Consent enforcement, native/integrated proof, compatible release/delivery checks, existing technical dependencies and recorded final acceptance still apply; the waiver supplies no technical PASS or issue closure. No further legal-source investigation or authority inquiry is required for this waived gate.
+Landing remains deferred under v0.20. Actual Stars tests and the formal 99%/corpus/capacity/economics benchmark remain removed from acceptance. Consent enforcement, native/integrated proof and compatible release/delivery are evidenced for scoped issues #29–#31; their scoped task closures are distinct from the bot-phase owner decision recorded in the current checkpoint below. No further legal-source investigation or authority inquiry is required for this waived gate.
 
 ## Current phase amendment v0.20 — 2026-10-19
 
@@ -14,7 +14,15 @@ Landing remains deferred under v0.20. Actual Stars tests and the formal 99%/corp
 
 For the current phase, AC15's landing portion and landing-specific dependencies in deployment, paid integration and release acceptance do not block Telegram-bot implementation or its phase verdict. Retain bot onboarding, subscription/offer presentation, synthetic payment/entitlement checks, support, privacy/deletion, operations and recovery. The owner's commercial intent and operation without IP/TOO are unchanged. The financial legal-validation gate is waived under v0.21; functional retention/recovery, processing consent and final bot-phase acceptance remain required. Historical full-MVP task text still applies to the later whole-product phase; it must not be mistaken for the current bot-only completion boundary. Actual Stars testing and the formal quantitative benchmark remain removed, not deferred. No new provider calls or spending are authorized.
 
-## Active checkpoint — 2026-10-19 local
+## Current checkpoint — 2026-10-20 owner acceptance and deployment reconciliation
+
+The deployed MVP bot revision [9e1e0f486f9ceccefcb84ea2703635b3e4aec763](https://github.com/dystrophyless/pin/commit/9e1e0f486f9ceccefcb84ea2703635b3e4aec763) passed CI/deployment [run #39326704491](https://github.com/dystrophyless/pin/actions/runs/39326704491). The CI offline pytest selection passed 324 cases; 22 deployment-unit tests and the native PostgreSQL cohorts summarized in the [integrated consent report](evidence/processing-consent-integrated-20261020.md) are separate checks, not a combined full-suite count. The successful run followed failed run [#39324948664](https://github.com/dystrophyless/pin/actions/runs/39324948664) after a test-fixture-only correction. Ruff, mypy (222 files), architecture and Compose passed. Deployment migrations, backup, tombstone replay, recovery readiness, healthy services, bounded readiness and temporary SSH cleanup are recorded in the report.
+
+Issues #23–#26 are accepted and closed on bounded technical evidence. Issue #28 is closed after the owner explicitly accepted the deployed MVP bot scope, including Terms of Use, Privacy Policy and explicit processing consent. AC20 is PASS for bounded functional deletion/retention/consent/recovery evidence. The owner decision is limited to this bot phase: landing remains deferred, actual Stars testing and the quantitative quality benchmark are removed from required acceptance, and jurisdiction-specific financial-retention/entity/tax analysis remains WAIVED / NOT ASSESSED. No legal-compliance, actual-payment, or generalized model-quality claim follows. See the [final acceptance matrix](evidence/final-acceptance-matrix-20261018.md) and [integrated consent/deployment report](evidence/processing-consent-integrated-20261020.md).
+
+The earlier 2026-10-19 checkpoint below is historical and superseded by this deployed and owner-accepted status. Preserve unrelated operator drafts and `output/`.
+
+## Previous active checkpoint — 2026-10-19 local (historical)
 
 **Latest owner launch decision:** commercial launch now, Vercel free/Hobby, without IP/TOO registration in Kazakhstan. Personal-pilot versus commercial intent is resolved. This does not establish an exception to Vercel's non-commercial-only Hobby terms; landing eligibility is deferred under v0.20. Financial legal validation is waived under v0.21, not assessed as compliant. No upgrade/migration is authorized; final bot-phase acceptance remains unresolved.
 
