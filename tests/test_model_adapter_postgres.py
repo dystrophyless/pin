@@ -7,6 +7,7 @@ from decimal import Decimal
 from uuid import UUID, uuid4
 
 import pytest
+from processing_consent_fixtures import seed_accepted_processing_consent
 from sqlalchemy import func, select, text, update
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -32,6 +33,7 @@ from pin.contexts.conversation.infrastructure.usage import (
     SqlAlchemyProviderUsageRecorder,
     SqlAlchemyTurnAllowance,
 )
+from pin.contexts.identity.api import ProcessingAuthorization
 from pin.persistence.async_runner import run_local_async
 from pin.platform.jobs import Job, JobClaim, JobLane, LeaseLost, enqueue_job
 
@@ -68,8 +70,16 @@ class _Allowance:
         self.refunds = 0
 
     async def reserve(
-        self, *, owner_id: UUID, request_id: str, at: datetime, claim: object | None = None
+        self,
+        *,
+        owner_id: UUID,
+        request_id: str,
+        at: datetime,
+        processing_grant_id: UUID | None = None,
+        processing_policy_version: str | None = None,
+        claim: object | None = None,
     ) -> ReservationStatus:
+        assert processing_grant_id is not None and processing_policy_version
         del owner_id, request_id, at, claim
         return ReservationStatus.REPLAY if self.replay else ReservationStatus.RESERVED
 
@@ -95,9 +105,13 @@ def _db_url() -> str:
     return DB_URL
 
 
-def _context(request_id: str) -> ConversationContext:
+def _context(
+    request_id: str, owner_id: UUID, authorization: ProcessingAuthorization
+) -> ConversationContext:
     return ConversationContext(
-        owner_id=UUID("8b1fda60-12e5-4cc7-808c-9bfe605abf99"),
+        owner_id=owner_id,
+        processing_grant_id=authorization.grant_id,
+        processing_policy_version=authorization.policy_version,
         request_id=request_id,
         language=SourceLanguage.RU,
         input_kind=InputKind.TEXT,
@@ -113,8 +127,18 @@ async def _run_postgres_usage_receipts_are_idempotent_and_unknown_is_not_zero() 
     factory = async_sessionmaker(engine, expire_on_commit=False)
     recorder = SqlAlchemyProviderUsageRecorder(factory)
     owner = uuid4()
+    async with factory() as session, session.begin():
+        authorization = await seed_accepted_processing_consent(
+            session,
+            owner_id=owner,
+            bot_id=7_100_000_001,
+            telegram_user_id=6_100_000_001,
+        )
     turn = f"usage-{uuid4()}"
-    first = CallStart(owner, turn, uuid4(), 1, ROUTE, datetime.now(UTC))
+    first = CallStart(
+        owner, turn, uuid4(), 1, ROUTE, datetime.now(UTC),
+        authorization.grant_id, authorization.policy_version,
+    )
     provider_id = f"gen-dedup-{uuid4()}"
     receipt = CallUsage(provider_id, ROUTE, 10, 5, 15, Decimal("0.000001"), 4)
     try:
@@ -122,15 +146,24 @@ async def _run_postgres_usage_receipts_are_idempotent_and_unknown_is_not_zero() 
         await recorder.record_usage(first, receipt, result_category="invalid_output")
         await recorder.record_usage(first, receipt, result_category="invalid_output")
 
-        duplicate = CallStart(owner, turn, uuid4(), 2, ROUTE, datetime.now(UTC))
+        duplicate = CallStart(
+            owner, turn, uuid4(), 2, ROUTE, datetime.now(UTC),
+            authorization.grant_id, authorization.policy_version,
+        )
         await recorder.start_call(duplicate)
         await recorder.record_usage(duplicate, receipt, result_category="valid")
 
-        unknown = CallStart(owner, turn, uuid4(), 3, ROUTE, datetime.now(UTC))
+        unknown = CallStart(
+            owner, turn, uuid4(), 3, ROUTE, datetime.now(UTC),
+            authorization.grant_id, authorization.policy_version,
+        )
         await recorder.start_call(unknown)
         await recorder.mark_unknown(unknown, result_category="timeout")
 
-        partial = CallStart(owner, turn, uuid4(), 4, ROUTE, datetime.now(UTC))
+        partial = CallStart(
+            owner, turn, uuid4(), 4, ROUTE, datetime.now(UTC),
+            authorization.grant_id, authorization.policy_version,
+        )
         partial_id = f"gen-partial-{uuid4()}"
         await recorder.start_call(partial)
         await recorder.record_usage(
@@ -139,7 +172,10 @@ async def _run_postgres_usage_receipts_are_idempotent_and_unknown_is_not_zero() 
             result_category="partial_usage",
         )
 
-        malformed = CallStart(owner, turn, uuid4(), 1, ROUTE, datetime.now(UTC))
+        malformed = CallStart(
+            owner, turn, uuid4(), 1, ROUTE, datetime.now(UTC),
+            authorization.grant_id, authorization.policy_version,
+        )
         malformed_id = f"gen-malformed-{uuid4()}"
         await recorder.start_call(malformed)
         await recorder.record_usage(
@@ -190,7 +226,15 @@ async def _run_postgres_replay_recovers_valid_result_after_settlement_crash() ->
     factory = async_sessionmaker(engine, expire_on_commit=False)
     recorder = SqlAlchemyProviderUsageRecorder(factory)
     request_id = f"replay-{uuid4()}"
-    context = _context(request_id)
+    owner = uuid4()
+    async with factory() as session, session.begin():
+        authorization = await seed_accepted_processing_consent(
+            session,
+            owner_id=owner,
+            bot_id=7_100_000_002,
+            telegram_user_id=6_100_000_002,
+        )
+    context = _context(request_id, owner, authorization)
     provider = _FakeTransport(
         json.dumps(
             {
@@ -263,7 +307,17 @@ async def _run_postgres_stale_job_claim_cannot_write_provider_cost_or_result() -
         fencing_generation=1,
         lease_until=datetime.now(UTC),
     )
-    call = CallStart(owner, f"stale-{uuid4()}", uuid4(), 1, ROUTE, datetime.now(UTC))
+    async with factory() as session, session.begin():
+        authorization = await seed_accepted_processing_consent(
+            session,
+            owner_id=owner,
+            bot_id=7_100_000_003,
+            telegram_user_id=6_100_000_003,
+        )
+    call = CallStart(
+        owner, f"stale-{uuid4()}", uuid4(), 1, ROUTE, datetime.now(UTC),
+        authorization.grant_id, authorization.policy_version,
+    )
     try:
         with pytest.raises(LeaseLost):
             await recorder.start_call(call, claim=claim)
@@ -299,6 +353,13 @@ async def _run_postgres_foreign_owner_claim_cannot_reserve_start_or_publish() ->
     claim_owner, target_owner = uuid4(), uuid4()
     request_id = f"foreign-claim-{uuid4()}"
     now = datetime.now(UTC)
+    async with factory() as session, session.begin():
+        target_authorization = await seed_accepted_processing_consent(
+            session,
+            owner_id=target_owner,
+            bot_id=7_100_000_004,
+            telegram_user_id=6_100_000_004,
+        )
     try:
         claim = JobClaim(
             job_id=uuid4(),
@@ -324,7 +385,7 @@ async def _run_postgres_foreign_owner_claim_cannot_reserve_start_or_publish() ->
             now=lambda: now,
         )
         outcome = await assistant.interpret(
-            _context(request_id).model_copy(update={"owner_id": target_owner}),
+            _context(request_id, target_owner, target_authorization),
             at=now,
             claim=claim,
         )
@@ -332,7 +393,10 @@ async def _run_postgres_foreign_owner_claim_cannot_reserve_start_or_publish() ->
         assert outcome.category.value == "stale_job"
         assert transport.calls == 0
 
-        call = CallStart(target_owner, request_id, uuid4(), 1, ROUTE, now)
+        call = CallStart(
+            target_owner, request_id, uuid4(), 1, ROUTE, now,
+            target_authorization.grant_id, target_authorization.policy_version,
+        )
         with pytest.raises(ValueError, match="claim owner"):
             await allowance.reserve(
                 owner_id=target_owner, request_id=request_id, at=now, claim=claim
@@ -392,7 +456,14 @@ async def _run_postgres_stale_response_records_cost_without_settlement() -> None
     now = datetime.now(UTC)
     request_id = f"late-{uuid4()}"
     period_end = now + timedelta(days=7)
-    context = _context(request_id).model_copy(update={"owner_id": owner})
+    async with factory() as session, session.begin():
+        authorization = await seed_accepted_processing_consent(
+            session,
+            owner_id=owner,
+            bot_id=7_100_000_005,
+            telegram_user_id=6_100_000_005,
+        )
+    context = _context(request_id, owner, authorization)
 
     class ExpireClaimTransport:
         async def complete(self, payload: dict[str, object]) -> dict[str, object]:
@@ -443,6 +514,8 @@ async def _run_postgres_stale_response_records_cost_without_settlement() -> None
                 payload={},
                 deduplication_key=f"model-test:{request_id}",
                 owner_id=owner,
+                processing_grant_id=authorization.grant_id,
+                processing_policy_version=authorization.policy_version,
             )
             token = uuid4()
             lease_until = now + timedelta(minutes=5)
@@ -464,6 +537,8 @@ async def _run_postgres_stale_response_records_cost_without_settlement() -> None
                 payload_version=1,
                 payload={},
                 owner_id=owner,
+                processing_grant_id=authorization.grant_id,
+                processing_policy_version=authorization.policy_version,
                 conversation_sequence=None,
                 attempt=1,
                 worker_id="model-test-worker",
@@ -489,6 +564,8 @@ async def _run_postgres_stale_response_records_cost_without_settlement() -> None
                 owner_id=owner,
                 request_id=request_id,
                 at=now + timedelta(seconds=1),
+                processing_grant_id=context.processing_grant_id,
+                processing_policy_version=context.processing_policy_version,
             )
             is ReservationStatus.REPLAY
         )

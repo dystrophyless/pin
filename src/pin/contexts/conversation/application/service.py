@@ -233,6 +233,8 @@ class BoundedPlanningAssistant:
                 owner_id=context.owner_id,
                 request_id=context.request_id,
                 at=at,
+                processing_grant_id=context.processing_grant_id,
+                processing_policy_version=context.processing_policy_version,
                 claim=claim,
             )
         except Exception:
@@ -243,7 +245,10 @@ class BoundedPlanningAssistant:
             )
         if reservation is ReservationStatus.REPLAY:
             stored = await self._usage.get_result(
-                owner_id=context.owner_id, turn_id=context.request_id
+                owner_id=context.owner_id,
+                turn_id=context.request_id,
+                processing_grant_id=context.processing_grant_id,
+                processing_policy_version=context.processing_policy_version,
             )
             if stored is None:
                 return await self._refund_failure(
@@ -294,6 +299,8 @@ class BoundedPlanningAssistant:
                 call_number=call_number,
                 model=ROUTE,
                 created_at=self._now(),
+                processing_grant_id=context.processing_grant_id,
+                processing_policy_version=context.processing_policy_version,
             )
             try:
                 await self._usage.start_call(call, claim=claim)
@@ -419,6 +426,8 @@ class BoundedPlanningAssistant:
                         turn_id=context.request_id,
                         result=result.model_dump(mode="json", exclude_none=True),
                         provider_request_ids=tuple(request_ids),
+                        processing_grant_id=context.processing_grant_id,
+                        processing_policy_version=context.processing_policy_version,
                         claim=claim,
                     )
                 except Exception:

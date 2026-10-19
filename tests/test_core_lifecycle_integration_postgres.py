@@ -38,7 +38,11 @@ from pin.contexts.conversation.infrastructure.usage import (
     SqlAlchemyProviderUsageRecorder,
     SqlAlchemyTurnAllowance,
 )
-from pin.contexts.identity.infrastructure.models import OnboardingRecord, PreferencesRecord
+from pin.contexts.identity.infrastructure.models import (
+    OnboardingRecord,
+    PreferencesRecord,
+    ProcessingConsentRecord,
+)
 from pin.contexts.notifications.application.delivery import (
     RecoverySummaryRequest,
     ReminderSend,
@@ -413,7 +417,7 @@ def test_private_core_lifecycle_runs_through_real_producers_and_consumers(
                 at=clock.now(),
             )
             confirmed_word = "confirm" if language == "en" else "подтверждаю"
-            await _run_application_text(
+            consent_prompt = await _run_application_text(
                 sessions,
                 delivery,
                 bot_id=bot_id,
@@ -421,11 +425,29 @@ def test_private_core_lifecycle_runs_through_real_producers_and_consumers(
                 value=confirmed_word,
                 at=clock.now(),
             )
+            accept_label = (
+                "Agree and finish setup"
+                if language == "en"
+                else "Согласиться и завершить настройку"
+            )
+            accept_token = _callback_data(
+                consent_prompt[2], prefix="", label=accept_label
+            )
+            await _send_callback(
+                sessions,
+                bot_id=bot_id,
+                user_id=user_id,
+                callback_data=accept_token,
+                at=clock.now(),
+            )
+            await _drain_delivery(sessions, delivery, at=clock.now())
             async with sessions() as session:
                 profile = await session.get(PreferencesRecord, owner_id)
+                consent = await session.get(ProcessingConsentRecord, owner_id)
                 onboarding = await session.scalar(
                     select(OnboardingRecord).where(OnboardingRecord.owner_id == owner_id)
                 )
+                assert consent is not None and consent.state == "granted"
                 assert profile is not None and profile.language == language
                 assert profile.home_zone == "Asia/Almaty"
                 assert profile.reminder_calendar_days == 1

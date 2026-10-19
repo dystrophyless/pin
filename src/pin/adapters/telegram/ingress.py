@@ -15,10 +15,12 @@ from aiogram.types import Update
 from pydantic import BaseModel, TypeAdapter
 from sqlalchemy import BigInteger, CheckConstraint, String, UniqueConstraint, Uuid, select
 from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import Mapped, mapped_column
 
 from pin.contexts.billing.api import RestoreReturningPaidAccess, SqlAlchemyAccessUsageStore
+from pin.contexts.identity.api import current_processing_authorization
+from pin.contexts.identity.infrastructure.store import SqlAlchemyIdentityStore
 from pin.persistence.models import Base
 from pin.platform.jobs import InboxResult, JobLane, receive_update
 
@@ -76,12 +78,28 @@ class TelegramOwnerResolver(Protocol):
     """Resolve an authenticated Telegram actor to its opaque application owner."""
 
     async def resolve(
-        self, session: AsyncSession, *, bot_id: int, telegram_user_id: int
+        self,
+        session: AsyncSession,
+        *,
+        bot_id: int,
+        telegram_user_id: int,
+        expected_owner_id: UUID | None = None,
     ) -> UUID: ...
 
 
+class OwnerMappingRetry(RuntimeError):
+    """Concurrent first mapping chose another owner; retry after rolling back this UoW."""
+
+
 class PostgresTelegramOwnerResolver:
-    async def resolve(self, session: AsyncSession, *, bot_id: int, telegram_user_id: int) -> UUID:
+    async def resolve(
+        self,
+        session: AsyncSession,
+        *,
+        bot_id: int,
+        telegram_user_id: int,
+        expected_owner_id: UUID | None = None,
+    ) -> UUID:
         """Create a server-generated opaque owner ID once for this bot/user pair."""
         if bot_id < 1 or telegram_user_id < 1:
             raise ValueError("Telegram identity must use positive IDs")
@@ -92,6 +110,9 @@ class PostgresTelegramOwnerResolver:
             )
         )
         if existing is not None:
+            if expected_owner_id is not None and existing != expected_owner_id:
+                raise RuntimeError("Telegram mapping changed from the claimed owner")
+            await SqlAlchemyIdentityStore(session).lock_processing_consent(existing)
             billing = SqlAlchemyAccessUsageStore(session)
             retained = await billing.resolve_returning_owner(telegram_user_id)
             if retained is not None and retained != existing:
@@ -102,9 +123,12 @@ class PostgresTelegramOwnerResolver:
                 RestoreReturningPaidAccess(existing, telegram_user_id, datetime.now(UTC))
             )
             return existing
+        if expected_owner_id is not None:
+            raise RuntimeError("Telegram mapping disappeared from the claimed owner")
         billing = SqlAlchemyAccessUsageStore(session)
         retained = await billing.resolve_returning_owner(telegram_user_id)
         owner_id = retained or uuid4()
+        await SqlAlchemyIdentityStore(session).lock_processing_consent(owner_id)
         inserted = await session.execute(
             insert(TelegramOwnerRecord)
             .values(bot_id=bot_id, telegram_user_id=telegram_user_id, owner_id=owner_id)
@@ -129,6 +153,8 @@ class PostgresTelegramOwnerResolver:
             raise RuntimeError("Telegram identity mapping was not visible after insert conflict")
         if retained is not None and retained != saved:
             raise RuntimeError("Telegram identity mapping conflicts with retained billing owner")
+        if saved != owner_id:
+            raise OwnerMappingRetry("Telegram owner mapping was concurrently created")
         await billing.restore_returning_paid_access(
             RestoreReturningPaidAccess(saved, telegram_user_id, datetime.now(UTC))
         )
@@ -235,6 +261,9 @@ async def persist_update(
     owner_id = await owner_resolver.resolve(
         session, bot_id=bot_id, telegram_user_id=telegram_user_id
     )
+    processing_authorization = await current_processing_authorization(
+        SqlAlchemyIdentityStore(session), owner_id=owner_id
+    )
     speech = update_type == "speech_message"
     fast_path = update_type in {"pre_checkout_query", "successful_payment"}
     result: InboxResult = await receive_update(
@@ -242,6 +271,14 @@ async def persist_update(
         bot_id=bot_id,
         update_id=update_id,
         owner_id=owner_id,
+        processing_grant_id=(
+            processing_authorization.grant_id if processing_authorization is not None else None
+        ),
+        processing_policy_version=(
+            processing_authorization.policy_version
+            if processing_authorization is not None
+            else None
+        ),
         update_type=update_type,
         payload=dict(payload),
         received_at=receipt_instant,
@@ -250,6 +287,31 @@ async def persist_update(
         priority=100 if fast_path else 0,
     )
     return IngressReceipt(result.accepted, update_id, callback_query_id)
+
+
+async def persist_update_with_owner_retry(
+    sessions: async_sessionmaker[AsyncSession],
+    *,
+    bot_id: int,
+    payload: Mapping[str, Any],
+    owner_resolver: TelegramOwnerResolver,
+    received_at: datetime | None = None,
+) -> IngressReceipt | None:
+    """Retry a concurrent first mapping only after the losing UoW rolls back."""
+    for attempt in range(2):
+        try:
+            async with sessions() as session, session.begin():
+                return await persist_update(
+                    session,
+                    bot_id=bot_id,
+                    payload=payload,
+                    owner_resolver=owner_resolver,
+                    received_at=received_at,
+                )
+        except OwnerMappingRetry:
+            if attempt:
+                raise
+    raise AssertionError("unreachable owner mapping retry state")
 
 
 def private_actor(update: Mapping[str, Any]) -> tuple[int, str, str | None] | None:

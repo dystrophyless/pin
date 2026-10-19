@@ -10,6 +10,7 @@ from uuid import UUID, uuid4
 import pytest
 from alembic import command
 from alembic.config import Config
+from processing_consent_fixtures import seed_accepted_processing_consent
 from sqlalchemy import create_engine as create_sync_engine
 from sqlalchemy import func, select, text, update
 from sqlalchemy.engine import make_url
@@ -128,6 +129,12 @@ async def _seed_reply(
     async with sessions() as session, session.begin():
         session.add(AccessAccountRecord(owner_id=owner_id))
         session.add(TelegramOwnerRecord(bot_id=bot_id, telegram_user_id=chat_id, owner_id=owner_id))
+        authorization = await seed_accepted_processing_consent(
+            session,
+            owner_id=owner_id,
+            bot_id=bot_id,
+            telegram_user_id=chat_id,
+        )
         if with_access_period:
             session.add(
                 AccessPeriodRecord(
@@ -145,6 +152,9 @@ async def _seed_reply(
             "chat_id": chat_id,
             "markdown": "Queued copy",
             "plain_text": "Queued copy",
+            "processing_classification": "ai",
+            "processing_grant_id": str(authorization.grant_id),
+            "processing_policy_version": authorization.policy_version,
         }
         if include_marker:
             payload["requires_preparation"] = preparation_marker

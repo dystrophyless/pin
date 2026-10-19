@@ -21,6 +21,11 @@ from pin.contexts.conversation.infrastructure.models import (
     ConversationTurnResultRecord,
     ProviderCallRecord,
 )
+from pin.contexts.identity.api import (
+    ProcessingAuthorization,
+    SqlAlchemyIdentityStore,
+    authorize_processing_consent,
+)
 from pin.persistence.uow import SqlAlchemyUnitOfWork
 from pin.platform.jobs import JobClaim, JobLane, lock_job_for_effects
 
@@ -53,6 +58,8 @@ class SqlAlchemyTurnAllowance:
         owner_id: UUID,
         request_id: str,
         at: datetime,
+        processing_grant_id: UUID | None = None,
+        processing_policy_version: str | None = None,
         claim: JobClaim | None = None,
     ) -> ReservationStatus:
         if at.tzinfo is None or at.utcoffset() is None:
@@ -61,6 +68,11 @@ class SqlAlchemyTurnAllowance:
         if self._voice_seconds and (claim is None or claim.lane is not JobLane.SPEECH):
             raise ValueError("prepared voice allowance requires a speech job claim")
         async with SqlAlchemyUnitOfWork(self._session_factory) as uow:
+            identity = SqlAlchemyIdentityStore(uow.session)
+            if not await _authorize(
+                identity, owner_id, processing_grant_id, processing_policy_version
+            ):
+                return ReservationStatus.DENIED
             if claim is not None:
                 await lock_job_for_effects(uow.session, claim)
             store = SqlAlchemyAccessUsageStore(uow.session)
@@ -138,6 +150,7 @@ class SqlAlchemyTurnAllowance:
     ) -> None:
         _require_claim_owner(owner_id, claim)
         async with SqlAlchemyUnitOfWork(self._session_factory) as uow:
+            await SqlAlchemyIdentityStore(uow.session).lock_processing_consent(owner_id)
             if claim is not None:
                 await lock_job_for_effects(uow.session, claim)
             await SqlAlchemyAccessUsageStore(uow.session).settle_usage(
@@ -158,6 +171,7 @@ class SqlAlchemyTurnAllowance:
     ) -> None:
         _require_claim_owner(owner_id, claim)
         async with SqlAlchemyUnitOfWork(self._session_factory) as uow:
+            await SqlAlchemyIdentityStore(uow.session).lock_processing_consent(owner_id)
             if claim is not None:
                 await lock_job_for_effects(uow.session, claim)
             await SqlAlchemyAccessUsageStore(uow.session).refund_usage(
@@ -174,6 +188,14 @@ class SqlAlchemyProviderUsageRecorder:
     async def start_call(self, call: CallStart, *, claim: JobClaim | None = None) -> None:
         _require_claim_owner(call.owner_id, claim)
         async with SqlAlchemyUnitOfWork(self._session_factory) as uow:
+            identity = SqlAlchemyIdentityStore(uow.session)
+            if not await _authorize(
+                identity,
+                call.owner_id,
+                call.processing_grant_id,
+                call.processing_policy_version,
+            ):
+                raise ProviderReceiptConflict("processing consent is not current")
             await self._fence(uow.session, claim)
             existing = await uow.session.scalar(
                 select(ProviderCallRecord).where(
@@ -195,6 +217,8 @@ class SqlAlchemyProviderUsageRecorder:
                     owner_id=call.owner_id,
                     turn_id=call.turn_id,
                     call_id=call.call_id,
+                    processing_grant_id=call.processing_grant_id,
+                    processing_policy_version=call.processing_policy_version,
                     call_number=call.call_number,
                     model=call.model,
                     state="started",
@@ -289,10 +313,17 @@ class SqlAlchemyProviderUsageRecorder:
         turn_id: str,
         result: dict[str, object],
         provider_request_ids: tuple[str, ...],
+        processing_grant_id: UUID | None = None,
+        processing_policy_version: str | None = None,
         claim: JobClaim | None = None,
     ) -> None:
         _require_claim_owner(owner_id, claim)
         async with SqlAlchemyUnitOfWork(self._session_factory) as uow:
+            identity = SqlAlchemyIdentityStore(uow.session)
+            if not await _authorize(
+                identity, owner_id, processing_grant_id, processing_policy_version
+            ):
+                raise ProviderReceiptConflict("processing consent is not current")
             await self._fence(uow.session, claim)
             existing = await uow.session.scalar(
                 select(ConversationTurnResultRecord)
@@ -306,6 +337,8 @@ class SqlAlchemyProviderUsageRecorder:
                 if (
                     existing.result != result
                     or tuple(existing.provider_request_ids) != provider_request_ids
+                    or existing.processing_grant_id != processing_grant_id
+                    or existing.processing_policy_version != processing_policy_version
                 ):
                     raise ProviderReceiptConflict(
                         "turn result key was reused with different output"
@@ -315,6 +348,8 @@ class SqlAlchemyProviderUsageRecorder:
                 ConversationTurnResultRecord(
                     id=uuid4(),
                     owner_id=owner_id,
+                    processing_grant_id=processing_grant_id,
+                    processing_policy_version=processing_policy_version,
                     turn_id=turn_id,
                     result=result,
                     provider_request_ids=list(provider_request_ids),
@@ -323,9 +358,19 @@ class SqlAlchemyProviderUsageRecorder:
             )
 
     async def get_result(
-        self, *, owner_id: UUID, turn_id: str
+        self,
+        *,
+        owner_id: UUID,
+        turn_id: str,
+        processing_grant_id: UUID | None = None,
+        processing_policy_version: str | None = None,
     ) -> tuple[dict[str, object], tuple[str, ...]] | None:
         async with SqlAlchemyUnitOfWork(self._session_factory) as uow:
+            identity = SqlAlchemyIdentityStore(uow.session)
+            if not await _authorize(
+                identity, owner_id, processing_grant_id, processing_policy_version
+            ):
+                return None
             row = await uow.session.scalar(
                 select(ConversationTurnResultRecord).where(
                     ConversationTurnResultRecord.owner_id == owner_id,
@@ -334,13 +379,13 @@ class SqlAlchemyProviderUsageRecorder:
             )
             if row is None:
                 return None
+            if (
+                row.processing_grant_id != processing_grant_id
+                or row.processing_policy_version != processing_policy_version
+            ):
+                return None
             return row.result, tuple(row.provider_request_ids)
         return None
-
-    @staticmethod
-    async def _fence(session: AsyncSession, claim: JobClaim | None) -> None:
-        if claim is not None:
-            await lock_job_for_effects(session, claim)
 
     @staticmethod
     async def _call_for_update(session: AsyncSession, call: CallStart) -> ProviderCallRecord:
@@ -393,6 +438,26 @@ class SqlAlchemyProviderUsageRecorder:
         row.provider_request_id = usage.provider_request_id or row.provider_request_id
         row.latency_ms = usage.latency_ms
 
+    @staticmethod
+    async def _fence(session: AsyncSession, claim: JobClaim | None) -> None:
+        if claim is not None:
+            await lock_job_for_effects(session, claim)
+
+
+async def _authorize(
+    identity: SqlAlchemyIdentityStore,
+    owner_id: UUID,
+    grant_id: UUID | None,
+    policy_version: str | None,
+) -> bool:
+    if grant_id is None or policy_version is None:
+        await identity.lock_processing_consent(owner_id)
+        return False
+    return await authorize_processing_consent(
+        identity,
+        owner_id=owner_id,
+        authorization=ProcessingAuthorization(owner_id, grant_id, policy_version),
+    )
 
 def _require_claim_owner(owner_id: UUID, claim: JobClaim | None) -> None:
     if claim is not None and claim.owner_id != owner_id:

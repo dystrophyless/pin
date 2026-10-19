@@ -14,6 +14,7 @@ from uuid import UUID, uuid4
 import pytest
 from alembic import command
 from alembic.config import Config
+from processing_consent_fixtures import seed_accepted_processing_consent
 from sqlalchemy import create_engine as create_sync_engine
 from sqlalchemy import func, select, update
 from sqlalchemy.engine import URL, make_url
@@ -32,6 +33,12 @@ from pin.contexts.billing.infrastructure.models import (
     RetainedBillingIdentityRecord,
     TrialActivationRecord,
     UsageReservationRecord,
+)
+from pin.contexts.identity.api import (
+    ProcessingAuthorization,
+    SqlAlchemyIdentityStore,
+    authorize_processing_consent,
+    get_processing_consent,
 )
 from pin.contexts.identity.infrastructure.models import PreferencesRecord
 from pin.contexts.notifications.application.delivery import (
@@ -58,7 +65,7 @@ from pin.persistence.db import create_engine, create_session_factory
 from pin.platform.contracts import EventEnvelope
 from pin.platform.events import add_outbox_event
 from pin.platform.jobs import JobLane, claim_job, enqueue_job
-from pin.platform.models import Job
+from pin.platform.models import Job, RecoveryGate
 from pin.platform.recovery import RecoveryFenced, require_runtime_recovery_ready
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -73,7 +80,7 @@ DATA_DIRECTORY = "C:/Users/roman/AppData/Local/Temp/pin-issue2-eeadfd1-20261013"
 PG_BIN = Path("D:/Program/postgresql/bin")
 DATABASE_PATTERNS = {
     "source": re.compile(r"pin_issue23_restore_source_[a-z0-9]+\Z"),
-    "target": re.compile(r"(?:pin_issue23_restore_target_|pin_recovery_issue23_)[a-z0-9]+\Z"),
+    "target": re.compile(r"pin_recovery_issue23_[a-z0-9]+\Z"),
 }
 
 
@@ -281,7 +288,7 @@ async def _seed_deleted_owner(
 
 async def _seed_started_send_case(
     sessions: async_sessionmaker[AsyncSession], *, at: datetime
-) -> tuple[UUID, UUID, UUID, str, UUID]:
+) -> tuple[UUID, UUID, UUID, str, UUID, ProcessingAuthorization]:
     owner_id, plan_id, occurrence_id, intent_id = uuid4(), uuid4(), uuid4(), uuid4()
     refund_owner_id = uuid4()
     telegram_id = owner_id.int % 2_000_000_000 + 1
@@ -300,6 +307,12 @@ async def _seed_started_send_case(
         payload={},
     )
     async with sessions() as session, session.begin():
+        authorization = await seed_accepted_processing_consent(
+            session,
+            owner_id=owner_id,
+            bot_id=1,
+            telegram_user_id=telegram_id,
+        )
         session.add(
             PreferencesRecord(
                 owner_id=owner_id,
@@ -497,7 +510,7 @@ async def _seed_started_send_case(
             lease_for=timedelta(minutes=5),
         )
     assert claim is not None and claim.owner_id == owner_id
-    return owner_id, intent_id, claim.job_id, lease_worker_id, refund_owner_id
+    return owner_id, intent_id, claim.job_id, lease_worker_id, refund_owner_id, authorization
 
 
 def test_dump_restore_replays_deletion_before_recovering_started_send(
@@ -525,7 +538,7 @@ def test_dump_restore_replays_deletion_before_recovering_started_send(
     async def scenario() -> None:
         nonlocal target_engine
         await _seed_deleted_owner(source_sessions, deleted_owner, at=at)
-        send_owner, intent_id, _, _, _ = await _seed_started_send_case(
+        send_owner, intent_id, _, _, _, _ = await _seed_started_send_case(
             source_sessions, at=at
         )
         transport = _UncertainSendTransport()
@@ -770,6 +783,7 @@ def test_dump_restore_reconciles_send_absent_from_snapshot_before_release(
             leased_job_id,
             lease_worker_id,
             refund_owner_id,
+            send_authorization,
         ) = await _seed_started_send_case(source_sessions, at=at)
         async with source_sessions() as session:
             attempts_at_snapshot = await session.scalar(
@@ -1161,6 +1175,21 @@ def test_dump_restore_reconciles_send_absent_from_snapshot_before_release(
             env=cli_env,
         )
         assert json.loads(status_after_missing.stdout)["state"] == "fenced"
+        async with target_sessions() as session:
+            restored_consent = await get_processing_consent(
+                SqlAlchemyIdentityStore(session), owner_id=send_owner
+            )
+            recovery_gate = await session.get(RecoveryGate, True)
+            assert restored_consent.state == "required"
+            assert restored_consent.revision == 2
+            assert recovery_gate is not None
+            assert recovery_gate.consent_invalidated_snapshot_id == snapshot_id
+            assert recovery_gate.consent_invalidated_ledger_id == ledger_id
+            assert not await authorize_processing_consent(
+                SqlAlchemyIdentityStore(session),
+                owner_id=send_owner,
+                authorization=send_authorization,
+            )
 
         release = await asyncio.to_thread(
             _run,
@@ -1182,6 +1211,26 @@ def test_dump_restore_reconciles_send_absent_from_snapshot_before_release(
         )
         assert release.returncode == 0, "recovery release failed: " + release.stdout[-1000:]
         require_runtime_recovery_ready(target_string)
+        async with target_sessions() as session, session.begin():
+            fresh_authorization = await seed_accepted_processing_consent(
+                session,
+                owner_id=send_owner,
+                bot_id=1,
+                telegram_user_id=send_owner.int % 2_000_000_000 + 1,
+                expected_revision=2,
+            )
+        assert fresh_authorization.grant_id != send_authorization.grant_id
+        async with target_sessions() as session:
+            assert await authorize_processing_consent(
+                SqlAlchemyIdentityStore(session),
+                owner_id=send_owner,
+                authorization=fresh_authorization,
+            )
+            assert not await authorize_processing_consent(
+                SqlAlchemyIdentityStore(session),
+                owner_id=send_owner,
+                authorization=send_authorization,
+            )
         ready_status = await asyncio.to_thread(
             _run,
             [sys.executable, "-m", "pin.entrypoints.recovery", "status"],

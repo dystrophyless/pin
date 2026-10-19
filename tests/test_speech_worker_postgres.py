@@ -14,8 +14,9 @@ from zoneinfo import ZoneInfo
 import pytest
 from alembic import command
 from alembic.config import Config
+from processing_consent_fixtures import seed_accepted_processing_consent
 from sqlalchemy import create_engine as create_sync_engine
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from pin.adapters.telegram.application_worker import (
@@ -312,6 +313,7 @@ async def _seed_voice_job(
     language: str = "en",
     ai_turn_limit: int = 20,
     declared_size_bytes: int = 1024,
+    accepted: bool = True,
 ) -> tuple[UUID, JobClaim, int, UUID, int | None]:
     bot_id = 7_100_000_000 + uuid4().int % 900_000_000
     user_id = 6_100_000_000 + uuid4().int % 900_000_000
@@ -319,6 +321,13 @@ async def _seed_voice_job(
         owner_id = await PostgresTelegramOwnerResolver().resolve(
             session, bot_id=bot_id, telegram_user_id=user_id
         )
+        if accepted:
+            await seed_accepted_processing_consent(
+                session,
+                owner_id=owner_id,
+                bot_id=bot_id,
+                telegram_user_id=user_id,
+            )
         session.add(AccessAccountRecord(owner_id=owner_id))
         session.add(
             AccessPeriodRecord(
@@ -912,6 +921,64 @@ def test_voice_allowance_rejects_before_telegram_download(
                 assert reservation is None
                 assert failure is not None
                 assert "shorter" in failure.payload["payload"]["plain_text"].lower()
+        finally:
+            await engine.dispose()
+
+    run_local_async(scenario)
+
+
+def test_unconsented_voice_finishes_without_download_transcription_or_ai_reservation(
+    speech_worker_database: str, tmp_path: Path
+) -> None:
+    async def scenario() -> None:
+        engine = create_engine(speech_worker_database)
+        sessions = create_session_factory(engine)
+        now = datetime.now(UTC)
+        transport = _Transport()
+        bot = _VoiceBot((ROOT / "tests" / "fixtures" / "speech" / "en.wav").read_bytes())
+        try:
+            owner_id, claim, _, inbox_id, _ = await _seed_voice_job(
+                sessions,
+                now=now,
+                voice_seconds=900,
+                add_later_text=False,
+                accepted=False,
+            )
+
+            class UnexpectedRecognition:
+                async def transcribe(
+                    self, _audio: DecodedAudio, *, language: str
+                ) -> SpeechRecognition:
+                    raise AssertionError("unconsented voice reached local transcription")
+
+            await process_speech_job(
+                sessions,
+                claim,
+                bot=bot,
+                assistant=_assistant(sessions, transport, now),
+                now=now,
+                files=PrivateAudioFiles(tmp_path / "unconsented-speech"),
+                recognizer=UnexpectedRecognition(),
+            )
+            assert bot.get_file_calls == bot.download_calls == 0
+            assert transport.calls == 0
+            async with sessions() as session:
+                job = await session.get(Job, claim.job_id)
+                reservation = await session.scalar(
+                    select(UsageReservationRecord).where(
+                        UsageReservationRecord.owner_id == owner_id,
+                        UsageReservationRecord.request_id == f"telegram-inbox:{inbox_id}",
+                    )
+                )
+                calls = await session.scalar(
+                    select(func.count()).select_from(ProviderCallRecord).where(
+                        ProviderCallRecord.owner_id == owner_id,
+                        ProviderCallRecord.turn_id == f"telegram-inbox:{inbox_id}",
+                    )
+                )
+                assert job is not None and job.status == "succeeded"
+                assert reservation is None
+                assert calls == 0
         finally:
             await engine.dispose()
 

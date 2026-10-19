@@ -19,6 +19,11 @@ class SpeechRequestRecord(Base):
             name="ck_speech_request_state",
         ),
         CheckConstraint(
+            "(processing_grant_id IS NULL AND processing_policy_version IS NULL) OR "
+            "(processing_grant_id IS NOT NULL AND processing_policy_version IS NOT NULL)",
+            name="ck_speech_requests_processing_provenance",
+        ),
+        CheckConstraint(
             "(state = 'transcribed' AND transcript IS NOT NULL AND language IS NOT NULL) OR "
             "(state <> 'transcribed' AND transcript IS NULL)",
             name="ck_speech_request_transcript_state",
@@ -46,6 +51,8 @@ class SpeechRequestRecord(Base):
     job_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True)
     owner_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     inbox_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    processing_grant_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    processing_policy_version: Mapped[str | None] = mapped_column(String(64))
     request_key: Mapped[str] = mapped_column(String(160), nullable=False, unique=True)
     state: Mapped[str] = mapped_column(String(16), nullable=False)
     declared_size_bytes: Mapped[int | None] = mapped_column(BigInteger)

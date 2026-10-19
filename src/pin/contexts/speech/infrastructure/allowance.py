@@ -18,6 +18,11 @@ from pin.contexts.billing.api import (
     SqlAlchemyAccessUsageStore,
     UsageReservation,
 )
+from pin.contexts.identity.api import (
+    ProcessingAuthorization,
+    SqlAlchemyIdentityStore,
+    authorize_processing_consent,
+)
 from pin.persistence.uow import SqlAlchemyUnitOfWork
 from pin.platform.jobs import JobClaim, lock_job_for_effects
 
@@ -68,6 +73,18 @@ class SqlAlchemySpeechAllowance:
         claim: JobClaim,
     ) -> UsageReservation | None:
         _validate(owner_id, request_id, voice_seconds, at, claim)
+        identity = SqlAlchemyIdentityStore(session)
+        if claim.processing_grant_id is None or claim.processing_policy_version is None:
+            await identity.lock_processing_consent(owner_id)
+            return None
+        if not await authorize_processing_consent(
+            identity,
+            owner_id=owner_id,
+            authorization=ProcessingAuthorization(
+                owner_id, claim.processing_grant_id, claim.processing_policy_version
+            ),
+        ):
+            return None
         await lock_job_for_effects(session, claim)
         billing = SqlAlchemyAccessUsageStore(session)
         previous = await billing.get_usage_reservation(owner_id, request_id)
@@ -130,6 +147,7 @@ class SqlAlchemySpeechAllowance:
         claim: JobClaim,
     ) -> UsageReservation:
         _validate(owner_id, request_id, voice_seconds, at, claim)
+        await SqlAlchemyIdentityStore(session).lock_processing_consent(owner_id)
         await lock_job_for_effects(session, claim)
         return await SqlAlchemyAccessUsageStore(session).resize_voice_usage(
             ResizeVoiceUsage(owner_id, request_id, voice_seconds, at)
@@ -162,6 +180,7 @@ class SqlAlchemySpeechAllowance:
     ) -> UsageReservation:
         if claim.owner_id != owner_id or at.tzinfo is None or at.utcoffset() is None:
             raise ValueError("refund requires the owner's live claim and aware time")
+        await SqlAlchemyIdentityStore(session).lock_processing_consent(owner_id)
         await lock_job_for_effects(session, claim)
         return await SqlAlchemyAccessUsageStore(session).refund_usage(
             owner_id=owner_id, request_id=request_id, at=at

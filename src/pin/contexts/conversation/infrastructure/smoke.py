@@ -33,6 +33,7 @@ from pin.contexts.conversation.domain.proposals import (
     ProposalOperation,
     SourceLanguage,
 )
+from pin.contexts.identity.api import ProcessingAuthorization
 from pin.platform.jobs import JobClaim
 
 MAX_SMOKE_CALLS = 8
@@ -299,6 +300,7 @@ class SmokeBudgetTransport:
         claim: JobClaim | None = None,
         owner_id: UUID = _OWNER,
         request_prefix: str | None = None,
+        processing_authorization: ProcessingAuthorization | None = None,
     ) -> SmokeRunReport:
         """Run two synthetic opt-in scenarios and require both typed proposal shapes."""
         if self._unknown_cost:
@@ -310,7 +312,20 @@ class SmokeBudgetTransport:
         request_ids: list[str] = []
         for index, scenario in enumerate(self._preview.scenarios, start=1):
             context = scenario.context.model_copy(
-                update={"owner_id": owner_id, "request_id": f"{prefix}-{index}"}
+                update={
+                    "owner_id": owner_id,
+                    "request_id": f"{prefix}-{index}",
+                    "processing_grant_id": (
+                        processing_authorization.grant_id
+                        if processing_authorization is not None
+                        else None
+                    ),
+                    "processing_policy_version": (
+                        processing_authorization.policy_version
+                        if processing_authorization is not None
+                        else None
+                    ),
+                }
             )
             outcome = await assistant.interpret(context, at=instant, claim=claim)
             if not isinstance(outcome, ModelSuccess):

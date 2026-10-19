@@ -48,7 +48,11 @@ from pin.adapters.telegram.presentation.callbacks import (
     InvalidCallbackToken,
 )
 from pin.adapters.telegram.presentation.formatting import escape_markdown_v2
-from pin.adapters.telegram.presentation.onboarding import OnboardingReply, render_onboarding
+from pin.adapters.telegram.presentation.onboarding import (
+    OnboardingButton,
+    OnboardingReply,
+    render_onboarding,
+)
 from pin.adapters.telegram.presentation.payments import (
     render_cancel_result,
     render_payment_result,
@@ -59,8 +63,10 @@ from pin.adapters.telegram.presentation.payments import (
 from pin.adapters.telegram.presentation.subscription import render_subscription_status
 from pin.adapters.telegram.presentation.templates import (
     plain_help,
+    plain_privacy,
     plain_support,
     render_help,
+    render_privacy,
     render_support,
 )
 from pin.adapters.telegram.presentation.tokens import SqlAlchemyCallbackTokenStore
@@ -77,8 +83,20 @@ from pin.contexts.billing.api import (
     TrialActivationResult,
     ViewPaymentTerms,
 )
-from pin.contexts.identity.application.contracts import PreferencesSnapshot
-from pin.contexts.identity.application.onboarding import OnboardingResult
+from pin.contexts.identity.application.contracts import (
+    PreferencesSnapshot,
+)
+from pin.contexts.identity.application.onboarding import (
+    OnboardingResult,
+    confirm_onboarding,
+)
+from pin.contexts.identity.application.processing_consent import (
+    PROCESSING_CONSENT_POLICY_VERSION,
+    ProcessingConsentAcceptance,
+    accept_processing_consent,
+    get_processing_consent,
+    revoke_processing_consent,
+)
 from pin.contexts.identity.infrastructure.store import SqlAlchemyIdentityStore
 from pin.contexts.notifications.application.delivery import DELETED_ACCOUNT_DENIAL_TEXT
 from pin.contexts.notifications.infrastructure.models import ReminderIntentRecord
@@ -92,6 +110,7 @@ from pin.contexts.planning.infrastructure.series_models import (
     SeriesOccurrenceRecord,
     SeriesRecord,
 )
+from pin.persistence.receipts import lock_action
 from pin.platform.contracts import EventEnvelope
 from pin.platform.events import add_outbox_event
 from pin.platform.jobs import (
@@ -100,6 +119,7 @@ from pin.platform.jobs import (
     claim_job,
     complete_job,
     fail_job,
+    lock_job_for_effects,
     record_job_effect_once,
 )
 from pin.platform.models import InboxUpdate
@@ -137,6 +157,8 @@ async def process_application_job(
     if await process_capture_application_job(sessions, claim, now=now, assistant=assistant):
         return
     async with sessions() as session, session.begin():
+        await lock_action(session, claim.owner_id, "identity.processing_consent")
+        await lock_job_for_effects(session, claim)
         billing = SqlAlchemyAccessUsageStore(session)
         lifecycle = await billing.lock_account_lifecycle(claim.owner_id)
         # New Telegram owners have no Billing row until trial activation. Only
@@ -195,6 +217,7 @@ async def process_application_job(
                                     "plain_text": denial,
                                     "handling": "denied",
                                     "safe_deleted_account_denial": True,
+                                    "processing_classification": "deterministic",
                                     "source_job_id": str(claim.job_id),
                                 },
                             ),
@@ -234,7 +257,10 @@ async def process_application_job(
             return
         telegram_user_id, _, _ = actor
         trusted_owner_id = await PostgresTelegramOwnerResolver().resolve(
-            session, bot_id=inbox.bot_id, telegram_user_id=telegram_user_id
+            session,
+            bot_id=inbox.bot_id,
+            telegram_user_id=telegram_user_id,
+            expected_owner_id=claim.owner_id,
         )
         if trusted_owner_id != inbox.owner_id:
             raise RuntimeError("persisted Telegram mapping does not match the inbox owner")
@@ -256,6 +282,7 @@ async def process_application_job(
                 owner_id=inbox.owner_id,
                 telegram_user_id=telegram_user_id,
                 data=callback_data,
+                inbox_update_id=inbox.id,
                 now=now.astimezone(UTC),
                 trial_activator=trial_activator,
             )
@@ -313,11 +340,17 @@ async def process_application_job(
             command_profile = await store.get_preferences(inbox.owner_id)
             active_draft = (
                 await store.get_onboarding(inbox.owner_id)
-                if command.casefold() == "/cancel"
+                if command.casefold() in {"/cancel", "/privacy"}
                 else None
             )
             cancel_onboarding = active_draft is not None and active_draft.step != "complete"
-            command_language = command_profile.language if command_profile else "en"
+            command_language = (
+                command_profile.language
+                if command_profile
+                else "ru"
+                if active_draft and active_draft.values.get("language") == "ru"
+                else "en"
+            )
             # Bare /cancel belongs to Billing; a named occurrence is a task mutation.
             payment_reply = (
                 await _handle_payment_command(
@@ -345,6 +378,26 @@ async def process_application_job(
                 presentation_reply = OnboardingReply(
                     render_support(command_language, support_contact),
                     plain_support(command_language, support_contact),
+                )
+            elif command.casefold() == "/privacy":
+                consent = await get_processing_consent(store, owner_id=inbox.owner_id)
+                consent_status = _processing_consent_status(command_language, consent.state)
+                text = _privacy_status_text(plain_privacy(command_language), consent_status)
+                action = "privacy.revoke" if consent.state == "granted" else "privacy.grant"
+                label = (
+                    ("Отозвать согласие" if action.endswith("revoke") else
+                     "Согласиться и включить ИИ")
+                    if command_language == "ru"
+                    else (
+                        "Withdraw consent"
+                        if action.endswith("revoke")
+                        else "Agree and enable AI"
+                    )
+                )
+                presentation_reply = OnboardingReply(
+                    escape_markdown_v2(text),
+                    text,
+                    buttons=(OnboardingButton(label, action, "consent"),),
                 )
             else:
                 presentation_reply = None
@@ -503,6 +556,7 @@ async def process_application_job(
                         "markdown": reply.markdown,
                         "plain_text": reply.plain_text,
                         "handling": result.disposition.value,
+                        "processing_classification": "deterministic",
                         "source_job_id": str(claim.job_id),
                         **({"reply_markup": reply_markup} if reply_markup else {}),
                     },
@@ -723,11 +777,39 @@ async def process_pending_reminder_schedules(
         ).consume_pending(at=now, limit=limit)
 
 
+def _privacy_status_text(privacy_copy: str, consent_status: str) -> str:
+    """Separate policy copy and current consent status as visible paragraphs."""
+    return f"{privacy_copy}\n\n{consent_status}"
+
+
+def _processing_consent_status(language: str, state: str) -> str:
+    if state == "granted":
+        return (
+            "Согласие на обработку для ИИ действует. Его можно отозвать здесь."
+            if language == "ru"
+            else "Processing consent for AI is active. You can withdraw it here."
+        )
+    if state == "revoked":
+        return (
+            "Согласие отозвано; новые запросы к ИИ отключены. Вы можете согласиться снова."
+            if language == "ru"
+            else "Consent is withdrawn and new AI requests are disabled. You can agree again."
+        )
+    return (
+        "Согласие на обработку для ИИ не дано. Сначала ознакомьтесь с /privacy."
+        if language == "ru"
+        else "Processing consent for AI has not been given. Read /privacy first."
+    )
+
+
 class _BillingTrialActivator:
     """Published Billing API adapter sharing Identity's transaction."""
 
     def __init__(self, session: AsyncSession) -> None:
         self._store = SqlAlchemyAccessUsageStore(session)
+
+    async def lock_account_lifecycle(self, owner_id: UUID) -> None:
+        await self._store.lock_account_lifecycle(owner_id)
 
     async def activate_trial(
         self, *, owner_id: UUID, telegram_user_id: int, at: datetime
@@ -742,6 +824,7 @@ async def _handle_callback(
     owner_id: UUID,
     telegram_user_id: int,
     data: object,
+    inbox_update_id: UUID,
     now: datetime,
     trial_activator: _BillingTrialActivator,
 ) -> tuple[PrivateMessageResult, AgendaReply | None]:
@@ -758,6 +841,7 @@ async def _handle_callback(
         else "en"
     )
     callbacks = CallbackTokens(SqlAlchemyCallbackTokenStore(session))
+    consent = await get_processing_consent(store, owner_id=owner_id)
     deletion_version = await current_deletion_preview_version(session, owner_id=owner_id, now=now)
     try:
         if not isinstance(data, str):
@@ -771,6 +855,11 @@ async def _handle_callback(
                 "settings": profile_version,
                 "answer": onboarding_version,
                 "cancel": onboarding_version,
+                "consent.accept": consent.revision,
+                "privacy.grant": consent.revision,
+                "privacy.revoke": consent.revision,
+                "consent.details": onboarding_version,
+                "consent.preview": onboarding_version,
                 "deletion.confirm": deletion_version,
                 "deletion.cancel": deletion_version,
                 **{action: onboarding_version for action in HOME_ZONE_ACTIONS},
@@ -788,6 +877,164 @@ async def _handle_callback(
             if profile
             else None
         )
+        if binding.action == "consent.accept":
+            if (
+                active_draft is None
+                or active_draft.mode != "initial"
+                or active_draft.step != "confirm"
+            ):
+                raise InvalidCallbackToken("consent action has no current initial draft")
+            expected = (
+                f"{active_draft.draft_id}|{active_draft.version}|"
+                f"{PROCESSING_CONSENT_POLICY_VERSION}"
+            )
+            if binding.target_id != expected:
+                raise InvalidCallbackToken("consent action belongs to another draft or policy")
+            acceptance = ProcessingConsentAcceptance(
+                expected_revision=binding.target_version,
+                policy_version=PROCESSING_CONSENT_POLICY_VERSION,
+                language=language,
+                accepted_at=now,
+                telegram_user_id=telegram_user_id,
+                inbox_update_id=inbox_update_id,
+                draft_id=active_draft.draft_id,
+                draft_version=active_draft.version,
+            )
+            consent_outcome = await confirm_onboarding(
+                store,
+                trial_activator,
+                owner_id=owner_id,
+                telegram_user_id=telegram_user_id,
+                now=now,
+                consent_acceptance=acceptance,
+            )
+            return (
+                PrivateMessageResult(
+                    DispatchDisposition.HANDLED, consent_outcome, render_onboarding(consent_outcome)
+                ),
+                None,
+            )
+        if binding.action in {"consent.details", "consent.preview"}:
+            if active_draft is None:
+                raise InvalidCallbackToken("consent details have no current draft")
+            expected = f"{active_draft.draft_id}|{active_draft.version}"
+            if binding.target_id != expected:
+                raise InvalidCallbackToken("consent details belong to an earlier draft")
+            if binding.action == "consent.preview":
+                consent_preview = OnboardingResult(
+                    "consent_required",
+                    step=active_draft.step,
+                    mode=active_draft.mode,
+                    draft=dict(active_draft.values),
+                )
+                return (
+                    PrivateMessageResult(
+                        DispatchDisposition.HANDLED,
+                        consent_preview,
+                        render_onboarding(consent_preview),
+                    ),
+                    None,
+                )
+            details = OnboardingReply(
+                render_privacy(language),
+                plain_privacy(language),
+                buttons=(
+                    OnboardingButton(
+                        "Back to setup" if language == "en" else "Вернуться к настройке",
+                        "consent.preview",
+                        "preview",
+                    ),
+                    OnboardingButton("Cancel" if language == "en" else "Отмена", "cancel", "draft"),
+                ),
+            )
+            return (
+                PrivateMessageResult(
+                    DispatchDisposition.HANDLED,
+                    OnboardingResult("consent_required", active_draft.step, active_draft.mode,
+                                     draft=dict(active_draft.values)),
+                    details,
+                ),
+                None,
+            )
+        if binding.action in {"privacy.grant", "privacy.revoke"}:
+            if binding.action == "privacy.grant":
+                if (
+                    binding.target_id != PROCESSING_CONSENT_POLICY_VERSION
+                    or consent.state == "granted"
+                ):
+                    raise InvalidCallbackToken("privacy acceptance is stale")
+                consent = await accept_processing_consent(
+                    store,
+                    owner_id=owner_id,
+                    expected_revision=binding.target_version,
+                    policy_version=PROCESSING_CONSENT_POLICY_VERSION,
+                    language=language,
+                    accepted_at=now,
+                    telegram_user_id=telegram_user_id,
+                    inbox_update_id=inbox_update_id,
+                )
+                acknowledgement = (
+                    (
+                        "Согласие включено. Запрос не сохранялся и не будет отправлен "
+                        "автоматически; отправьте его ещё раз."
+                    )
+                    if language == "ru"
+                    else (
+                        "Consent enabled. Your request was not stored or sent "
+                        "automatically; please resend it."
+                    )
+                )
+            else:
+                if (
+                    consent.state != "granted"
+                    or consent.grant_id is None
+                    or consent.policy_version is None
+                ):
+                    raise InvalidCallbackToken("there is no current grant to withdraw")
+                expected = f"{consent.grant_id}|{consent.policy_version}"
+                if binding.target_id != expected:
+                    raise InvalidCallbackToken("withdrawal belongs to an earlier grant")
+                consent = await revoke_processing_consent(
+                    store,
+                    owner_id=owner_id,
+                    expected_revision=binding.target_version,
+                    expected_grant_id=consent.grant_id,
+                    expected_policy_version=consent.policy_version,
+                    revoked_at=now,
+                )
+                acknowledgement = (
+                    (
+                        "Согласие отозвано. Новые запросы к ИИ заблокированы. Уже "
+                        "начатая обработка может завершиться, а переданные данные "
+                        "нельзя отозвать у поставщика."
+                    )
+                    if language == "ru"
+                    else (
+                        "Consent withdrawn. New AI requests are blocked. Processing "
+                        "already started may finish, and data already sent cannot be "
+                        "recalled from the provider."
+                    )
+                )
+            consent_status = _processing_consent_status(language, consent.state)
+            privacy_text = _privacy_status_text(acknowledgement, consent_status)
+            action = "privacy.revoke" if consent.state == "granted" else "privacy.grant"
+            label = (
+                ("Отозвать согласие" if action.endswith("revoke") else "Согласиться и включить ИИ")
+                if language == "ru"
+                else ("Withdraw consent" if action.endswith("revoke") else "Agree and enable AI")
+            )
+            return (
+                PrivateMessageResult(
+                    DispatchDisposition.HANDLED,
+                    OnboardingResult("unhandled", preferences=profile),
+                    OnboardingReply(
+                        escape_markdown_v2(privacy_text),
+                        privacy_text,
+                        buttons=(OnboardingButton(label, action, "consent"),),
+                    ),
+                ),
+                None,
+            )
         if binding.action in HOME_ZONE_ACTIONS:
             try:
                 async with session.begin_nested():
@@ -948,7 +1195,33 @@ async def _reply_markup(
     row: list[dict[str, str]] = []
     for button in reply.buttons:
         target_id = button.value
-        if button.action in {"deletion.confirm", "deletion.cancel"}:
+        if button.action.startswith("consent.") or button.action.startswith("privacy."):
+            consent = await get_processing_consent(store, owner_id=owner_id)
+            version = (
+                consent.revision
+                if button.action in {"consent.accept", "privacy.grant", "privacy.revoke"}
+                else active_draft.version
+                if active_draft
+                else 0
+            )
+            if button.action == "consent.accept":
+                if active_draft is None:
+                    raise RuntimeError("consent accept button has no active onboarding draft")
+                target_id = (
+                    f"{active_draft.draft_id}|{active_draft.version}|"
+                    f"{PROCESSING_CONSENT_POLICY_VERSION}"
+                )
+            elif button.action in {"consent.details", "consent.preview"}:
+                if active_draft is None:
+                    raise RuntimeError("consent details button has no active onboarding draft")
+                target_id = f"{active_draft.draft_id}|{active_draft.version}"
+            elif button.action == "privacy.grant":
+                target_id = PROCESSING_CONSENT_POLICY_VERSION
+            elif button.action == "privacy.revoke":
+                if consent.grant_id is None or consent.policy_version is None:
+                    raise RuntimeError("consent revoke button has no active grant")
+                target_id = f"{consent.grant_id}|{consent.policy_version}"
+        elif button.action in {"deletion.confirm", "deletion.cancel"}:
             version = await current_deletion_preview_version(session, owner_id=owner_id, now=now)
         else:
             version = (

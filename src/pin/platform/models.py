@@ -29,6 +29,11 @@ class InboxUpdate(Base):
     __tablename__ = "inbox"
     __table_args__ = (
         UniqueConstraint("bot_id", "update_id", name="uq_platform_inbox_bot_update"),
+        CheckConstraint(
+            "(processing_grant_id IS NULL AND processing_policy_version IS NULL) OR "
+            "(processing_grant_id IS NOT NULL AND processing_policy_version IS NOT NULL)",
+            name="ck_platform_inbox_processing_provenance",
+        ),
         {"schema": "platform"},
     )
 
@@ -36,6 +41,8 @@ class InboxUpdate(Base):
     bot_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     update_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     owner_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    processing_grant_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    processing_policy_version: Mapped[str | None] = mapped_column(String(64))
     update_type: Mapped[str] = mapped_column(String(80), nullable=False)
     payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     received_at: Mapped[datetime] = mapped_column(
@@ -58,6 +65,11 @@ class Job(Base):
             "conversation_sequence IS NULL OR (owner_id IS NOT NULL AND conversation_sequence > 0)",
             name="ck_platform_job_conversation_sequence",
         ),
+        CheckConstraint(
+            "(processing_grant_id IS NULL AND processing_policy_version IS NULL) OR "
+            "(processing_grant_id IS NOT NULL AND processing_policy_version IS NOT NULL)",
+            name="ck_platform_jobs_processing_provenance",
+        ),
         Index("ix_platform_jobs_claim", "lane", "status", "available_at", "priority"),
         Index("ix_platform_jobs_owner_order", "owner_id", "conversation_sequence", "status"),
         {"schema": "platform"},
@@ -70,6 +82,8 @@ class Job(Base):
     payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     deduplication_key: Mapped[str] = mapped_column(String(180), nullable=False)
     owner_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    processing_grant_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    processing_policy_version: Mapped[str | None] = mapped_column(String(64))
     conversation_sequence: Mapped[int | None] = mapped_column(BigInteger)
     priority: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
@@ -235,3 +249,5 @@ class RecoveryGate(Base):
     delivery_evidence_sha256: Mapped[str | None] = mapped_column(String(64))
     payment_evidence_sha256: Mapped[str | None] = mapped_column(String(64))
     usage_evidence_sha256: Mapped[str | None] = mapped_column(String(64))
+    consent_invalidated_snapshot_id: Mapped[str | None] = mapped_column(String(32))
+    consent_invalidated_ledger_id: Mapped[str | None] = mapped_column(String(32))

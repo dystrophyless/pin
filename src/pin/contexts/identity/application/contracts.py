@@ -25,6 +25,27 @@ class PreferencesSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class ProcessingConsentSnapshot:
+    owner_id: UUID
+    state: str
+    revision: int
+    policy_version: str | None = None
+    grant_id: UUID | None = None
+    accepted_at: datetime | None = None
+    accepted_language: str | None = None
+    accepted_telegram_user_id: int | None = None
+    accepted_update_id: UUID | None = None
+    revoked_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ProcessingAuthorization:
+    owner_id: UUID
+    grant_id: UUID
+    policy_version: str
+
+
+@dataclass(frozen=True, slots=True)
 class HomeZoneChangeHandoff:
     """A downstream mutations consumer can preview before shifting saved plans."""
 
@@ -86,8 +107,43 @@ class IdentityStore(Protocol):
         self, draft: OnboardingDraft, *, values: dict[str, object], profile_version: int
     ) -> bool: ...
 
+    async def lock_processing_consent(self, owner_id: UUID) -> None: ...
+
+    async def get_processing_consent(self, owner_id: UUID) -> ProcessingConsentSnapshot: ...
+
+    async def grant_processing_consent(
+        self,
+        *,
+        owner_id: UUID,
+        expected_revision: int,
+        policy_version: str,
+        accepted_at: datetime,
+        language: str,
+        telegram_user_id: int,
+        inbox_update_id: UUID,
+    ) -> ProcessingConsentSnapshot: ...
+
+    async def revoke_processing_consent(
+        self,
+        *,
+        owner_id: UUID,
+        expected_revision: int,
+        expected_grant_id: UUID,
+        expected_policy_version: str,
+        revoked_at: datetime,
+    ) -> ProcessingConsentSnapshot: ...
+
+    async def authorize_processing_consent(
+        self, owner_id: UUID, authorization: ProcessingAuthorization
+    ) -> bool: ...
+
+    async def invalidate_restored_processing_consent(self, owner_id: UUID) -> bool: ...
+
+    async def list_granted_processing_consent_owners(self) -> tuple[UUID, ...]: ...
+
 
 class TrialActivator(Protocol):
+    async def lock_account_lifecycle(self, owner_id: UUID) -> None: ...
     async def activate_trial(
         self, *, owner_id: UUID, telegram_user_id: int, at: datetime
     ) -> TrialActivationResult: ...

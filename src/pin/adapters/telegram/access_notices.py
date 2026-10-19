@@ -156,6 +156,7 @@ async def schedule_access_notices(
                     "plain_text": "/subscription",
                     "requires_preparation": True,
                     "billing_access_notice": {"notice_id": str(notice_id), "period_id": period_id},
+                    "processing_classification": "deterministic",
                 },
             ),
         )

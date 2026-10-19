@@ -23,7 +23,13 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column
 
+from pin.contexts.identity.api import (
+    ProcessingAuthorization,
+    SqlAlchemyIdentityStore,
+    authorize_processing_consent,
+)
 from pin.persistence.models import Base
+from pin.persistence.receipts import lock_action
 
 
 class MutationRuntimePendingRecord(Base):
@@ -54,6 +60,11 @@ class MutationRuntimePendingRecord(Base):
             name="ck_mutation_runtime_pending_state",
         ),
         CheckConstraint("language IN ('en', 'ru')", name="ck_mutation_runtime_pending_language"),
+        CheckConstraint(
+            "(processing_grant_id IS NULL AND processing_policy_version IS NULL) OR "
+            "(processing_grant_id IS NOT NULL AND processing_policy_version IS NOT NULL)",
+            name="ck_mutation_runtime_pending_processing_provenance",
+        ),
         Index(
             "ix_mutation_runtime_pending_owner_state_expiry",
             "owner_id",
@@ -66,6 +77,8 @@ class MutationRuntimePendingRecord(Base):
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
     owner_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    processing_grant_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    processing_policy_version: Mapped[str | None] = mapped_column(String(64))
     occurrence_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     expected_occurrence_version: Mapped[int] = mapped_column(Integer, nullable=False)
     expected_series_version: Mapped[int | None] = mapped_column(Integer)
@@ -141,13 +154,15 @@ class SqlAlchemyMutationRuntimeStore:
         pending_id: UUID,
         lock: bool = False,
     ) -> MutationRuntimePendingRecord | None:
+        await lock_action(self._session, owner_id, "identity.processing_consent")
         statement = select(MutationRuntimePendingRecord).where(
             MutationRuntimePendingRecord.id == pending_id,
             MutationRuntimePendingRecord.owner_id == owner_id,
         )
         if lock:
             statement = statement.with_for_update().execution_options(populate_existing=True)
-        return cast(MutationRuntimePendingRecord | None, await self._session.scalar(statement))
+        record = cast(MutationRuntimePendingRecord | None, await self._session.scalar(statement))
+        return record if record is not None and await self._proposal_is_current(record) else None
 
     async def get_latest_schedule(
         self,
@@ -156,6 +171,7 @@ class SqlAlchemyMutationRuntimeStore:
         at: datetime,
         lock: bool = False,
     ) -> MutationRuntimePendingRecord | None:
+        await lock_action(self._session, owner_id, "identity.processing_consent")
         statement = (
             select(MutationRuntimePendingRecord)
             .where(
@@ -171,7 +187,8 @@ class SqlAlchemyMutationRuntimeStore:
         )
         if lock:
             statement = statement.with_for_update().execution_options(populate_existing=True)
-        return cast(MutationRuntimePendingRecord | None, await self._session.scalar(statement))
+        record = cast(MutationRuntimePendingRecord | None, await self._session.scalar(statement))
+        return record if record is not None and await self._proposal_is_current(record) else None
 
     async def get_preview(
         self,
@@ -180,6 +197,7 @@ class SqlAlchemyMutationRuntimeStore:
         preview_id: UUID,
         lock: bool = False,
     ) -> MutationRuntimePendingRecord | None:
+        await lock_action(self._session, owner_id, "identity.processing_consent")
         statement = select(MutationRuntimePendingRecord).where(
             MutationRuntimePendingRecord.owner_id == owner_id,
             MutationRuntimePendingRecord.state == "previewed",
@@ -188,7 +206,42 @@ class SqlAlchemyMutationRuntimeStore:
         )
         if lock:
             statement = statement.with_for_update().execution_options(populate_existing=True)
-        return cast(MutationRuntimePendingRecord | None, await self._session.scalar(statement))
+        record = cast(MutationRuntimePendingRecord | None, await self._session.scalar(statement))
+        return record if record is not None and await self._proposal_is_current(record) else None
+
+    async def stamp_open_for_processing(
+        self, owner_id: UUID, authorization: ProcessingAuthorization
+    ) -> None:
+        if authorization.owner_id != owner_id or not await authorize_processing_consent(
+            SqlAlchemyIdentityStore(self._session),
+            owner_id=owner_id,
+            authorization=authorization,
+        ):
+            raise ValueError("processing consent is not current for mutation proof")
+        await self._session.execute(
+            update(MutationRuntimePendingRecord)
+            .where(
+                MutationRuntimePendingRecord.owner_id == owner_id,
+                MutationRuntimePendingRecord.state.in_(self._OPEN_STATES),
+            )
+            .values(
+                processing_grant_id=authorization.grant_id,
+                processing_policy_version=authorization.policy_version,
+            )
+        )
+
+    async def _proposal_is_current(self, record: MutationRuntimePendingRecord) -> bool:
+        if "proposal" not in record.pending_fields:
+            return True
+        if record.processing_grant_id is None or record.processing_policy_version is None:
+            return False
+        return await authorize_processing_consent(
+            SqlAlchemyIdentityStore(self._session),
+            owner_id=record.owner_id,
+            authorization=ProcessingAuthorization(
+                record.owner_id, record.processing_grant_id, record.processing_policy_version
+            ),
+        )
 
     async def update(
         self,

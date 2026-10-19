@@ -40,6 +40,7 @@ from pin.contexts.conversation.domain.capture import (
     append_user_input,
     cancel_capture,
     confirm_capture,
+    discard_processing_result,
     finish_collecting,
     finish_ready,
     start_capture,
@@ -851,3 +852,31 @@ async def test_advice_only_keeps_capture_collecting_without_plan_preview_or_conf
     assert store.draft.normalized_actions in (None, ())
     assert store.parts == ()
     assert "1. Gather notes" in str(reply.response["text"])
+
+
+def test_discard_stale_processing_result_is_terminal_and_keeps_only_user_input() -> None:
+    draft = start_capture(
+        draft_id=uuid4(),
+        owner_id=OWNER,
+        text="Remind me tomorrow",
+        request_key="capture-request",
+        at=NOW,
+        expires_at=NOW + timedelta(hours=1),
+        sequence=1,
+        processing_grant_id=uuid4(),
+        processing_policy_version="privacy-v1",
+    )
+
+    failed = discard_processing_result(
+        draft, request_key="capture-request", at=NOW + timedelta(seconds=1)
+    )
+
+    assert failed.state is CaptureState.FAILED
+    assert failed.version == draft.version + 1
+    assert failed.processing_key is None
+    assert failed.preview is None and failed.normalized_actions == ()
+    assert [message.role for message in failed.messages] == ["user"]
+    with pytest.raises(CaptureConflict):
+        discard_processing_result(
+            failed, request_key="capture-request", at=NOW + timedelta(seconds=2)
+        )

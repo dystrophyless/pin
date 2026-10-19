@@ -68,7 +68,7 @@ from pin.contexts.conversation.infrastructure.smoke import (
     preview_payload,
     validate_live_catalog,
 )
-from pin.contexts.identity.api import PreferencesSnapshot
+from pin.contexts.identity.api import PreferencesSnapshot, ProcessingAuthorization
 
 NOW = datetime(2026, 10, 13, 10, tzinfo=UTC)
 OWNER = UUID("e232952d-3f9a-4f3d-a65a-09073dd06686")
@@ -125,12 +125,19 @@ class FakeUsageRecorder:
         turn_id: str,
         result: dict[str, object],
         provider_request_ids: tuple[str, ...],
+        processing_grant_id: UUID | None = None,
+        processing_policy_version: str | None = None,
         claim: object | None = None,
     ) -> None:
         self.results[(owner_id, turn_id)] = (result, provider_request_ids)
 
     async def get_result(
-        self, *, owner_id: UUID, turn_id: str
+        self,
+        *,
+        owner_id: UUID,
+        turn_id: str,
+        processing_grant_id: UUID | None = None,
+        processing_policy_version: str | None = None,
     ) -> tuple[dict[str, object], tuple[str, ...]] | None:
         return self.results.get((owner_id, turn_id))
 
@@ -144,7 +151,14 @@ class FakeAllowance:
         self.refunded: list[tuple[UUID, str]] = []
 
     async def reserve(
-        self, *, owner_id: UUID, request_id: str, at: datetime, claim: object | None = None
+        self,
+        *,
+        owner_id: UUID,
+        request_id: str,
+        at: datetime,
+        processing_grant_id: UUID | None = None,
+        processing_policy_version: str | None = None,
+        claim: object | None = None,
     ) -> ReservationStatus:
         self.reserved.append((owner_id, request_id))
         self.reserved_at.append(at)
@@ -2029,14 +2043,22 @@ async def test_bounded_smoke_runner_requires_ru_task_and_en_appointment() -> Non
     gate = SmokeBudgetTransport(transport=backing, preview=preview)
     assistant, recorder, allowance = _assistant(gate)
 
-    report = await gate.run(assistant, at=NOW, request_prefix="issue13-smoke")
+    report = await gate.run(
+        assistant,
+        at=NOW,
+        owner_id=OWNER,
+        request_prefix="issue13-smoke",
+        processing_authorization=ProcessingAuthorization(
+            OWNER, UUID("7ee8d22f-df5c-484c-a70b-55b134b4bb16"), "processing-consent-v1"
+        ),
+    )
 
     assert report.provider_calls == len(report.provider_request_ids) == 2
     assert report.provider_request_ids == ("gen-smoke-ru", "gen-smoke-en")
     assert report.actual_cost_usd == Decimal("0.0000146")
     assert allowance.settled == [
-        (preview.scenarios[0].context.owner_id, "issue13-smoke-1"),
-        (preview.scenarios[1].context.owner_id, "issue13-smoke-2"),
+        (OWNER, "issue13-smoke-1"),
+        (OWNER, "issue13-smoke-2"),
     ]
     assert len(recorder.reported) == 2
 

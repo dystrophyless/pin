@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from uuid import UUID, uuid4
 
 from sqlalchemy import delete, select, update
@@ -12,9 +13,18 @@ from pin.contexts.identity.application.contracts import (
     IdentityStore,
     OnboardingDraft,
     PreferencesSnapshot,
+    ProcessingAuthorization,
+    ProcessingConsentSnapshot,
 )
+from pin.contexts.identity.application.processing_consent import ProcessingConsentConflict
 from pin.contexts.identity.domain.preferences import Preferences
-from pin.contexts.identity.infrastructure.models import OnboardingRecord, PreferencesRecord
+from pin.contexts.identity.infrastructure.models import (
+    OnboardingRecord,
+    PreferencesRecord,
+    ProcessingConsentRecord,
+)
+from pin.persistence.receipts import lock_action
+from pin.platform.models import InboxUpdate
 
 
 class SqlAlchemyIdentityStore(IdentityStore):
@@ -189,6 +199,142 @@ class SqlAlchemyIdentityStore(IdentityStore):
         return result.scalar_one_or_none() is not None
 
 
+    async def lock_processing_consent(self, owner_id: UUID) -> None:
+        await lock_action(self._session, owner_id, "identity.processing_consent")
+
+    async def get_processing_consent(self, owner_id: UUID) -> ProcessingConsentSnapshot:
+        record = await self._session.scalar(
+            select(ProcessingConsentRecord)
+            .where(ProcessingConsentRecord.owner_id == owner_id)
+            .execution_options(populate_existing=True)
+        )
+        if record is None:
+            return ProcessingConsentSnapshot(owner_id=owner_id, state="required", revision=0)
+        return _consent_snapshot(record)
+
+    async def grant_processing_consent(
+        self,
+        *,
+        owner_id: UUID,
+        expected_revision: int,
+        policy_version: str,
+        accepted_at: datetime,
+        language: str,
+        telegram_user_id: int,
+        inbox_update_id: UUID,
+    ) -> ProcessingConsentSnapshot:
+        from pin.contexts.identity.application.processing_consent import (
+            PROCESSING_CONSENT_POLICY_VERSION,
+        )
+
+        if policy_version != PROCESSING_CONSENT_POLICY_VERSION:
+            raise ProcessingConsentConflict("processing consent policy is stale")
+        if accepted_at.tzinfo is None or accepted_at.utcoffset() is None:
+            raise ValueError("processing consent time must be timezone-aware")
+        await self.lock_processing_consent(owner_id)
+        current = await self.get_processing_consent(owner_id)
+        if current.revision != expected_revision:
+            raise ProcessingConsentConflict("processing consent revision changed")
+        inbox = await self._session.get(InboxUpdate, inbox_update_id)
+        if inbox is None or inbox.owner_id != owner_id or not _inbox_actor_matches(
+            inbox.payload, telegram_user_id
+        ):
+            raise ProcessingConsentConflict("processing consent update is not owner-bound")
+        record = await self._session.get(ProcessingConsentRecord, owner_id)
+        values = {
+            "state": "granted",
+            "revision": expected_revision + 1,
+            "policy_version": policy_version,
+            "grant_id": uuid4(),
+            "accepted_at": accepted_at,
+            "accepted_language": language,
+            "accepted_telegram_user_id": telegram_user_id,
+            "accepted_update_id": inbox_update_id,
+            "revoked_at": None,
+        }
+        if record is None:
+            record = ProcessingConsentRecord(owner_id=owner_id, **values)
+            self._session.add(record)
+        else:
+            for name, value in values.items():
+                setattr(record, name, value)
+        await self._session.flush()
+        return _consent_snapshot(record)
+
+    async def revoke_processing_consent(
+        self,
+        *,
+        owner_id: UUID,
+        expected_revision: int,
+        expected_grant_id: UUID,
+        expected_policy_version: str,
+        revoked_at: datetime,
+    ) -> ProcessingConsentSnapshot:
+        if revoked_at.tzinfo is None or revoked_at.utcoffset() is None:
+            raise ValueError("processing consent time must be timezone-aware")
+        await self.lock_processing_consent(owner_id)
+        current = await self.get_processing_consent(owner_id)
+        if current.revision != expected_revision:
+            raise ProcessingConsentConflict("processing consent revision changed")
+        if (
+            current.state == "revoked"
+            and current.grant_id == expected_grant_id
+            and current.policy_version == expected_policy_version
+        ):
+            return current
+        if (
+            current.state != "granted"
+            or current.grant_id != expected_grant_id
+            or current.policy_version != expected_policy_version
+        ):
+            raise ProcessingConsentConflict("processing consent grant is no longer current")
+        record = await self._session.get(ProcessingConsentRecord, owner_id)
+        if record is None:
+            raise ProcessingConsentConflict("processing consent record disappeared")
+        record.state = "revoked"
+        record.revision += 1
+        record.revoked_at = revoked_at
+        await self._session.flush()
+        return _consent_snapshot(record)
+
+    async def authorize_processing_consent(
+        self, owner_id: UUID, authorization: ProcessingAuthorization
+    ) -> bool:
+        await self.lock_processing_consent(owner_id)
+        current = await self.get_processing_consent(owner_id)
+        return (
+            authorization.owner_id == owner_id
+            and current.state == "granted"
+            and current.grant_id == authorization.grant_id
+            and current.policy_version == authorization.policy_version
+        )
+
+    async def invalidate_restored_processing_consent(self, owner_id: UUID) -> bool:
+        await self.lock_processing_consent(owner_id)
+        record = await self._session.get(ProcessingConsentRecord, owner_id)
+        if record is None or record.state != "granted":
+            return False
+        record.state = "required"
+        record.revision += 1
+        record.policy_version = None
+        record.grant_id = None
+        record.accepted_at = None
+        record.accepted_language = None
+        record.accepted_telegram_user_id = None
+        record.accepted_update_id = None
+        record.revoked_at = None
+        await self._session.flush()
+        return True
+
+    async def list_granted_processing_consent_owners(self) -> tuple[UUID, ...]:
+        rows = await self._session.scalars(
+            select(ProcessingConsentRecord.owner_id)
+            .where(ProcessingConsentRecord.state == "granted")
+            .order_by(ProcessingConsentRecord.owner_id)
+        )
+        return tuple(rows)
+
+
 def _snapshot(owner_id: UUID, record: PreferencesRecord) -> PreferencesSnapshot:
     return PreferencesSnapshot(
         owner_id=owner_id,
@@ -226,3 +372,36 @@ def _preference_values(preferences: Preferences) -> dict[str, object]:
         "review_time": preferences.review_time,
         "version": preferences.version,
     }
+
+
+def _consent_snapshot(record: ProcessingConsentRecord) -> ProcessingConsentSnapshot:
+    return ProcessingConsentSnapshot(
+        owner_id=record.owner_id,
+        state=record.state,
+        revision=record.revision,
+        policy_version=record.policy_version,
+        grant_id=record.grant_id,
+        accepted_at=record.accepted_at,
+        accepted_language=record.accepted_language,
+        accepted_telegram_user_id=record.accepted_telegram_user_id,
+        accepted_update_id=record.accepted_update_id,
+        revoked_at=record.revoked_at,
+    )
+
+
+def _inbox_actor_matches(payload: object, telegram_user_id: int) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    callback = payload.get("callback_query")
+    message = callback.get("message") if isinstance(callback, dict) else payload.get("message")
+    actor = callback.get("from") if isinstance(callback, dict) else (
+        message.get("from") if isinstance(message, dict) else None
+    )
+    chat = message.get("chat") if isinstance(message, dict) else None
+    return (
+        isinstance(actor, dict)
+        and actor.get("id") == telegram_user_id
+        and actor.get("is_bot") is not True
+        and isinstance(chat, dict)
+        and chat.get("id") == telegram_user_id
+    )

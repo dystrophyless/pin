@@ -82,6 +82,8 @@ class CaptureTurnReply:
     state: str
     response: dict[str, object]
     confirmation_credential: str | None = None
+    processing_grant_id: UUID | None = None
+    processing_policy_version: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,6 +112,8 @@ async def prepare_interpretation(
     request_key: str,
     text: str,
     at: datetime,
+    processing_grant_id: UUID | None = None,
+    processing_policy_version: str | None = None,
     context_factory: Callable[[CaptureDraft, str, str], ConversationContext],
 ) -> CaptureInterpretation | CaptureTurnReply:
     """Persist the update fence, then return model work without holding a transaction."""
@@ -119,6 +123,8 @@ async def prepare_interpretation(
         text=text,
         at=at,
         expires_at=at + CAPTURE_TTL,
+        processing_grant_id=processing_grant_id,
+        processing_policy_version=processing_policy_version,
     )
     if not begun.is_new_input:
         if begun.response is not None:
@@ -136,12 +142,24 @@ async def prepare_interpretation(
                 begun.draft.state.value,
                 begun.response,
                 credential,
+                begun.draft.processing_grant_id,
+                begun.draft.processing_policy_version,
             )
         # The provider result may be safely replayed by BoundedPlanningAssistant
         # using this exact request key; unresolved calls remain unknown there.
     context = context_factory(begun.draft, request_key, text)
     if not isinstance(context, ConversationContext):
         raise TypeError("context_factory must return a ConversationContext")
+    if (
+        context.processing_grant_id != processing_grant_id
+        or context.processing_policy_version != processing_policy_version
+    ):
+        context = context.model_copy(
+            update={
+                "processing_grant_id": processing_grant_id,
+                "processing_policy_version": processing_policy_version,
+            }
+        )
     return CaptureInterpretation(begun.draft, request_key, context)
 
 
@@ -168,6 +186,8 @@ async def restore_ready_preview(
         draft.state.value,
         {"kind": "preview", "preview": draft.preview, "text": ""},
         credential,
+        draft.processing_grant_id,
+        draft.processing_policy_version,
     )
 
 
