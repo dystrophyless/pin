@@ -34,8 +34,10 @@ from pin.contexts.conversation.domain.proposals import (
     InputKind,
     SourceLanguage,
 )
+from pin.contexts.identity.application.processing_consent import PROCESSING_CONSENT_POLICY_VERSION
 
 OWNER = UUID("e232952d-3f9a-4f3d-a65a-09073dd06686")
+PROCESSING_GRANT_ID = UUID("fd8f3069-c261-4b3d-97d4-97471312ba53")
 NOW = datetime(2026, 10, 13, 10, tzinfo=UTC)
 
 
@@ -156,8 +158,18 @@ class _Allowance:
         self.settled: list[str] = []
 
     async def reserve(
-        self, *, owner_id: UUID, request_id: str, at: datetime, claim: object | None = None
+        self,
+        *,
+        owner_id: UUID,
+        request_id: str,
+        at: datetime,
+        processing_grant_id: UUID | None = None,
+        processing_policy_version: str | None = None,
+        claim: object | None = None,
     ) -> ReservationStatus:
+        assert owner_id == OWNER
+        assert processing_grant_id == PROCESSING_GRANT_ID
+        assert processing_policy_version == PROCESSING_CONSENT_POLICY_VERSION
         return ReservationStatus.RESERVED
 
     async def settle(
@@ -191,6 +203,8 @@ async def test_overlong_provider_advice_is_invalid_output_and_refunds_without_re
     )
     context = ConversationContext(
         owner_id=OWNER,
+        processing_grant_id=PROCESSING_GRANT_ID,
+        processing_policy_version=PROCESSING_CONSENT_POLICY_VERSION,
         request_id="advice-too-long",
         language=SourceLanguage.EN,
         input_kind=InputKind.TEXT,

@@ -9,7 +9,7 @@ from aiogram import Bot
 from aiohttp.test_utils import TestClient, TestServer
 from sqlalchemy.exc import SQLAlchemyError
 
-from pin.adapters.telegram import webhook
+from pin.adapters.telegram import ingress, webhook
 from pin.adapters.telegram.ingress import IngressReceipt
 from pin.adapters.telegram.webhook import create_webhook_app
 from pin.persistence import run_local_async
@@ -77,6 +77,8 @@ def test_webhook_health_and_readiness_routes(
 async def test_webhook_persists_aware_handler_receipt_instant(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    committed_transactions = 0
+
     class IngressSession:
         async def __aenter__(self) -> IngressSession:
             return self
@@ -84,8 +86,17 @@ async def test_webhook_persists_aware_handler_receipt_instant(
         async def __aexit__(self, *_: object) -> None:
             return None
 
-        def begin(self) -> IngressSession:
-            return self
+        def begin(self) -> _Transaction:
+            return _Transaction()
+
+    class _Transaction:
+        async def __aenter__(self) -> None:
+            return None
+
+        async def __aexit__(self, exc_type: object, *_: object) -> None:
+            nonlocal committed_transactions
+            if exc_type is None:
+                committed_transactions += 1
 
     received_instants: list[datetime] = []
 
@@ -102,7 +113,7 @@ async def test_webhook_persists_aware_handler_receipt_instant(
         received_instants.append(received_at)
         return IngressReceipt(True, int(payload["update_id"]))
 
-    monkeypatch.setattr(webhook, "persist_update", persist)
+    monkeypatch.setattr(ingress, "persist_update", persist)
     bot = Bot("123456:abcdefghijklmnopqrstuvwxyzABCDE123456")
     app = create_webhook_app(
         engine=None,  # type: ignore[arg-type]
@@ -136,6 +147,7 @@ async def test_webhook_persists_aware_handler_receipt_instant(
             assert response.status == 200
             assert await response.json() == {"ok": True}
         assert len(received_instants) == 1
+        assert committed_transactions == 1
         assert before <= received_instants[0] <= after
         assert received_instants[0].tzinfo is not None
         assert received_instants[0].utcoffset() == UTC.utcoffset(received_instants[0])
