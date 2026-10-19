@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -12,7 +12,8 @@ import pytest
 import pytest_asyncio
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import create_engine, delete, select
+from processing_consent_fixtures import seed_accepted_processing_consent
+from sqlalchemy import create_engine, delete, select, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -51,6 +52,11 @@ from pin.contexts.conversation.infrastructure.capture_models import (
     CaptureDraftRecord,
     CaptureInputRecord,
 )
+from pin.contexts.identity.api import (
+    SqlAlchemyIdentityStore,
+    authorize_processing_consent,
+    get_processing_consent,
+)
 from pin.contexts.notifications.infrastructure.delivery_worker import (
     DELIVERY_REPLY_JOB_KIND,
     deliver_reply_job,
@@ -80,6 +86,7 @@ from pin.contexts.retention.infrastructure.store import (
 from pin.contexts.speech.infrastructure.files import PrivateAudioFiles
 from pin.contexts.speech.infrastructure.models import SpeechRequestRecord
 from pin.persistence.models import ActionReceipt, Base
+from pin.persistence.receipts import lock_action
 from pin.platform.contracts import EventEnvelope
 from pin.platform.events import add_outbox_event
 from pin.platform.jobs import JobLane, claim_job
@@ -231,6 +238,105 @@ async def _dispatch_telegram_update(
         return claim.owner_id, dict(reply.payload["payload"])
 
 
+async def _operation_waits_for_owner_fence(
+    database_url: str,
+    *,
+    owner_id: UUID,
+    operation: Callable[[async_sessionmaker[AsyncSession]], Awaitable[object]],
+) -> object:
+    suffix = uuid4().hex[:12]
+    holder_name = f"retention-fence-holder-{suffix}"
+    operation_name = f"retention-fence-operation-{suffix}"
+    observer_name = f"retention-fence-observer-{suffix}"
+    key = uuid4().int & ((1 << 62) - 1)
+    holder_engine = create_async_engine(
+        database_url, connect_args={"application_name": holder_name}
+    )
+    operation_engine = create_async_engine(
+        database_url, connect_args={"application_name": operation_name}
+    )
+    observer_engine = create_async_engine(
+        database_url, connect_args={"application_name": observer_name}
+    )
+    holder_sessions = async_sessionmaker(holder_engine, expire_on_commit=False)
+    operation_sessions = async_sessionmaker(operation_engine, expire_on_commit=False)
+    holder = await holder_engine.connect()
+    await holder.execute(text("SELECT pg_advisory_lock(:key)"), {"key": key})
+    fence = operation_task = None
+    try:
+        async def hold_fence() -> None:
+            async with holder_sessions() as session, session.begin():
+                await lock_action(session, owner_id, "identity.processing_consent")
+                await session.execute(
+                    text("SELECT pg_advisory_xact_lock(:key)"), {"key": key}
+                )
+
+        fence = asyncio.create_task(hold_fence())
+        async with observer_engine.connect() as observer:
+            async with asyncio.timeout(10):
+                while True:
+                    if fence.done():
+                        await fence
+                        raise AssertionError("owner-fence holder completed before the barrier")
+                    waiting = await observer.scalar(
+                        text(
+                            "SELECT EXISTS (SELECT 1 FROM pg_stat_activity "
+                            "WHERE application_name = :name AND wait_event_type = 'Lock' "
+                            "AND wait_event = 'advisory')"
+                        ),
+                        {"name": holder_name},
+                    )
+                    if waiting:
+                        break
+                    await observer.rollback()
+                    await asyncio.sleep(0.01)
+
+        operation_task = asyncio.create_task(operation(operation_sessions))
+        async with observer_engine.connect() as observer:
+            async with asyncio.timeout(10):
+                while True:
+                    if operation_task.done():
+                        await operation_task
+                        raise AssertionError("owner operation completed before acquiring the fence")
+                    blocked = await observer.scalar(
+                        text(
+                            "SELECT EXISTS (SELECT 1 FROM pg_stat_activity AS waiting "
+                            "WHERE waiting.application_name = :waiter "
+                            "AND waiting.wait_event_type = 'Lock' AND EXISTS ( "
+                            "SELECT 1 FROM unnest(pg_blocking_pids(waiting.pid)) AS blocked(pid) "
+                            "JOIN pg_stat_activity AS blocker ON blocker.pid = blocked.pid "
+                            "WHERE blocker.application_name = :blocker))"
+                        ),
+                        {"waiter": operation_name, "blocker": holder_name},
+                    )
+                    if blocked:
+                        break
+                    await observer.rollback()
+                    await asyncio.sleep(0.01)
+
+        await holder.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": key})
+        await holder.commit()
+        await asyncio.wait_for(fence, timeout=10)
+        return await asyncio.wait_for(operation_task, timeout=10)
+    finally:
+        for task in (fence, operation_task):
+            if task is not None and not task.done():
+                task.cancel()
+        await asyncio.gather(
+            *(task for task in (fence, operation_task) if task is not None),
+            return_exceptions=True,
+        )
+        try:
+            await holder.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": key})
+            await holder.commit()
+        except Exception:
+            pass
+        await holder.close()
+        await holder_engine.dispose()
+        await operation_engine.dispose()
+        await observer_engine.dispose()
+
+
 @pytest.mark.asyncio
 async def test_preview_is_owner_bound_current_version_and_idempotent(
     sessions: async_sessionmaker[AsyncSession],
@@ -310,8 +416,16 @@ async def test_delete_export_replay_and_tr03_return_preserve_new_generation(
     owner_id = uuid4()
     now = datetime(2026, 10, 15, 12, tzinfo=UTC)
     ledger = tmp_path / "deletions.jsonl"
+    telegram_user_id = abs(owner_id.int % 2_000_000_000) + 1
     await _seed_account(sessions, owner_id, paid_until=now + timedelta(days=20))
     try:
+        async with sessions() as session, session.begin():
+            old_authorization = await seed_accepted_processing_consent(
+                session,
+                owner_id=owner_id,
+                bot_id=7_100_000_101,
+                telegram_user_id=telegram_user_id,
+            )
         async with sessions() as session, session.begin():
             session.add(
                 PlanItemRecord(
@@ -360,10 +474,27 @@ async def test_delete_export_replay_and_tr03_return_preserve_new_generation(
             assert await SqlAlchemyAccessUsageStore(session).restore_returning_paid_access(
                 RestoreReturningPaidAccess(
                     owner_id,
-                    abs(owner_id.int % 2_000_000_000) + 1,
+                    telegram_user_id,
                     now,
                 )
             )
+            current = await get_processing_consent(
+                SqlAlchemyIdentityStore(session), owner_id=owner_id
+            )
+            assert current.state == "required"
+            assert not await authorize_processing_consent(
+                SqlAlchemyIdentityStore(session),
+                owner_id=owner_id,
+                authorization=old_authorization,
+            )
+            new_authorization = await seed_accepted_processing_consent(
+                session,
+                owner_id=owner_id,
+                bot_id=7_100_000_101,
+                telegram_user_id=telegram_user_id,
+                expected_revision=current.revision,
+            )
+            assert new_authorization.grant_id != old_authorization.grant_id
             session.add(
                 PlanItemRecord(owner_id=owner_id, kind="task", title="new post-return plan")
             )
@@ -384,6 +515,16 @@ async def test_delete_export_replay_and_tr03_return_preserve_new_generation(
             )
             assert plan is not None and plan.title == "new post-return plan"
             assert await session.get(TrialActivationRecord, owner_id) is not None
+            assert await authorize_processing_consent(
+                SqlAlchemyIdentityStore(session),
+                owner_id=owner_id,
+                authorization=new_authorization,
+            )
+            assert not await authorize_processing_consent(
+                SqlAlchemyIdentityStore(session),
+                owner_id=owner_id,
+                authorization=old_authorization,
+            )
         # A snapshot from before deletion has no local tombstone receipt. The external
         # artifact still fences it and removes its stale plan data.
         stale_owner = uuid4()
@@ -413,6 +554,110 @@ async def test_delete_export_replay_and_tr03_return_preserve_new_generation(
         await _clean_owner(sessions, owner_id)
         if "stale_owner" in locals():
             await _clean_owner(sessions, stale_owner)
+
+
+@pytest.mark.asyncio
+async def test_deletion_maintenance_and_tombstone_replay_wait_for_owner_fence(
+    retention_database_url: str,
+    sessions: async_sessionmaker[AsyncSession],
+    tmp_path: Path,
+) -> None:
+    now = datetime(2026, 10, 19, 12, tzinfo=UTC)
+    direct_owner, maintenance_owner, replay_owner = uuid4(), uuid4(), uuid4()
+    ledger = tmp_path / "consent-liveness-deletions.jsonl"
+    owners = (direct_owner, maintenance_owner, replay_owner)
+    try:
+        for owner_id in owners:
+            await _seed_account(sessions, owner_id, paid_until=now + timedelta(days=20))
+            async with sessions() as session, session.begin():
+                await seed_accepted_processing_consent(
+                    session,
+                    owner_id=owner_id,
+                    bot_id=7_100_000_201,
+                    telegram_user_id=abs(owner_id.int % 2_000_000_000) + 1,
+                )
+
+        async def direct_delete(operation_sessions):
+            async with operation_sessions() as session, session.begin():
+                await purge_account(session, direct_owner, now)
+
+        await _operation_waits_for_owner_fence(
+            retention_database_url,
+            owner_id=direct_owner,
+            operation=direct_delete,
+        )
+        async with sessions() as session:
+            assert (await get_processing_consent(
+                SqlAlchemyIdentityStore(session), owner_id=direct_owner
+            )).state == "required"
+
+        async with sessions() as session, session.begin():
+            session.add(
+                PlanItemRecord(owner_id=maintenance_owner, kind="task", title="purge me")
+            )
+            preview = await create_deletion_preview(
+                session, owner_id=maintenance_owner, now=now
+            )
+            await confirm_deletion_preview(
+                session,
+                owner_id=maintenance_owner,
+                preview_id=preview.id,
+                expected_version=preview.version,
+                now=now,
+            )
+
+        async def finish_maintenance(operation_sessions):
+            return await finish_pending_deletions(
+                operation_sessions,
+                artifact=ledger,
+                now=now,
+                purge_owner=purge_account,
+            )
+
+        assert await _operation_waits_for_owner_fence(
+            retention_database_url,
+            owner_id=maintenance_owner,
+            operation=finish_maintenance,
+        ) == 1
+        async with sessions() as session:
+            assert (await session.scalar(
+                select(DeletionRequestRecord.state).where(
+                    DeletionRequestRecord.owner_id == maintenance_owner
+                )
+            )) == DeletionState.COMPLETED.value
+            assert (await get_processing_consent(
+                SqlAlchemyIdentityStore(session), owner_id=maintenance_owner
+            )).state == "required"
+
+        append_tombstones(ledger, (DeletionTombstone(uuid4(), replay_owner, now),))
+        async with sessions() as session, session.begin():
+            session.add(
+                PlanItemRecord(owner_id=replay_owner, kind="task", title="restored data")
+            )
+
+        async def replay(operation_sessions):
+            return await replay_deletion_artifact(
+                operation_sessions,
+                artifact=ledger,
+                now=now + timedelta(minutes=1),
+                purge_owner=purge_account,
+            )
+
+        assert await _operation_waits_for_owner_fence(
+            retention_database_url,
+            owner_id=replay_owner,
+            operation=replay,
+        ) == 2
+        async with sessions() as session:
+            assert await session.scalar(
+                select(PlanItemRecord.id).where(PlanItemRecord.owner_id == replay_owner)
+            ) is None
+            assert (await get_processing_consent(
+                SqlAlchemyIdentityStore(session), owner_id=replay_owner
+            )).state == "required"
+    finally:
+        for owner_id in owners:
+            await _clean_owner(sessions, owner_id)
 
 
 @pytest.mark.asyncio

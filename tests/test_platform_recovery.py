@@ -63,9 +63,23 @@ def test_arm_rearms_a_released_recovery_database_and_clears_old_receipts() -> No
         statement = ""
         parameters: dict[str, object] = {}
 
-        def execute(self, statement, parameters):
+        def execute(self, statement, parameters=None):
             self.statement = str(statement)
-            self.parameters = parameters
+            self.parameters = parameters or {}
+            if str(statement).lstrip().startswith("SELECT"):
+                class Rows:
+                    def mappings(self):
+                        return self
+
+                    def one_or_none(self):
+                        return {
+                            "state": "ready",
+                            "snapshot_id": None,
+                            "ledger_id": None,
+                            "database_name": "pin_recovery_test",
+                        }
+
+                return Rows()
             return SimpleNamespace(rowcount=1)
 
     class Engine:
@@ -98,7 +112,21 @@ def test_arm_rearms_a_released_recovery_database_and_clears_old_receipts() -> No
 
 def test_arm_refuses_to_rearm_a_database_that_is_already_fenced() -> None:
     class Connection:
-        def execute(self, _statement, _parameters):
+        def execute(self, statement, _parameters=None):
+            if str(statement).lstrip().startswith("SELECT"):
+                class Rows:
+                    def mappings(self):
+                        return self
+
+                    def one_or_none(self):
+                        return {
+                            "state": "fenced",
+                            "snapshot_id": "pin-20261017T120000Z",
+                            "ledger_id": "pin-20261017T120100Z",
+                            "database_name": "pin_recovery_test",
+                        }
+
+                return Rows()
             return SimpleNamespace(rowcount=0)
 
     class Engine:
@@ -111,7 +139,7 @@ def test_arm_refuses_to_rearm_a_database_that_is_already_fenced() -> None:
         def __exit__(self, *_args):
             return False
 
-    with pytest.raises(RuntimeError, match="missing, fenced"):
+    with pytest.raises(RuntimeError, match="another recovery generation"):
         _arm(Engine(), "pin-20261018T120000Z", "pin-20261018T120100Z")  # type: ignore[arg-type]
 
 
@@ -131,8 +159,11 @@ def test_restore_target_stays_fenced_until_operator_release() -> None:
     assert recovery_is_ready(
         "ready",
         snapshot_id="pin-20261017T120000Z",
+        ledger_id="pin-20261017T120100Z",
         released_at=datetime(2026, 10, 17, 12, 5, tzinfo=UTC),
         database_name="pin_recovery_restore_a",
+        consent_invalidated_snapshot_id="pin-20261017T120000Z",
+        consent_invalidated_ledger_id="pin-20261017T120100Z",
     )
     assert recovery_is_ready(
         "ready",

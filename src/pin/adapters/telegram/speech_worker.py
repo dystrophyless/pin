@@ -32,7 +32,11 @@ from pin.contexts.billing.api import (
     SqlAlchemyAccessUsageStore,
 )
 from pin.contexts.conversation.application.service import BoundedPlanningAssistant
-from pin.contexts.identity.infrastructure.store import SqlAlchemyIdentityStore
+from pin.contexts.identity.api import (
+    ProcessingAuthorization,
+    SqlAlchemyIdentityStore,
+    authorize_processing_consent,
+)
 from pin.contexts.speech.application.contracts import (
     AudioDecoder,
     DecodedAudio,
@@ -114,6 +118,9 @@ async def process_speech_job(
     async with _maintain_lease(sessions, claim):
         try:
             async with sessions() as session, session.begin():
+                identity = SqlAlchemyIdentityStore(session)
+                await identity.lock_processing_consent(claim.owner_id)
+                await lock_job_for_effects(session, claim)
                 lifecycle = await SqlAlchemyAccessUsageStore(session).lock_account_lifecycle(
                     claim.owner_id
                 )
@@ -126,6 +133,23 @@ async def process_speech_job(
                     return
                 inbox, telegram_user_id, attachment = inbound
                 request_key = f"telegram-inbox:{inbox.id}"
+                if not await _claim_is_authorized(identity, claim):
+                    receipt = await record_job_effect_once(
+                        session,
+                        claim,
+                        effect_key="speech_consent_required",
+                        result={"status": "processing_consent_required"},
+                    )
+                    if receipt.first_application:
+                        await _queue_consent_required(
+                            session,
+                            claim,
+                            chat_id=telegram_user_id,
+                            language=await _language(session, claim.owner_id),
+                            now=instant,
+                        )
+                    await complete_job(session, claim)
+                    return
                 prior = await speech_store.get(session, claim)
                 if prior is not None:
                     _validate_replay(prior, inbox, request_key, attachment)
@@ -253,6 +277,7 @@ async def process_speech_job(
                 )
                 downloaded_path = downloaded.path
                 async with sessions() as session, session.begin():
+                    await _lock_owner_effects(session, claim)
                     lifecycle = await SqlAlchemyAccessUsageStore(session).lock_account_lifecycle(
                         claim.owner_id
                     )
@@ -300,7 +325,7 @@ async def process_speech_job(
             measured_seconds = decoded.facts.billable_seconds
             try:
                 async with SqlAlchemyUnitOfWork(sessions) as uow:
-                    await lock_job_for_effects(uow.session, claim)
+                    await _lock_owner_effects(uow.session, claim)
                     lifecycle = await SqlAlchemyAccessUsageStore(
                         uow.session
                     ).lock_account_lifecycle(claim.owner_id)
@@ -517,6 +542,8 @@ class _LazyWhisperRecognizer:
 async def _load_private_voice(
     session: AsyncSession, claim: JobClaim
 ) -> tuple[InboxUpdate, int, TelegramVoiceAttachment] | None:
+    assert claim.owner_id is not None
+    await SqlAlchemyIdentityStore(session).lock_processing_consent(claim.owner_id)
     await lock_job_for_effects(session, claim)
     raw_inbox_id = claim.payload.get("inbox_id")
     try:
@@ -528,6 +555,11 @@ async def _load_private_voice(
         raise RuntimeError("speech job references a missing inbox update")
     if inbox.owner_id is None or inbox.owner_id != claim.owner_id:
         raise RuntimeError("speech job owner does not match its persisted inbox")
+    if (
+        inbox.processing_grant_id != claim.processing_grant_id
+        or inbox.processing_policy_version != claim.processing_policy_version
+    ):
+        raise RuntimeError("speech job consent stamp does not match its immutable inbox")
     attachment = private_voice_attachment(inbox.payload)
     if attachment is None:
         return None
@@ -539,7 +571,10 @@ async def _load_private_voice(
         return None
     if (
         await PostgresTelegramOwnerResolver().resolve(
-            session, bot_id=inbox.bot_id, telegram_user_id=telegram_user_id
+            session,
+            bot_id=inbox.bot_id,
+            telegram_user_id=telegram_user_id,
+            expected_owner_id=claim.owner_id,
         )
         != inbox.owner_id
     ):
@@ -643,6 +678,8 @@ async def _finish_audio_failure(
 ) -> None:
     assert claim.owner_id is not None
     async with SqlAlchemyUnitOfWork(sessions) as uow:
+        await _lock_owner_effects(uow.session, claim)
+        await SqlAlchemyAccessUsageStore(uow.session).lock_account_lifecycle(claim.owner_id)
         reservation = await SqlAlchemyAccessUsageStore(uow.session).get_usage_reservation(
             claim.owner_id, request_key
         )
@@ -714,7 +751,10 @@ async def _store_authorized_transcript(
     """Hold lifecycle, reservation and job fences through durable transcript write."""
     assert claim.owner_id is not None
     async with SqlAlchemyUnitOfWork(sessions) as uow:
-        await lock_job_for_effects(uow.session, claim)
+        await _lock_owner_effects(uow.session, claim)
+        identity = SqlAlchemyIdentityStore(uow.session)
+        if not await _claim_is_authorized(identity, claim):
+            return False
         billing = SqlAlchemyAccessUsageStore(uow.session)
         lifecycle = await billing.lock_account_lifecycle(claim.owner_id)
         if lifecycle is not AccountLifecycle.PRESENT:
@@ -749,9 +789,12 @@ async def _finish_deleted_or_unavailable(
     """Discard work after authorization loss; deleted accounts receive no reply."""
     assert claim.owner_id is not None
     async with SqlAlchemyUnitOfWork(sessions) as uow:
-        await lock_job_for_effects(uow.session, claim)
+        await _lock_owner_effects(uow.session, claim)
         billing = SqlAlchemyAccessUsageStore(uow.session)
         lifecycle = await billing.lock_account_lifecycle(claim.owner_id)
+        authorized = await _claim_is_authorized(
+            SqlAlchemyIdentityStore(uow.session), claim
+        )
         reservation = await billing.get_usage_reservation(claim.owner_id, request_key)
         if reservation is not None and reservation.state is ReservationState.RESERVED:
             if reservation.expires_at > now:
@@ -771,7 +814,15 @@ async def _finish_deleted_or_unavailable(
             at=now,
             rejected=True,
         )
-        if lifecycle is AccountLifecycle.PRESENT:
+        if lifecycle is AccountLifecycle.PRESENT and not authorized:
+            await _queue_consent_required(
+                uow.session,
+                claim,
+                chat_id=chat_id,
+                language=await _language(uow.session, claim.owner_id),
+                now=now,
+            )
+        elif lifecycle is AccountLifecycle.PRESENT:
             await _queue_failure(
                 uow.session,
                 claim,
@@ -895,6 +946,18 @@ async def _queue_reply(
                 "source_job_id": str(claim.job_id),
                 "page_index": 0,
                 "page_count": 1,
+                "processing_classification": (
+                    "ai_derived" if claim.processing_grant_id is not None else "deterministic"
+                ),
+                **(
+                    {
+                        "processing_grant_id": str(claim.processing_grant_id),
+                        "processing_policy_version": claim.processing_policy_version,
+                    }
+                    if claim.processing_grant_id is not None
+                    and claim.processing_policy_version is not None
+                    else {}
+                ),
             },
         ),
         claim=claim,
@@ -1007,3 +1070,71 @@ def _billable_seconds(duration: float | None) -> int:
     if duration is None:
         raise SpeechRequestConflict("transcribed request has no decoded duration")
     return ceil(duration)
+
+
+async def _lock_owner_effects(session: AsyncSession, claim: JobClaim) -> None:
+    if claim.owner_id is None:
+        raise ValueError("owner effects require an owner-bound claim")
+    await SqlAlchemyIdentityStore(session).lock_processing_consent(claim.owner_id)
+    await lock_job_for_effects(session, claim)
+
+
+async def _claim_is_authorized(
+    identity: SqlAlchemyIdentityStore, claim: JobClaim
+) -> bool:
+    if (claim.processing_grant_id is None) != (claim.processing_policy_version is None):
+        raise RuntimeError("speech job has incomplete processing provenance")
+    if claim.owner_id is None:
+        return False
+    if claim.processing_grant_id is None:
+        await identity.lock_processing_consent(claim.owner_id)
+        return False
+    return await authorize_processing_consent(
+        identity,
+        owner_id=claim.owner_id,
+        authorization=ProcessingAuthorization(
+            claim.owner_id, claim.processing_grant_id, claim.processing_policy_version or ""
+        ),
+    )
+
+
+async def _queue_consent_required(
+    session: AsyncSession,
+    claim: JobClaim,
+    *,
+    chat_id: int,
+    language: str,
+    now: datetime,
+) -> None:
+    text = (
+        "Allow processing in /privacy before sending this voice message again."
+        if language == "en"
+        else "Разрешите обработку в /privacy, затем отправьте голосовое сообщение ещё раз."
+    )
+    owner_id = claim.owner_id
+    if owner_id is None:
+        raise ValueError("consent reply requires an owner-bound claim")
+    await add_outbox_event(
+        session,
+        EventEnvelope(
+            id=uuid4(),
+            event_type="telegram.reply.requested",
+            schema_version=1,
+            aggregate_id=owner_id,
+            aggregate_version=max(1, claim.conversation_sequence or 1),
+            owner_id=owner_id,
+            occurred_at=now,
+            causation_id=claim.job_id,
+            payload={
+                "chat_id": chat_id,
+                "markdown": escape_markdown_v2(text),
+                "plain_text": text,
+                "handling": "handled",
+                "source_job_id": str(claim.job_id),
+                "page_index": 0,
+                "page_count": 1,
+                "processing_classification": "deterministic",
+            },
+        ),
+        claim=claim,
+    )

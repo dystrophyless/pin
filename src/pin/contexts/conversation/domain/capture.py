@@ -45,6 +45,8 @@ class CaptureDraft:
     updated_at: datetime
     expires_at: datetime
     sequence: int
+    processing_grant_id: UUID | None = None
+    processing_policy_version: str | None = None
     processing_key: str | None = None
     normalized_actions: tuple[dict[str, object], ...] = ()
     preview: dict[str, object] | None = None
@@ -56,6 +58,8 @@ class CaptureDraft:
             raise ValueError("capture draft and owner IDs must be non-zero")
         if self.version < 1 or self.sequence < 1:
             raise ValueError("capture version and sequence must be positive")
+        if (self.processing_grant_id is None) != (self.processing_policy_version is None):
+            raise ValueError("processing grant and policy provenance must be paired")
         for instant in (self.created_at, self.updated_at, self.expires_at):
             if instant.tzinfo is None or instant.utcoffset() is None:
                 raise ValueError("capture timestamps must be timezone-aware")
@@ -78,6 +82,8 @@ def start_capture(
     at: datetime,
     expires_at: datetime,
     sequence: int,
+    processing_grant_id: UUID | None = None,
+    processing_policy_version: str | None = None,
 ) -> CaptureDraft:
     _aware(at)
     _aware(expires_at)
@@ -93,12 +99,20 @@ def start_capture(
         updated_at=at,
         expires_at=expires_at,
         sequence=sequence,
+        processing_grant_id=processing_grant_id,
+        processing_policy_version=processing_policy_version,
         processing_key=request_key,
     )
 
 
 def append_user_input(
-    draft: CaptureDraft, *, text: str, request_key: str, at: datetime
+    draft: CaptureDraft,
+    *,
+    text: str,
+    request_key: str,
+    at: datetime,
+    processing_grant_id: UUID | None = None,
+    processing_policy_version: str | None = None,
 ) -> CaptureDraft:
     _active(draft, at)
     if draft.state is CaptureState.PROCESSING:
@@ -111,6 +125,8 @@ def append_user_input(
         version=draft.version + 1,
         state=CaptureState.PROCESSING,
         messages=messages,
+        processing_grant_id=processing_grant_id,
+        processing_policy_version=processing_policy_version,
         updated_at=at,
         processing_key=request_key,
         # Keep pending, still-unsaved proposals visible to the model context.
@@ -190,6 +206,25 @@ def finish_ready(
         normalized_actions=actions,
         preview=preview,
         projection_sha256=projection_sha256,
+    )
+
+
+def discard_processing_result(
+    draft: CaptureDraft, *, request_key: str, at: datetime
+) -> CaptureDraft:
+    """Terminalize a provider result that lost its authorization fence."""
+    _aware(at)
+    if draft.state is not CaptureState.PROCESSING or draft.processing_key != request_key:
+        raise CaptureConflict("capture processing result is stale")
+    return replace(
+        draft,
+        version=draft.version + 1,
+        state=CaptureState.FAILED,
+        updated_at=at,
+        processing_key=None,
+        normalized_actions=(),
+        preview=None,
+        projection_sha256=None,
     )
 
 

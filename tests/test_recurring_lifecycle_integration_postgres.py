@@ -32,6 +32,13 @@ from pin.contexts.conversation.infrastructure.usage import (
     SqlAlchemyProviderUsageRecorder,
     SqlAlchemyTurnAllowance,
 )
+from pin.contexts.identity.api import (
+    PROCESSING_CONSENT_POLICY_VERSION,
+    ProcessingAuthorization,
+    SqlAlchemyIdentityStore,
+    authorize_processing_consent,
+    get_processing_consent,
+)
 from pin.contexts.identity.infrastructure.models import OnboardingRecord, PreferencesRecord
 from pin.contexts.notifications.application.delivery import ReminderSend, TelegramReplySend
 from pin.contexts.notifications.infrastructure.delivery_worker import enqueue_due_reminder_jobs
@@ -342,6 +349,42 @@ def test_recurring_this_and_future_reconciles_delivery_end_to_end(
         transport = _LocalDeliveryTransport()
         try:
             owner_id = await _seed_owner(sessions, bot_id=bot_id, user_id=user_id, at=clock.now())
+
+            # Use the persisted /privacy response and callback to accept the current policy.
+            privacy_page = await _submit(
+                sessions,
+                bot_id=bot_id,
+                user_id=user_id,
+                at=clock.now(),
+                text_value="/privacy",
+            )
+            grant_callback = _callback(
+                privacy_page, prefix="", label="Agree and enable AI"
+            )
+            grant_reply = await _submit(
+                sessions,
+                bot_id=bot_id,
+                user_id=user_id,
+                at=clock.now(),
+                callback=grant_callback,
+            )
+            assert grant_reply.get("handling") == "handled"
+            async with sessions() as session:
+                consent = await get_processing_consent(
+                    SqlAlchemyIdentityStore(session), owner_id=owner_id
+                )
+                assert consent.state == "granted"
+                assert consent.grant_id is not None
+                assert consent.policy_version == PROCESSING_CONSENT_POLICY_VERSION
+                accepted_authorization = ProcessingAuthorization(
+                    owner_id, consent.grant_id, consent.policy_version
+                )
+                assert await authorize_processing_consent(
+                    SqlAlchemyIdentityStore(session),
+                    owner_id=owner_id,
+                    authorization=accepted_authorization,
+                )
+
             interpreter_transport = _InterpreterTransport(
                 {
                     "kind": "proposal",
@@ -380,6 +423,15 @@ def test_recurring_this_and_future_reconciles_delivery_end_to_end(
                 assistant=assistant,
             )
             assert interpreter_transport.calls == 1
+            preview_job_id = UUID(cast(str, preview["source_job_id"]))
+            async with sessions() as session:
+                preview_job = await session.get(Job, preview_job_id)
+                assert preview_job is not None
+                assert preview_job.processing_grant_id == accepted_authorization.grant_id
+                assert (
+                    preview_job.processing_policy_version
+                    == accepted_authorization.policy_version
+                )
             capture_confirmation = _callback(preview, prefix="capc:")
             assert all(
                 day in str(preview["plain_text"])

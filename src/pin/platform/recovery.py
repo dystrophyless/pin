@@ -20,13 +20,22 @@ def recovery_is_ready(
     state: str | None,
     *,
     snapshot_id: str | None,
+    ledger_id: str | None = None,
     released_at: datetime | None,
     database_name: str,
+    consent_invalidated_snapshot_id: str | None = None,
+    consent_invalidated_ledger_id: str | None = None,
 ) -> bool:
     if state != "ready":
         return False
-    return not database_name.startswith("pin_recovery_") or (
-        snapshot_id is not None and released_at is not None
+    if not database_name.startswith("pin_recovery_"):
+        return True
+    return (
+        snapshot_id is not None
+        and ledger_id is not None
+        and released_at is not None
+        and consent_invalidated_snapshot_id == snapshot_id
+        and consent_invalidated_ledger_id == ledger_id
     )
 
 
@@ -36,7 +45,9 @@ def require_recovery_ready(engine: Engine) -> None:
         with engine.connect() as connection:
             row = connection.execute(
                 text("""
-                    SELECT state, snapshot_id, released_at, current_database()
+                    SELECT state, snapshot_id, ledger_id, released_at,
+                           consent_invalidated_snapshot_id, consent_invalidated_ledger_id,
+                           current_database()
                     FROM platform.recovery_gate WHERE singleton = true
                 """)
             ).one_or_none()
@@ -45,8 +56,11 @@ def require_recovery_ready(engine: Engine) -> None:
     if row is None or not recovery_is_ready(
         row.state,
         snapshot_id=row.snapshot_id,
+        ledger_id=row.ledger_id,
         released_at=row.released_at,
         database_name=row.current_database,
+        consent_invalidated_snapshot_id=row.consent_invalidated_snapshot_id,
+        consent_invalidated_ledger_id=row.consent_invalidated_ledger_id,
     ):
         raise RecoveryFenced("recovery reconciliation required")
 
@@ -159,6 +173,22 @@ def _arm(engine: Engine, snapshot_id: str, ledger_id: str) -> None:
         raise ValueError("deletion ledger must come from a newer verified backup")
     snapshot_at = datetime.strptime(snapshot_id, "pin-%Y%m%dT%H%M%SZ").replace(tzinfo=UTC)
     with engine.begin() as connection:
+        row = connection.execute(
+            text("""
+                SELECT state, snapshot_id, ledger_id, current_database() AS database_name
+                FROM platform.recovery_gate WHERE singleton = true FOR UPDATE
+            """)
+        ).mappings().one_or_none()
+        if row is None:
+            raise RuntimeError("recovery gate is missing")
+        if not row["database_name"].startswith("pin_recovery_"):
+            raise RuntimeError("recovery gate can only be armed in a recovery database")
+        if row["state"] == "fenced":
+            if row["snapshot_id"] == snapshot_id and row["ledger_id"] == ledger_id:
+                return
+            raise RuntimeError("another recovery generation is already fenced")
+        if row["state"] != "ready":
+            raise RuntimeError("recovery gate is not ready")
         changed = connection.execute(
             text("""
                 UPDATE platform.recovery_gate
@@ -168,7 +198,9 @@ def _arm(engine: Engine, snapshot_id: str, ledger_id: str) -> None:
                     delivery_evidence_sha256 = NULL,
                     payment_evidence_sha256 = NULL,
                     usage_evidence_sha256 = NULL,
-                    released_at = NULL
+                    released_at = NULL,
+                    consent_invalidated_snapshot_id = NULL,
+                    consent_invalidated_ledger_id = NULL
                 WHERE singleton = true AND state = 'ready'
                   AND current_database() LIKE 'pin!_recovery!_%' ESCAPE '!'
             """),
@@ -183,12 +215,33 @@ def _arm(engine: Engine, snapshot_id: str, ledger_id: str) -> None:
         raise RuntimeError("recovery gate is missing, fenced, or not a recovery target")
 
 
+def _record_consent_invalidation(engine: Engine, snapshot_id: str, ledger_id: str) -> None:
+    with engine.begin() as connection:
+        changed = connection.execute(
+            text("""
+                UPDATE platform.recovery_gate
+                SET consent_invalidated_snapshot_id = :snapshot_id,
+                    consent_invalidated_ledger_id = :ledger_id
+                WHERE singleton = true AND state = 'fenced'
+                  AND snapshot_id = :snapshot_id AND ledger_id = :ledger_id
+                  AND (consent_invalidated_snapshot_id IS NULL
+                       OR consent_invalidated_snapshot_id = :snapshot_id)
+                  AND (consent_invalidated_ledger_id IS NULL
+                       OR consent_invalidated_ledger_id = :ledger_id)
+            """),
+            {"snapshot_id": snapshot_id, "ledger_id": ledger_id},
+        ).rowcount
+    if changed != 1:
+        raise RuntimeError("consent invalidation does not match the fenced recovery generation")
+
+
 def _release(engine: Engine, deletion: Path, delivery: Path, payment: Path, usage: Path) -> None:
     with engine.begin() as connection:
         row = (
             connection.execute(
                 text("""
-            SELECT state, snapshot_id, ledger_id, fenced_at
+            SELECT state, snapshot_id, ledger_id, fenced_at,
+                   consent_invalidated_snapshot_id, consent_invalidated_ledger_id
             FROM platform.recovery_gate WHERE singleton = true FOR UPDATE
         """)
             )
@@ -199,6 +252,11 @@ def _release(engine: Engine, deletion: Path, delivery: Path, payment: Path, usag
             raise RuntimeError("recovery gate is not fenced")
         snapshot_id = row["snapshot_id"]
         ledger_id = row["ledger_id"]
+        if (
+            row["consent_invalidated_snapshot_id"] != snapshot_id
+            or row["consent_invalidated_ledger_id"] != ledger_id
+        ):
+            raise RuntimeError("processing consent has not been invalidated for this recovery")
         hashes = {
             "deletion_evidence_sha256": _receipt_hash(
                 deletion,

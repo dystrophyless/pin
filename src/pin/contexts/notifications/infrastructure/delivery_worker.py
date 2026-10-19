@@ -19,7 +19,13 @@ from pin.contexts.billing.api import (
     Operation,
     SqlAlchemyAccessUsageStore,
 )
-from pin.contexts.identity.api import IdentityStore, PreferencesSnapshot
+from pin.contexts.identity.api import (
+    IdentityStore,
+    PreferencesSnapshot,
+    ProcessingAuthorization,
+    SqlAlchemyIdentityStore,
+    authorize_processing_consent,
+)
 from pin.contexts.notifications.application.contracts import (
     CurrentOccurrenceSchedule,
     CurrentPlanSchedule,
@@ -53,6 +59,7 @@ from pin.contexts.planning.api import (
     SqlAlchemyAgendaReadStore,
     SqlAlchemyReminderScheduleStore,
 )
+from pin.persistence.receipts import lock_action
 from pin.platform.contracts import EventEnvelope
 from pin.platform.events import add_outbox_event
 from pin.platform.jobs import (
@@ -171,6 +178,15 @@ class _PreparedRecoverySummary:
     target_id: int
     attempt_number: int
     message: TelegramReplySend
+
+
+async def _lock_delivery_owner_prefix(session: AsyncSession, claim: JobClaim) -> None:
+    """Serialize owner-scoped delivery with consent and account lifecycle changes."""
+    if claim.owner_id is None:
+        raise RuntimeError("delivery job has no owner")
+    await lock_action(session, claim.owner_id, "identity.processing_consent")
+    await lock_job_for_effects(session, claim)
+    await SqlAlchemyAccessUsageStore(session).lock_account_lifecycle(claim.owner_id)
 
 
 async def enqueue_due_reminder_jobs(
@@ -309,7 +325,7 @@ async def deliver_reminder_job(
     immediate: DeliveryAttemptOutcome | None = None
     async with sessions() as session:
         async with session.begin():
-            await lock_job_for_effects(session, claim)
+            await _lock_delivery_owner_prefix(session, claim)
             intent = await session.scalar(
                 select(ReminderIntentRecord)
                 .where(
@@ -708,7 +724,7 @@ async def deliver_reminder_job(
 
     async with sessions() as session:
         async with session.begin():
-            await lock_job_for_effects(session, claim)
+            await _lock_delivery_owner_prefix(session, claim)
             attempt_record = await session.scalar(
                 select(DeliveryAttemptRecord)
                 .where(DeliveryAttemptRecord.id == prepared.attempt_id)
@@ -756,7 +772,7 @@ async def deliver_reply_job(
     immediate: DeliveryAttemptOutcome | None = None
     async with sessions() as session:
         async with session.begin():
-            await lock_job_for_effects(session, claim)
+            await _lock_delivery_owner_prefix(session, claim)
             event = await session.scalar(
                 select(OutboxEvent)
                 .where(OutboxEvent.id == reply_event_id, OutboxEvent.owner_id == claim.owner_id)
@@ -771,6 +787,21 @@ async def deliver_reply_job(
                 await complete_job(session, claim)
                 return None
             payload = envelope.payload
+            if not await _reply_consent_is_current(session, event, payload):
+                target_id = _positive_int(payload.get("chat_id"))
+                immediate = await _record_reply_outcome(
+                    session,
+                    event,
+                    target_id=target_id,
+                    attempt_number=await _next_reply_attempt_number(
+                        session, event.id, target_id
+                    ),
+                    outcome=DeliveryOutcomeKind.SKIPPED,
+                    at=now(),
+                    failure_code="processing_consent_stale",
+                )
+                await complete_job(session, claim)
+                return immediate
             safe_deleted_denial = is_deleted_account_denial(payload)
             requested_target = _positive_int(payload.get("chat_id"))
             destination = await transport.resolve_destination(session, event.owner_id)
@@ -869,8 +900,24 @@ async def deliver_reply_job(
                         if before_attempt_authorization is not None:
                             await before_attempt_authorization()
                         await lock_job_for_effects(session, claim)
+                        consent_current = await _reply_consent_is_current(
+                            session, event, payload
+                        )
                         latest_lifecycle = await access_store.lock_account_lifecycle(event.owner_id)
-                        if (
+                        if not consent_current:
+                            immediate = await _record_reply_outcome(
+                                session,
+                                event,
+                                target_id=destination,
+                                attempt_number=await _next_reply_attempt_number(
+                                    session, event.id, destination
+                                ),
+                                outcome=DeliveryOutcomeKind.SKIPPED,
+                                at=now(),
+                                failure_code="processing_consent_stale",
+                            )
+                            await complete_job(session, claim)
+                        elif (
                             latest_lifecycle is AccountLifecycle.DELETED
                             and not safe_deleted_denial
                         ):
@@ -950,7 +997,7 @@ async def deliver_reply_job(
 
     async with sessions() as session:
         async with session.begin():
-            await lock_job_for_effects(session, claim)
+            await _lock_delivery_owner_prefix(session, claim)
             attempt_record = await session.scalar(
                 select(DeliveryAttemptRecord)
                 .where(DeliveryAttemptRecord.id == prepared.attempt_id)
@@ -1056,7 +1103,7 @@ async def deliver_recovery_summary_job(
     immediate: DeliveryAttemptOutcome | None = None
     async with sessions() as session:
         async with session.begin():
-            await lock_job_for_effects(session, claim)
+            await _lock_delivery_owner_prefix(session, claim)
             prior = await _latest_recovery_attempt(session, owner_id, request.episode_key)
             if prior is not None and prior.outcome == "started":
                 immediate = await _finish_recovery_as_unknown(session, claim, prior, at=now())
@@ -1272,7 +1319,7 @@ async def deliver_recovery_summary_job(
 
     async with sessions() as session:
         async with session.begin():
-            await lock_job_for_effects(session, claim)
+            await _lock_delivery_owner_prefix(session, claim)
             finished_attempt = await session.scalar(
                 select(DeliveryAttemptRecord)
                 .where(DeliveryAttemptRecord.id == prepared.attempt_id)
@@ -1313,6 +1360,28 @@ def _event_envelope(event: OutboxEvent) -> EventEnvelope | None:
     if envelope.id != event.id or envelope.event_type != event.event_type:
         return None
     return envelope
+
+
+async def _reply_consent_is_current(
+    session: AsyncSession, event: OutboxEvent, payload: Mapping[str, object]
+) -> bool:
+    grant_id = payload.get("processing_grant_id")
+    policy_version = payload.get("processing_policy_version")
+    if grant_id is None and policy_version is None:
+        return payload.get("processing_classification") == "deterministic"
+    if event.owner_id is None or not isinstance(grant_id, str) or not isinstance(
+        policy_version, str
+    ):
+        return False
+    try:
+        authorization = ProcessingAuthorization(event.owner_id, UUID(grant_id), policy_version)
+    except ValueError:
+        return False
+    return await authorize_processing_consent(
+        SqlAlchemyIdentityStore(session),
+        owner_id=event.owner_id,
+        authorization=authorization,
+    )
 
 
 async def _is_post_deletion_denial_source(

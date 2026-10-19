@@ -16,9 +16,11 @@ from alembic.config import Config
 from sqlalchemy import create_engine as create_sync_engine
 from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.engine import make_url
+from sqlalchemy.ext.asyncio import create_async_engine
 
 from pin.adapters.telegram import delivery_worker as delivery_worker_module
 from pin.adapters.telegram.application_worker import process_application_job
+from pin.adapters.telegram.deletion import purge_account
 from pin.adapters.telegram.delivery_worker import process_delivery_iteration
 from pin.adapters.telegram.ingress import TelegramOwnerRecord
 from pin.contexts.billing.infrastructure.models import (
@@ -816,7 +818,10 @@ def test_change_committed_before_authoritative_check_prevents_send(
                     assert account is not None
                     account.deleted_at = at
 
-        transport = _ReminderTransport(before_resolve=mutate_before_check)
+        # Commit the lifecycle change before the worker starts its authorization prefix.
+        # resolve_destination runs after F→J→L, so mutating here would deadlock.
+        await mutate_before_check(fixture.owner_id)
+        transport = _ReminderTransport()
         assert await process_delivery_iteration(
             delivery_sessions,
             transport,
@@ -1554,6 +1559,7 @@ def test_reply_deletion_after_authoritative_check_waits_for_started_boundary(
                     "chat_id": chat_id,
                     "markdown": "Onboarding reply",
                     "plain_text": "Onboarding reply",
+                    "processing_classification": "deterministic",
                 },
             )
             await add_outbox_event(session, event)
@@ -1613,6 +1619,195 @@ def test_reply_deletion_after_authoritative_check_waits_for_started_boundary(
             account = await session.get(AccessAccountRecord, owner_id)
             assert attempt is not None and attempt.outcome == "confirmed"
             assert account is not None and account.deleted_at is not None
+
+    run_local_async(scenario)
+
+
+@pytest.mark.parametrize("delivery_kind", ("reminder", "recovery_summary"))
+def test_ordinary_delivery_and_direct_deletion_complete_in_owner_lock_order(
+    delivery_sessions, delivery_kind: str
+) -> None:
+    async def scenario() -> None:
+        suffix = uuid4().hex[:12]
+        worker_name = f"consent-reminder-{suffix}"
+        deletion_name = f"consent-reminder-delete-{suffix}"
+        observer_name = f"consent-reminder-observer-{suffix}"
+        barrier_key = uuid4().int & ((1 << 62) - 1)
+        function_name = f"consent_reminder_wait_{suffix}"
+        function, trigger = f"notifications.{function_name}", function_name
+        at = NOW + timedelta(hours=2)
+        worker_engine = create_async_engine(
+            DATABASE_URL, connect_args={"application_name": worker_name}
+        )
+        deletion_engine = create_async_engine(
+            DATABASE_URL, connect_args={"application_name": deletion_name}
+        )
+        observer_engine = create_async_engine(
+            DATABASE_URL, connect_args={"application_name": observer_name}
+        )
+        worker_sessions = create_session_factory(worker_engine)
+        deletion_sessions = create_session_factory(deletion_engine)
+        holder = delivery = deletion = None
+        try:
+            fixture = await _seed_reminder_case(
+                worker_sessions, at=at, enqueue=delivery_kind == "reminder"
+            )
+            if delivery_kind == "recovery_summary":
+                async with worker_sessions() as session, session.begin():
+                    occurrence = await session.get(OccurrenceRecord, fixture.occurrence_id)
+                    assert occurrence is not None
+                    occurrence.starts_at = at - timedelta(hours=3)
+                    occurrence.ends_at = at - timedelta(hours=2)
+                    occurrence.local_date = (at - timedelta(hours=3)).date()
+                    intent = await session.get(ReminderIntentRecord, fixture.intent_id)
+                    assert intent is not None
+                    intent.due_at = at + timedelta(days=1)
+                    await enqueue_recovery_summary_job(
+                        session,
+                        RecoverySummaryRequest(fixture.owner_id, f"purge-{suffix}"),
+                    )
+            async with worker_sessions() as session, session.begin():
+                claim = await claim_job(
+                    session,
+                    lane=JobLane.DELIVERY,
+                    worker_id=f"consent-reminder-worker-{suffix}",
+                    lease_for=timedelta(minutes=2),
+                )
+                assert claim is not None
+                if delivery_kind == "reminder":
+                    assert claim.payload["intent_id"] == str(fixture.intent_id)
+                else:
+                    assert claim.kind == DELIVERY_RECOVERY_SUMMARY_JOB_KIND
+            async with worker_engine.begin() as connection:
+                await connection.execute(
+                    text(
+                        f"CREATE FUNCTION {function}() RETURNS trigger LANGUAGE plpgsql AS $$ "
+                        "BEGIN IF NEW.owner_id = '" + str(fixture.owner_id) + "'::uuid THEN "
+                        f"PERFORM pg_advisory_xact_lock({barrier_key}); "
+                        "END IF; RETURN NEW; END $$"
+                    )
+                )
+                await connection.execute(
+                    text(
+                        f"CREATE TRIGGER {trigger} BEFORE INSERT "
+                        "ON notifications.delivery_attempts "
+                        f"FOR EACH ROW EXECUTE FUNCTION {function}()"
+                    )
+                )
+            holder = await worker_engine.connect()
+            await holder.execute(text("SELECT pg_advisory_lock(:key)"), {"key": barrier_key})
+            if delivery_kind == "reminder":
+                transport = _ReminderTransport()
+                delivery = asyncio.create_task(
+                    deliver_reminder_job(
+                        worker_sessions,
+                        claim,
+                        transport,
+                        identity_store_factory=SqlAlchemyIdentityStore,
+                        now=lambda: at,
+                    )
+                )
+            else:
+                transport = _RecoverySummaryTransport()
+                delivery = asyncio.create_task(
+                    deliver_recovery_summary_job(
+                        worker_sessions,
+                        claim,
+                        transport,
+                        identity_store_factory=SqlAlchemyIdentityStore,
+                        now=lambda: at,
+                    )
+                )
+            async with observer_engine.connect() as observer:
+                async with asyncio.timeout(10):
+                    while True:
+                        if delivery.done():
+                            await delivery
+                            pytest.fail("ordinary reminder completed before its attempt barrier")
+                        waiting = await observer.scalar(
+                            text(
+                                "SELECT EXISTS (SELECT 1 FROM pg_stat_activity "
+                                "WHERE application_name = :name AND wait_event_type = 'Lock' "
+                                "AND wait_event = 'advisory')"
+                            ),
+                            {"name": worker_name},
+                        )
+                        if waiting:
+                            break
+                        await observer.rollback()
+                        await asyncio.sleep(0.01)
+
+            async def purge() -> None:
+                async with deletion_sessions() as session, session.begin():
+                    await purge_account(session, fixture.owner_id, at)
+
+            deletion = asyncio.create_task(purge())
+            async with observer_engine.connect() as observer:
+                async with asyncio.timeout(10):
+                    while True:
+                        if deletion.done():
+                            await deletion
+                            pytest.fail("direct deletion completed before the attempt commit fence")
+                        blocked = await observer.scalar(
+                            text(
+                                "SELECT EXISTS (SELECT 1 FROM pg_stat_activity AS waiting "
+                                "WHERE waiting.application_name = :waiter "
+                                "AND waiting.wait_event_type = 'Lock' AND EXISTS ( "
+                                "SELECT 1 FROM unnest(pg_blocking_pids(waiting.pid)) "
+                                "AS blocked(pid) "
+                                "JOIN pg_stat_activity AS blocker ON blocker.pid = blocked.pid "
+                                "WHERE blocker.application_name = :blocker))"
+                            ),
+                            {"waiter": deletion_name, "blocker": worker_name},
+                        )
+                        if blocked:
+                            break
+                        await observer.rollback()
+                        await asyncio.sleep(0.01)
+
+            await holder.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": barrier_key})
+            await holder.commit()
+            # Direct purge may remove the claimed job after the one-shot send. The
+            # worker must report its lost lease and must not recreate purged state.
+            with pytest.raises(LeaseLost):
+                await asyncio.wait_for(delivery, timeout=10)
+            await asyncio.wait_for(deletion, timeout=10)
+            sent = transport.replies if delivery_kind == "recovery_summary" else transport.sent
+            assert len(sent) == 1
+            async with deletion_sessions() as session:
+                account = await session.get(AccessAccountRecord, fixture.owner_id)
+                assert account is not None and account.deleted_at is not None
+                assert await session.get(Job, claim.job_id) is None
+        finally:
+            for task in (delivery, deletion):
+                if task is not None and not task.done():
+                    task.cancel()
+            await asyncio.gather(
+                *(task for task in (delivery, deletion) if task is not None),
+                return_exceptions=True,
+            )
+            if holder is not None:
+                try:
+                    await holder.execute(
+                        text("SELECT pg_advisory_unlock(:key)"), {"key": barrier_key}
+                    )
+                    await holder.commit()
+                except Exception:
+                    pass
+                await holder.close()
+            try:
+                async with worker_engine.begin() as connection:
+                    await connection.execute(
+                        text(
+                            f"DROP TRIGGER IF EXISTS {trigger} "
+                            "ON notifications.delivery_attempts"
+                        )
+                    )
+                    await connection.execute(text(f"DROP FUNCTION IF EXISTS {function}()"))
+            finally:
+                await worker_engine.dispose()
+                await deletion_engine.dispose()
+                await observer_engine.dispose()
 
     run_local_async(scenario)
 

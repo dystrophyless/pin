@@ -46,6 +46,8 @@ class JobClaim:
     token: UUID
     fencing_generation: int | None
     lease_until: datetime
+    processing_grant_id: UUID | None = None
+    processing_policy_version: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,6 +82,8 @@ async def enqueue_job(
     payload: dict[str, Any],
     deduplication_key: str,
     owner_id: UUID | None = None,
+    processing_grant_id: UUID | None = None,
+    processing_policy_version: str | None = None,
     ordered_conversation: bool = False,
     payload_version: int = 1,
     priority: int = 0,
@@ -92,6 +96,10 @@ async def enqueue_job(
         raise ValueError("payload_version and max_attempts must be positive")
     if ordered_conversation and (owner_id is None or lane is JobLane.DELIVERY):
         raise ValueError("ordered conversation work needs an owner and a non-delivery lane")
+    if (processing_grant_id is None) != (processing_policy_version is None):
+        raise ValueError("processing grant and policy provenance must be paired")
+    if processing_grant_id is not None and owner_id is None:
+        raise ValueError("processing provenance requires owner-bound work")
     if claim is not None:
         await lock_job_for_effects(session, claim)
 
@@ -117,6 +125,8 @@ async def enqueue_job(
             payload=payload,
             deduplication_key=deduplication_key,
             owner_id=owner_id,
+            processing_grant_id=processing_grant_id,
+            processing_policy_version=processing_policy_version,
             conversation_sequence=sequence,
             priority=priority,
             status="pending",
@@ -143,6 +153,8 @@ async def receive_update(
     bot_id: int,
     update_id: int,
     owner_id: UUID,
+    processing_grant_id: UUID | None = None,
+    processing_policy_version: str | None = None,
     update_type: str,
     payload: dict[str, Any],
     received_at: datetime | None = None,
@@ -159,12 +171,16 @@ async def receive_update(
         raise ValueError("bot_id and update_id are outside Telegram's valid range")
     if not update_type.strip() or len(update_type) > 80:
         raise ValueError("update_type must contain 1 to 80 characters")
+    if (processing_grant_id is None) != (processing_policy_version is None):
+        raise ValueError("processing grant and policy provenance must be paired")
     statement = (
         insert(InboxUpdate)
         .values(
             bot_id=bot_id,
             update_id=update_id,
             owner_id=owner_id,
+            processing_grant_id=processing_grant_id,
+            processing_policy_version=processing_policy_version,
             update_type=update_type,
             payload=payload,
             received_at=receipt_instant,
@@ -196,6 +212,8 @@ async def receive_update(
         payload={"inbox_id": str(inbox_id)},
         deduplication_key=f"telegram:{bot_id}:{update_id}",
         owner_id=owner_id,
+        processing_grant_id=processing_grant_id,
+        processing_policy_version=processing_policy_version,
         ordered_conversation=conversation_ordered,
         priority=priority,
         max_attempts=max_attempts,
@@ -325,6 +343,8 @@ async def claim_job(
         payload_version=job.payload_version,
         payload=job.payload,
         owner_id=job.owner_id,
+        processing_grant_id=job.processing_grant_id,
+        processing_policy_version=job.processing_policy_version,
         conversation_sequence=job.conversation_sequence,
         attempt=job.attempts,
         worker_id=worker_id,

@@ -6,10 +6,23 @@ import argparse
 import json
 from pathlib import Path
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import Engine, create_engine, text
+from sqlalchemy.engine import make_url
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from pin.bootstrap.config import SettingsError, load_database_url
-from pin.platform.recovery import _arm, _release, recovery_is_ready
+from pin.contexts.identity.api import list_granted_processing_consent_owners
+from pin.contexts.identity.application.processing_consent import (
+    invalidate_restored_processing_consent,
+)
+from pin.contexts.identity.infrastructure.store import SqlAlchemyIdentityStore
+from pin.persistence import run_local_async
+from pin.platform.recovery import (
+    _arm,
+    _record_consent_invalidation,
+    _release,
+    recovery_is_ready,
+)
 
 
 def main() -> None:
@@ -44,6 +57,24 @@ def main() -> None:
                 )
             )
         elif args.operation == "release":
+            with engine.connect() as connection:
+                generation = connection.execute(
+                    text("""
+                        SELECT state, snapshot_id, ledger_id
+                        FROM platform.recovery_gate WHERE singleton = true
+                    """)
+                ).mappings().one_or_none()
+            if generation is None:
+                raise RuntimeError("recovery gate row is missing")
+            if generation["state"] == "fenced":
+                run_local_async(
+                    lambda: _invalidate_restored_consents(
+                        database_url,
+                        engine,
+                        snapshot_id=generation["snapshot_id"],
+                        ledger_id=generation["ledger_id"],
+                    )
+                )
             _release(
                 engine,
                 args.deletion_evidence,
@@ -61,6 +92,8 @@ def main() -> None:
                                    released_at, deletion_evidence_sha256,
                                    delivery_evidence_sha256, payment_evidence_sha256,
                                    usage_evidence_sha256,
+                                   consent_invalidated_snapshot_id,
+                                   consent_invalidated_ledger_id,
                                    current_database() AS database_name
                             FROM platform.recovery_gate WHERE singleton = true
                         """)
@@ -74,8 +107,11 @@ def main() -> None:
             if args.operation == "check" and not recovery_is_ready(
                 row["state"],
                 snapshot_id=row["snapshot_id"],
+                ledger_id=row["ledger_id"],
                 released_at=row["released_at"],
                 database_name=row["database_name"],
+                consent_invalidated_snapshot_id=row["consent_invalidated_snapshot_id"],
+                consent_invalidated_ledger_id=row["consent_invalidated_ledger_id"],
             ):
                 raise SystemExit(2)
     except SystemExit:
@@ -85,6 +121,35 @@ def main() -> None:
         raise SystemExit(2) from None
     finally:
         engine.dispose()
+
+
+async def _invalidate_restored_consents(
+    database_url: str,
+    engine: Engine,
+    *,
+    snapshot_id: str,
+    ledger_id: str,
+) -> None:
+    url = make_url(database_url)
+    if url.drivername in {"postgres", "postgresql", "postgresql+psycopg"}:
+        url = url.set(drivername="postgresql+psycopg")
+    async_engine = create_async_engine(url, pool_pre_ping=True)
+    sessions: async_sessionmaker[AsyncSession] = async_sessionmaker(
+        async_engine, expire_on_commit=False
+    )
+    try:
+        async with sessions() as session:
+            owners = await list_granted_processing_consent_owners(
+                SqlAlchemyIdentityStore(session)
+            )
+        for owner_id in owners:
+            async with sessions() as session, session.begin():
+                await invalidate_restored_processing_consent(
+                    SqlAlchemyIdentityStore(session), owner_id=owner_id
+                )
+        _record_consent_invalidation(engine, snapshot_id, ledger_id)
+    finally:
+        await async_engine.dispose()
 
 
 if __name__ == "__main__":

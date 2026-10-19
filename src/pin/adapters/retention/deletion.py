@@ -31,6 +31,7 @@ from pin.contexts.retention.infrastructure.store import (
     record_replayed_tombstone,
 )
 from pin.contexts.speech.infrastructure.deletion import purge_expired_text as purge_speech_text
+from pin.persistence.receipts import lock_action
 from pin.persistence.retention import purge_expired_text as purge_persistence_text
 from pin.platform.retention import purge_expired_text as purge_platform_text
 
@@ -58,27 +59,40 @@ async def finish_pending_deletions(
     ensure_ledger(artifact)
     async with sessions() as session, session.begin():
         await export_tombstones(session, path=artifact, now=at)
-    completed = 0
-    async with sessions() as session, session.begin():
-        rows = tuple(
-            await session.scalars(
-                select(DeletionRequestRecord)
+    async with sessions() as session:
+        candidates = tuple(
+            await session.execute(
+                select(DeletionRequestRecord.id, DeletionRequestRecord.owner_id)
                 .where(DeletionRequestRecord.state == DeletionState.PENDING_EXPORT.value)
                 .order_by(DeletionRequestRecord.confirmed_at, DeletionRequestRecord.id)
-                .with_for_update(skip_locked=True)
             )
         )
-        for request in rows:
+    completed = 0
+    for request_id, owner_id in candidates:
+        async with sessions() as session, session.begin():
+            await lock_action(session, owner_id, "identity.processing_consent")
+            await SqlAlchemyAccessUsageStore(session).lock_account_lifecycle(owner_id)
+            request = await session.scalar(
+                select(DeletionRequestRecord)
+                .where(
+                    DeletionRequestRecord.id == request_id,
+                    DeletionRequestRecord.owner_id == owner_id,
+                    DeletionRequestRecord.state == DeletionState.PENDING_EXPORT.value,
+                )
+                .with_for_update()
+            )
+            if request is None:
+                continue
             tombstone = await session.scalar(
                 select(DeletionTombstoneRecord).where(
-                    DeletionTombstoneRecord.owner_id == request.owner_id,
+                    DeletionTombstoneRecord.owner_id == owner_id,
                     DeletionTombstoneRecord.deleted_at == request.confirmed_at,
                     DeletionTombstoneRecord.exported_at.is_not(None),
                 )
             )
             if tombstone is None:
                 continue
-            await purge_owner(session, request.owner_id, at)
+            await purge_owner(session, owner_id, at)
             request.state = DeletionState.COMPLETED.value
             request.completed_at = at
             completed += 1
@@ -100,10 +114,11 @@ async def replay_deletion_artifact(
     completed = 0
     for item in tombstones:
         async with sessions() as session, session.begin():
-            previously_recorded = await record_replayed_tombstone(session, item, replayed_at=at)
+            await lock_action(session, item.owner_id, "identity.processing_consent")
             lifecycle = await SqlAlchemyAccessUsageStore(session).lock_account_lifecycle(
                 item.owner_id
             )
+            previously_recorded = await record_replayed_tombstone(session, item, replayed_at=at)
             # A retained tombstone plus an active account is a later, legitimate
             # TR-03 return generation; never erase its newly created plans.
             later_generation = previously_recorded and lifecycle is AccountLifecycle.PRESENT

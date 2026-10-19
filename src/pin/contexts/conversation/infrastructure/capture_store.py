@@ -20,6 +20,7 @@ from pin.contexts.conversation.domain.capture import (
     CaptureMessage,
     CaptureState,
     append_user_input,
+    discard_processing_result,
     start_capture,
 )
 from pin.contexts.conversation.infrastructure.capture_models import (
@@ -55,10 +56,14 @@ class SqlAlchemyCaptureStore:
         text: str,
         at: datetime,
         expires_at: datetime,
+        processing_grant_id: UUID | None = None,
+        processing_policy_version: str | None = None,
     ) -> CaptureBegin:
         _require_instant(at)
         if owner_id.int == 0 or not input_key or len(input_key) > 128:
             raise ValueError("capture owner or input key is invalid")
+        if (processing_grant_id is None) != (processing_policy_version is None):
+            raise ValueError("processing grant and policy provenance must be paired")
         existing = await self._session.scalar(
             select(CaptureInputRecord).where(
                 CaptureInputRecord.owner_id == owner_id,
@@ -66,6 +71,11 @@ class SqlAlchemyCaptureStore:
             )
         )
         if existing is not None:
+            if (
+                existing.processing_grant_id != processing_grant_id
+                or existing.processing_policy_version != processing_policy_version
+            ):
+                raise CaptureConflict("capture input was admitted under another consent grant")
             draft_record = await self._session.scalar(
                 select(CaptureDraftRecord)
                 .where(
@@ -118,6 +128,19 @@ class SqlAlchemyCaptureStore:
             active_record.projection_sha256 = None
             active_record.processing_key = None
             active_record = None
+        if active_record is not None and (
+            active_record.processing_grant_id != processing_grant_id
+            or active_record.processing_policy_version != processing_policy_version
+        ):
+            await self.revoke_proofs(owner_id=owner_id, draft_id=active_record.id, at=at)
+            active_record.state = CaptureState.EXPIRED.value
+            active_record.version += 1
+            active_record.updated_at = at
+            active_record.normalized_actions = None
+            active_record.preview = None
+            active_record.projection_sha256 = None
+            active_record.processing_key = None
+            active_record = None
         if active_record is None:
             draft = start_capture(
                 draft_id=uuid4(),
@@ -127,6 +150,8 @@ class SqlAlchemyCaptureStore:
                 at=at,
                 expires_at=expires_at,
                 sequence=sequence,
+                processing_grant_id=processing_grant_id,
+                processing_policy_version=processing_policy_version,
             )
             record = _record(draft)
             self._session.add(record)
@@ -134,13 +159,22 @@ class SqlAlchemyCaptureStore:
             previous = _draft(active_record)
             if previous.state is CaptureState.PROCESSING:
                 raise CaptureConflict("another capture turn is still processing")
-            draft = append_user_input(previous, text=text, request_key=input_key, at=at)
+            draft = append_user_input(
+                previous,
+                text=text,
+                request_key=input_key,
+                at=at,
+                processing_grant_id=processing_grant_id,
+                processing_policy_version=processing_policy_version,
+            )
             _apply(active_record, draft)
         receipt = CaptureInputRecord(
             id=uuid4(),
             owner_id=owner_id,
             draft_id=draft.id,
             input_key=input_key,
+            processing_grant_id=processing_grant_id,
+            processing_policy_version=processing_policy_version,
             sequence=sequence,
             state="processing",
             created_at=at,
@@ -149,6 +183,32 @@ class SqlAlchemyCaptureStore:
         self._session.add(receipt)
         await self._session.flush()
         return CaptureBegin(draft, "processing", None, True)
+
+    async def discard_stale_processing_result(
+        self, draft: CaptureDraft, *, at: datetime
+    ) -> bool:
+        record = await self._session.scalar(
+            select(CaptureDraftRecord)
+            .where(
+                CaptureDraftRecord.id == draft.id,
+                CaptureDraftRecord.owner_id == draft.owner_id,
+                CaptureDraftRecord.version == draft.version,
+                CaptureDraftRecord.state == CaptureState.PROCESSING.value,
+                CaptureDraftRecord.processing_key == draft.processing_key,
+                CaptureDraftRecord.processing_grant_id == draft.processing_grant_id,
+                CaptureDraftRecord.processing_policy_version == draft.processing_policy_version,
+            )
+            .with_for_update()
+        )
+        if record is None:
+            return False
+        failed = discard_processing_result(
+            _draft(record), request_key=draft.processing_key or "", at=at
+        )
+        await self.revoke_proofs(owner_id=draft.owner_id, draft_id=draft.id, at=at)
+        _apply(record, failed)
+        await self._session.flush()
+        return True
 
     async def persist_draft(self, draft: CaptureDraft, *, expected_version: int) -> None:
         record = await self._session.scalar(
@@ -413,6 +473,8 @@ def _draft(record: CaptureDraftRecord) -> CaptureDraft:
     return CaptureDraft(
         id=record.id,
         owner_id=record.owner_id,
+        processing_grant_id=record.processing_grant_id,
+        processing_policy_version=record.processing_policy_version,
         version=record.version,
         state=CaptureState(record.state),
         messages=tuple(CaptureMessage(item["role"], item["text"]) for item in record.messages),
@@ -432,6 +494,8 @@ def _record(draft: CaptureDraft) -> CaptureDraftRecord:
     return CaptureDraftRecord(
         id=draft.id,
         owner_id=draft.owner_id,
+        processing_grant_id=draft.processing_grant_id,
+        processing_policy_version=draft.processing_policy_version,
         version=draft.version,
         sequence=draft.sequence,
         state=draft.state.value,
@@ -450,6 +514,8 @@ def _record(draft: CaptureDraft) -> CaptureDraftRecord:
 def _apply(record: CaptureDraftRecord, draft: CaptureDraft) -> None:
     record.version = draft.version
     record.sequence = draft.sequence
+    record.processing_grant_id = draft.processing_grant_id
+    record.processing_policy_version = draft.processing_policy_version
     record.state = draft.state.value
     record.messages = [{"role": message.role, "text": message.text} for message in draft.messages]
     record.normalized_actions = list(draft.normalized_actions) or None

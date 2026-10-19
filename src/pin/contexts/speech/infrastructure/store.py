@@ -9,6 +9,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from pin.contexts.identity.api import SqlAlchemyIdentityStore
 from pin.contexts.speech.application.contracts import SpeechRecognition
 from pin.contexts.speech.domain.audio import AudioFacts
 from pin.contexts.speech.infrastructure.models import SpeechRequestRecord
@@ -32,6 +33,9 @@ class SqlAlchemySpeechRequestStore:
         at: datetime,
     ) -> SpeechRequestRecord:
         _validate_claim(claim)
+        if claim.owner_id is None:
+            raise SpeechRequestConflict("speech job has no owner")
+        await SqlAlchemyIdentityStore(session).lock_processing_consent(claim.owner_id)
         await lock_job_for_effects(session, claim)
         row = await session.get(SpeechRequestRecord, claim.job_id, with_for_update=True)
         if row is not None:
@@ -41,6 +45,8 @@ class SqlAlchemySpeechRequestStore:
                 or row.request_key != request_key
                 or row.declared_size_bytes != declared_size_bytes
                 or row.declared_duration_seconds != declared_duration_seconds
+                or row.processing_grant_id != claim.processing_grant_id
+                or row.processing_policy_version != claim.processing_policy_version
             ):
                 raise SpeechRequestConflict("speech job was replayed with different input facts")
             return row
@@ -48,6 +54,8 @@ class SqlAlchemySpeechRequestStore:
             job_id=claim.job_id,
             owner_id=claim.owner_id,
             inbox_id=inbox_id,
+            processing_grant_id=claim.processing_grant_id,
+            processing_policy_version=claim.processing_policy_version,
             request_key=request_key,
             state="processing",
             declared_size_bytes=declared_size_bytes,
@@ -153,6 +161,10 @@ class SqlAlchemySpeechRequestStore:
         row.updated_at = at
 
     async def _lock_request(self, session: AsyncSession, claim: JobClaim) -> SpeechRequestRecord:
+        _validate_claim(claim)
+        if claim.owner_id is None:
+            raise SpeechRequestConflict("speech job has no owner")
+        await SqlAlchemyIdentityStore(session).lock_processing_consent(claim.owner_id)
         await lock_job_for_effects(session, claim)
         row = await session.scalar(
             select(SpeechRequestRecord)
@@ -164,6 +176,11 @@ class SqlAlchemySpeechRequestStore:
         )
         if row is None:
             raise SpeechRequestConflict("speech request record is missing")
+        if (
+            row.processing_grant_id != claim.processing_grant_id
+            or row.processing_policy_version != claim.processing_policy_version
+        ):
+            raise SpeechRequestConflict("speech transcript consent provenance changed")
         return row
 
 

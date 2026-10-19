@@ -37,6 +37,11 @@ class CaptureDraftRecord(Base):
     __tablename__ = "capture_drafts"
     __table_args__ = (
         CheckConstraint("version >= 1", name="ck_conversation_capture_version"),
+        CheckConstraint(
+            "(processing_grant_id IS NULL AND processing_policy_version IS NULL) OR "
+            "(processing_grant_id IS NOT NULL AND processing_policy_version IS NOT NULL)",
+            name="ck_conversation_capture_drafts_processing_provenance",
+        ),
         CheckConstraint("sequence >= 1", name="ck_conversation_capture_sequence"),
         CheckConstraint(
             "state IN ('collecting', 'processing', 'ready', 'confirmed', 'cancelled', "
@@ -66,6 +71,8 @@ class CaptureDraftRecord(Base):
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
     owner_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    processing_grant_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    processing_policy_version: Mapped[str | None] = mapped_column(String(64))
     version: Mapped[int] = mapped_column(Integer, nullable=False)
     sequence: Mapped[int] = mapped_column(Integer, nullable=False)
     state: Mapped[str] = mapped_column(String(12), nullable=False)
@@ -88,6 +95,11 @@ class CaptureInputRecord(Base):
             "state IN ('processing', 'complete', 'failed', 'unknown')",
             name="ck_conversation_capture_input_state",
         ),
+        CheckConstraint(
+            "(processing_grant_id IS NULL AND processing_policy_version IS NULL) OR "
+            "(processing_grant_id IS NOT NULL AND processing_policy_version IS NOT NULL)",
+            name="ck_conversation_capture_inputs_processing_provenance",
+        ),
         UniqueConstraint("owner_id", "input_key", name="uq_conversation_capture_input_key"),
         ForeignKeyConstraint(
             ["draft_id", "owner_id"],
@@ -101,6 +113,8 @@ class CaptureInputRecord(Base):
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
     owner_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    processing_grant_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    processing_policy_version: Mapped[str | None] = mapped_column(String(64))
     draft_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     input_key: Mapped[str] = mapped_column(String(128), nullable=False)
     sequence: Mapped[int] = mapped_column(Integer, nullable=False)

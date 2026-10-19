@@ -33,10 +33,22 @@ class CaptureStore(Protocol):
     """Caller-UoW persistence port for durable draft and proof operations."""
 
     async def begin(
-        self, *, owner_id: UUID, input_key: str, text: str, at: datetime, expires_at: datetime
+        self,
+        *,
+        owner_id: UUID,
+        input_key: str,
+        text: str,
+        at: datetime,
+        expires_at: datetime,
+        processing_grant_id: UUID | None = None,
+        processing_policy_version: str | None = None,
     ) -> CaptureBegin: ...
 
     async def persist_draft(self, draft: CaptureDraft, *, expected_version: int) -> None: ...
+
+    async def discard_stale_processing_result(
+        self, draft: CaptureDraft, *, at: datetime
+    ) -> bool: ...
 
     async def complete_input(
         self,
@@ -91,6 +103,8 @@ class CallStart:
     call_number: int
     model: str
     created_at: datetime
+    processing_grant_id: UUID | None = None
+    processing_policy_version: str | None = None
 
 
 class ReservationStatus(StrEnum):
@@ -103,7 +117,14 @@ class TurnAllowance(Protocol):
     """Authoritative one-user-turn reservation, implemented by the access owner."""
 
     async def reserve(
-        self, *, owner_id: UUID, request_id: str, at: datetime, claim: JobClaim | None = None
+        self,
+        *,
+        owner_id: UUID,
+        request_id: str,
+        at: datetime,
+        processing_grant_id: UUID | None = None,
+        processing_policy_version: str | None = None,
+        claim: JobClaim | None = None,
     ) -> ReservationStatus:
         """Atomically reserve one AI turn for this user request."""
 
@@ -149,12 +170,19 @@ class ProviderUsageRecorder(Protocol):
         turn_id: str,
         result: dict[str, object],
         provider_request_ids: tuple[str, ...],
+        processing_grant_id: UUID | None = None,
+        processing_policy_version: str | None = None,
         claim: JobClaim | None = None,
     ) -> None:
         """Persist a validated result before idempotent turn settlement."""
 
     async def get_result(
-        self, *, owner_id: UUID, turn_id: str
+        self,
+        *,
+        owner_id: UUID,
+        turn_id: str,
+        processing_grant_id: UUID | None = None,
+        processing_policy_version: str | None = None,
     ) -> tuple[dict[str, object], tuple[str, ...]] | None:
         """Load a previously validated result for crash-safe duplicate delivery."""
 

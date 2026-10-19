@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Protocol
 from uuid import UUID, uuid4
@@ -26,6 +26,7 @@ from pin.adapters.telegram.mutation_runtime import (
     process_mutation_callback,
     process_mutation_command,
 )
+from pin.adapters.telegram.mutation_runtime_store import SqlAlchemyMutationRuntimeStore
 from pin.adapters.telegram.presentation.callbacks import (
     CallbackBinding,
     CallbackTokens,
@@ -75,8 +76,13 @@ from pin.contexts.conversation.infrastructure.capture_store import (
     SqlAlchemyCaptureRecurrenceConfirmationVerifier,
 )
 from pin.contexts.conversation.infrastructure.usage import SqlAlchemyTurnAllowance
-from pin.contexts.identity.api import PreferencesSnapshot
-from pin.contexts.identity.infrastructure.store import SqlAlchemyIdentityStore
+from pin.contexts.identity.api import (
+    PreferencesSnapshot,
+    ProcessingAuthorization,
+    ProcessingConsentConflict,
+    SqlAlchemyIdentityStore,
+    authorize_processing_consent,
+)
 from pin.contexts.planning.infrastructure.series_store import SqlAlchemySeriesStore
 from pin.contexts.planning.infrastructure.store import SqlAlchemyPlanningStore
 from pin.contexts.planning.mutation_read_api import get_owner_mutation_targets
@@ -194,6 +200,9 @@ async def _process_capture_job(
     callback_inbound: _Inbound | None = None
 
     async with sessions() as session, session.begin():
+        identity = SqlAlchemyIdentityStore(session)
+        await identity.lock_processing_consent(claim.owner_id)
+        await lock_job_for_effects(session, claim)
         lifecycle = await SqlAlchemyAccessUsageStore(session).lock_account_lifecycle(claim.owner_id)
         if lifecycle is AccountLifecycle.DELETED:
             # Let the general application worker emit its static, owner-bound
@@ -216,7 +225,6 @@ async def _process_capture_job(
         owner_id = inbound.inbox.owner_id
         if owner_id is None:
             raise RuntimeError("capture inbox update has no trusted owner")
-        identity = SqlAlchemyIdentityStore(session)
         preferences = await identity.get_preferences(owner_id)
         onboarding = await identity.get_onboarding(owner_id)
         onboarding_active = onboarding is not None and onboarding.step != "complete"
@@ -273,6 +281,33 @@ async def _process_capture_job(
         if not is_capture_callback and not is_capture_text:
             return False
 
+        authorization = _claim_authorization(claim)
+        if is_capture_text and (
+            authorization is None
+            or inbound.inbox.processing_grant_id != authorization.grant_id
+            or inbound.inbox.processing_policy_version != authorization.policy_version
+            or not await authorize_processing_consent(
+                identity, owner_id=owner_id, authorization=authorization
+            )
+        ):
+            receipt = await record_job_effect_once(
+                session,
+                claim,
+                effect_key=PRIVATE_TEXT_EFFECT,
+                result={"status": "processing_consent_required"},
+            )
+            if receipt.first_application:
+                await _queue_static_reply(
+                    session,
+                    claim,
+                    chat_id=telegram_user_id,
+                    text=_consent_required_text(language),
+                    language=language,
+                    now=at,
+                )
+            await complete_job(session, claim)
+            return True
+
         await record_job_effect_once(
             session,
             claim,
@@ -292,6 +327,8 @@ async def _process_capture_job(
                 request_key=request_key,
                 text=inbound.text,
                 at=at,
+                processing_grant_id=authorization.grant_id if authorization else None,
+                processing_policy_version=(authorization.policy_version if authorization else None),
                 context_factory=lambda draft, key, current_text: (
                     _conversation_context(
                         draft,
@@ -332,11 +369,40 @@ async def _process_capture_job(
         assert assistant is not None
         outcome = await assistant.interpret(interpretation.context, at=at, claim=claim)
         async with sessions() as session, session.begin():
+            identity = SqlAlchemyIdentityStore(session)
+            await identity.lock_processing_consent(claim.owner_id)
+            await lock_job_for_effects(session, claim)
             lifecycle = await SqlAlchemyAccessUsageStore(session).lock_account_lifecycle(
                 interpretation.draft.owner_id
             )
             if lifecycle is AccountLifecycle.DELETED:
                 await complete_job(session, claim)
+                return True
+            authorization = _claim_authorization(claim)
+            if authorization is None or not await authorize_processing_consent(
+                identity,
+                owner_id=interpretation.draft.owner_id,
+                authorization=authorization,
+            ):
+                await SqlAlchemyCaptureStore(session).discard_stale_processing_result(
+                    interpretation.draft, at=at
+                )
+                receipt = await record_job_effect_once(
+                    session,
+                    claim,
+                    effect_key=PRIVATE_TEXT_EFFECT,
+                    result={"status": "processing_consent_revoked"},
+                )
+                if receipt.first_application:
+                    await _queue_static_reply(
+                        session,
+                        claim,
+                        chat_id=telegram_user_id,
+                        text=_consent_required_text(language),
+                        language=language,
+                        now=at,
+                    )
+                await _complete_capture_job(session, claim, at, mark_continued)
                 return True
             already_applied = await record_job_effect_once(
                 session,
@@ -347,7 +413,6 @@ async def _process_capture_job(
             if not already_applied.first_application:
                 await _complete_capture_job(session, claim, at, mark_continued)
                 return True
-            identity = SqlAlchemyIdentityStore(session)
             preferences = await identity.get_preferences(interpretation.draft.owner_id)
             mutation_message = None
             if preferences is None:
@@ -365,6 +430,10 @@ async def _process_capture_job(
                         language=preferences.language,
                         now=at,
                     )
+                    if authorization is not None:
+                        await SqlAlchemyMutationRuntimeStore(session).stamp_open_for_processing(
+                            interpretation.draft.owner_id, authorization
+                        )
                     outcome = ModelSuccess(
                         result=Reply(
                             kind="reply",
@@ -395,6 +464,7 @@ async def _process_capture_job(
                 language=language,
                 now=at,
                 reply_markup=mutation_message.keyboard if mutation_message else None,
+                processing_authorization=authorization,
             )
             await _complete_capture_job(session, claim, at, mark_continued)
         return True
@@ -444,6 +514,11 @@ async def _capture_inbound(session: AsyncSession, claim: JobClaim) -> _Inbound |
         raise RuntimeError("claimed job references a missing inbox update")
     if inbox.owner_id is None or claim.owner_id != inbox.owner_id:
         raise RuntimeError("claimed job owner does not match its trusted inbox mapping")
+    if (
+        inbox.processing_grant_id != claim.processing_grant_id
+        or inbox.processing_policy_version != claim.processing_policy_version
+    ):
+        raise RuntimeError("claimed job consent stamp does not match its immutable inbox")
     actor = private_actor(inbox.payload)
     callback = inbox.payload.get("callback_query")
     message = (
@@ -455,7 +530,10 @@ async def _capture_inbound(session: AsyncSession, claim: JobClaim) -> _Inbound |
     if actor_kind not in {"message", "speech_message", "callback_query"}:
         return None
     trusted_owner = await PostgresTelegramOwnerResolver().resolve(
-        session, bot_id=inbox.bot_id, telegram_user_id=telegram_user_id
+        session,
+        bot_id=inbox.bot_id,
+        telegram_user_id=telegram_user_id,
+        expected_owner_id=claim.owner_id,
     )
     if trusted_owner != inbox.owner_id:
         raise RuntimeError("persisted Telegram mapping does not match the inbox owner")
@@ -493,8 +571,11 @@ async def _apply_capture_callback(
         if target is None:
             raise CaptureConflict("confirmation is expired or stale")
         draft_id, version = target
+        draft = await store.get_draft(owner_id=owner_id, draft_id=draft_id)
+        if draft is None or not await _authorize_draft(identity, draft):
+            raise ProcessingConsentConflict("processing consent changed after this preview")
         billing = SqlAlchemyAccessUsageStore(session)
-        return await confirm_ready_draft(
+        reply = await confirm_ready_draft(
             store,
             owner_id=owner_id,
             draft_id=draft_id,
@@ -509,6 +590,11 @@ async def _apply_capture_callback(
             identity=identity,
             billing=billing,
             clock=_Clock(now),
+        )
+        return replace(
+            reply,
+            processing_grant_id=draft.processing_grant_id,
+            processing_policy_version=draft.processing_policy_version,
         )
 
     if data.startswith(CAPTURE_CANCEL_PREFIX):
@@ -538,7 +624,9 @@ async def _apply_capture_callback(
         draft = await store.get_draft(owner_id=owner_id, draft_id=draft_id)
         if draft is None or draft.version != binding.target_version:
             raise InvalidCallbackToken("capture choice is stale")
-        return await apply_clarification_choice(
+        if not await _authorize_draft(identity, draft):
+            raise ProcessingConsentConflict("processing consent changed after this clarification")
+        reply = await apply_clarification_choice(
             store,
             owner_id=owner_id,
             draft_id=draft_id,
@@ -546,6 +634,11 @@ async def _apply_capture_callback(
             choice_id=binding.action.removeprefix(action_prefix),
             preferences=profile,
             at=now,
+        )
+        return replace(
+            reply,
+            processing_grant_id=draft.processing_grant_id,
+            processing_policy_version=draft.processing_policy_version,
         )
     raise InvalidCallbackToken("unknown capture callback")
 
@@ -563,6 +656,9 @@ async def _process_capture_callback_job(
         raise RuntimeError("capture callback job has no owner")
     try:
         async with sessions() as session, session.begin():
+            identity = SqlAlchemyIdentityStore(session)
+            await identity.lock_processing_consent(claim.owner_id)
+            await lock_job_for_effects(session, claim)
             lifecycle = await SqlAlchemyAccessUsageStore(session).lock_account_lifecycle(
                 claim.owner_id
             )
@@ -623,9 +719,12 @@ async def _process_capture_callback_job(
             )
             await complete_job(session, claim)
         return True
-    except (CaptureConflict, InvalidCallbackToken, ValueError):
+    except (CaptureConflict, InvalidCallbackToken, ProcessingConsentConflict, ValueError) as error:
         # The action transaction rolled back; persist only a safe recovery reply.
         async with sessions() as session, session.begin():
+            identity = SqlAlchemyIdentityStore(session)
+            await identity.lock_processing_consent(claim.owner_id)
+            await lock_job_for_effects(session, claim)
             current = await _capture_inbound(session, claim)
             if current is None or current.callback_data != inbound.callback_data:
                 await complete_job(session, claim)
@@ -642,14 +741,25 @@ async def _process_capture_callback_job(
             current_profile = await SqlAlchemyIdentityStore(session).get_preferences(
                 _inbound_owner(current)
             )
-            await _queue_reply(
-                session,
-                claim,
-                chat_id=chat_id,
-                reply=_stale_reply(current_profile.language if current_profile else language),
-                language=current_profile.language if current_profile else language,
-                now=now,
-            )
+            current_language = current_profile.language if current_profile else language
+            if isinstance(error, ProcessingConsentConflict):
+                await _queue_static_reply(
+                    session,
+                    claim,
+                    chat_id=chat_id,
+                    text=_consent_required_text(current_language),
+                    language=current_language,
+                    now=now,
+                )
+            else:
+                await _queue_reply(
+                    session,
+                    claim,
+                    chat_id=chat_id,
+                    reply=_stale_reply(current_language),
+                    language=current_language,
+                    now=now,
+                )
             await complete_job(session, claim)
         return True
 
@@ -733,7 +843,17 @@ async def _queue_reply(
     language: str,
     now: datetime,
     reply_markup: dict[str, object] | None = None,
+    processing_authorization: ProcessingAuthorization | None = None,
 ) -> None:
+    if processing_authorization is None:
+        if (reply.processing_grant_id is None) != (reply.processing_policy_version is None):
+            raise ValueError("capture reply has incomplete processing provenance")
+        if reply.processing_grant_id is not None:
+            processing_authorization = ProcessingAuthorization(
+                _claim_owner(claim),
+                reply.processing_grant_id,
+                reply.processing_policy_version or "",
+            )
     pages = list(render_capture_response(reply.response, language=language))
     choices = reply.response.get("choices")
     choice_rows = (
@@ -808,6 +928,17 @@ async def _queue_reply(
                     "source_job_id": str(claim.job_id),
                     "page_index": index,
                     "page_count": len(pages),
+                    "processing_classification": (
+                        "ai_derived" if processing_authorization is not None else "deterministic"
+                    ),
+                    **(
+                        {
+                            "processing_grant_id": str(processing_authorization.grant_id),
+                            "processing_policy_version": processing_authorization.policy_version,
+                        }
+                        if processing_authorization is not None
+                        else {}
+                    ),
                     **({"reply_markup": keyboard} if page_markup else {}),
                 },
             ),
@@ -851,6 +982,59 @@ async def _queue_mutation_reply(
         language=language,
         now=now,
         reply_markup=message.keyboard,
+    )
+
+
+async def _queue_static_reply(
+    session: AsyncSession,
+    claim: JobClaim,
+    *,
+    chat_id: int,
+    text: str,
+    language: str,
+    now: datetime,
+) -> None:
+    await _queue_reply(
+        session,
+        claim,
+        chat_id=chat_id,
+        reply=CaptureTurnReply(
+            UUID(int=0), 0, "required", {"kind": "reply", "text": text}
+        ),
+        language=language,
+        now=now,
+    )
+
+
+def _claim_authorization(claim: JobClaim) -> ProcessingAuthorization | None:
+    if (claim.processing_grant_id is None) != (claim.processing_policy_version is None):
+        raise RuntimeError("claimed job has incomplete processing provenance")
+    if claim.owner_id is None or claim.processing_grant_id is None:
+        return None
+    return ProcessingAuthorization(
+        claim.owner_id, claim.processing_grant_id, claim.processing_policy_version or ""
+    )
+
+
+def _consent_required_text(language: str) -> str:
+    return (
+        "Allow processing in /privacy before sending this task. Then send it again."
+        if language == "en"
+        else "Разрешите обработку в /privacy, затем отправьте задачу ещё раз."
+    )
+
+
+async def _authorize_draft(
+    identity: SqlAlchemyIdentityStore, draft: CaptureDraft
+) -> bool:
+    if draft.processing_grant_id is None or draft.processing_policy_version is None:
+        return False
+    return await authorize_processing_consent(
+        identity,
+        owner_id=draft.owner_id,
+        authorization=ProcessingAuthorization(
+            draft.owner_id, draft.processing_grant_id, draft.processing_policy_version
+        ),
     )
 
 

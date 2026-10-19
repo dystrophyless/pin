@@ -17,7 +17,7 @@ from pin.adapters.telegram.ingress import (
     PostgresTelegramOwnerResolver,
     TelegramOwnerResolver,
     acknowledge_callback,
-    persist_update,
+    persist_update_with_owner_retry,
     select_ingress_mode,
     validate_update,
 )
@@ -99,18 +99,16 @@ def create_webhook_app(
                 if persist_budget <= 0:
                     raise TimeoutError
                 async with asyncio.timeout(persist_budget):
-                    async with sessions() as session, session.begin():
-                        receipt = await persist_update(
-                            session,
+                    receipt = await persist_update_with_owner_retry(
+                            sessions,
                             bot_id=bot_id,
                             payload=update,
                             owner_resolver=resolver,
                             received_at=received_at,
                         )
             else:
-                async with sessions() as session, session.begin():
-                    receipt = await persist_update(
-                        session,
+                receipt = await persist_update_with_owner_retry(
+                        sessions,
                         bot_id=bot_id,
                         payload=update,
                         owner_resolver=resolver,

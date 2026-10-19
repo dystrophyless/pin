@@ -14,6 +14,11 @@ from pin.contexts.identity.application.contracts import (
     PreferencesSnapshot,
     TrialActivator,
 )
+from pin.contexts.identity.application.processing_consent import (
+    ProcessingConsentAcceptance,
+    ProcessingConsentConflict,
+    accept_processing_consent,
+)
 from pin.contexts.identity.domain.preferences import Preferences, validate_home_zone
 
 
@@ -178,8 +183,10 @@ async def confirm_onboarding(
     owner_id: UUID,
     telegram_user_id: int,
     now: datetime,
+    consent_acceptance: ProcessingConsentAcceptance | None = None,
 ) -> OnboardingResult:
     _require_aware(now)
+    await store.lock_processing_consent(owner_id)
     draft = await store.get_onboarding(owner_id)
     if draft is None:
         return OnboardingResult("not_in_progress")
@@ -189,6 +196,17 @@ async def confirm_onboarding(
         )
     if draft.step != OnboardingStep.CONFIRM:
         return OnboardingResult("confirmation_not_ready", draft.step, draft.mode)
+    if draft.mode == "initial":
+        if (
+            consent_acceptance is None
+            or consent_acceptance.draft_id != draft.draft_id
+            or consent_acceptance.draft_version != draft.version
+            or not consent_acceptance.policy_version
+        ):
+            return OnboardingResult(
+                "consent_required", draft.step, draft.mode, draft=dict(draft.values)
+            )
+        await trial_activator.lock_account_lifecycle(owner_id)
 
     current = await store.get_preferences(owner_id)
     if (current.version if current else None) != draft.base_profile_version:
@@ -209,6 +227,21 @@ async def confirm_onboarding(
             "version_conflict", draft.step, draft.mode, draft=dict(draft.values)
         )
 
+    if draft.mode == "initial":
+        assert consent_acceptance is not None
+        consent = await store.get_processing_consent(owner_id)
+        if consent.revision != consent_acceptance.expected_revision:
+            raise ProcessingConsentConflict("processing consent preview is stale")
+        await accept_processing_consent(
+            store,
+            owner_id=owner_id,
+            expected_revision=consent_acceptance.expected_revision,
+            policy_version=consent_acceptance.policy_version,
+            language=consent_acceptance.language,
+            accepted_at=consent_acceptance.accepted_at,
+            telegram_user_id=consent_acceptance.telegram_user_id,
+            inbox_update_id=consent_acceptance.inbox_update_id,
+        )
     previous_zone = current.home_zone if current else None
     trial = None
     if draft.mode == "initial":

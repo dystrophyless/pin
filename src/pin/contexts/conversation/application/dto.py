@@ -78,6 +78,8 @@ class ConversationContext(StrictModel):
     """Owner-filtered caller snapshot; identity never enters the provider prompt."""
 
     owner_id: UUID
+    processing_grant_id: UUID | None = None
+    processing_policy_version: Annotated[str, Field(min_length=1, max_length=64)] | None = None
     request_id: Annotated[str, Field(min_length=1, max_length=128)]
     language: SourceLanguage
     input_kind: InputKind
@@ -116,6 +118,12 @@ class ConversationContext(StrictModel):
         plan_ids = {plan.id for plan in self.plans}
         if not plan_ids.issubset(set(ids)):
             raise ValueError("every plan must have a matching owner-filtered target")
+        return self
+
+    @model_validator(mode="after")
+    def processing_provenance_is_paired(self) -> ConversationContext:
+        if (self.processing_grant_id is None) != (self.processing_policy_version is None):
+            raise ValueError("processing grant and policy provenance must be paired")
         return self
 
 

@@ -162,7 +162,10 @@ def render_onboarding(result: OnboardingResult) -> OnboardingReply | None:
                 if result.mode == "initial"
                 else ""
             )
-            text = prompts["confirm"].format(summary=summary, trial=trial)
+            if result.mode == "initial":
+                text = _consent_prompt(summary, language)
+            else:
+                text = prompts["confirm"].format(summary=summary, trial=trial)
         else:
             text = prompts.get(result.step or "language", prompts["language"])
         buttons = _step_buttons(language, result.step or "language", result.mode or "initial")
@@ -173,7 +176,11 @@ def render_onboarding(result: OnboardingResult) -> OnboardingReply | None:
                 else "\nОтправьте `оставить`, чтобы сохранить текущее значение."
             )
         return _reply(text, buttons=buttons)
-    if result.state in {"invalid_input", "confirm_required"}:
+    if result.state in {"invalid_input", "confirm_required", "consent_required"}:
+        if result.state == "consent_required" and result.mode == "initial":
+            summary = _summary(result.draft or {}, language)
+            text = _consent_prompt(summary, language)
+            return _reply(text, buttons=_consent_buttons(language))
         return _reply(
             prompts[result.state],
             buttons=_step_buttons(language, result.step or "language", result.mode or "initial"),
@@ -200,12 +207,37 @@ def _step_buttons(language: str, step: str, mode: str) -> tuple[OnboardingButton
         buttons.append(_button(language, "suggested", "answer", f"{step}|suggested"))
     elif step == "home_zone":
         buttons.append(_button(language, "zone_example", "answer", "home_zone|Asia/Almaty"))
-    elif step == "confirm":
+    elif step == "confirm" and mode == "preferences":
         buttons.append(_button(language, "confirm", "answer", "confirm|confirm"))
+    elif step == "confirm":
+        return _consent_buttons(language)
     if mode == "preferences" and step not in {"language", "confirm"}:
         buttons.append(_button(language, "keep", "answer", f"{step}|keep"))
     buttons.append(_button(language, "cancel", "cancel", "draft"))
     return tuple(buttons)
+
+
+def _consent_prompt(summary: str, language: str) -> str:
+    if language == "ru":
+        return (
+            f"{summary}\nPin использует внешние ИИ-сервисы для обработки вашего "
+            "текста, расшифровок голоса и релевантного контекста ваших планов. "
+            "Нажимая «Согласиться и завершить настройку», вы соглашаетесь на эту "
+            "обработку. Отозвать согласие можно в /privacy."
+        )
+    return (
+        f"{summary}\nPin uses external AI services to interpret your text, voice "
+        "transcripts, and relevant context from your plans. By choosing Agree and "
+        "finish setup, you consent to this processing. You can withdraw consent in /privacy."
+    )
+
+
+def _consent_buttons(language: str) -> tuple[OnboardingButton, ...]:
+    return (
+        _button(language, "consent_accept", "consent.accept", "accept"),
+        _button(language, "consent_details", "consent.details", "details"),
+        _button(language, "cancel", "cancel", "draft"),
+    )
 
 
 def _button(language: str, key: str, action: str, value: str | None = None) -> OnboardingButton:
@@ -217,6 +249,9 @@ def _button(language: str, key: str, action: str, value: str | None = None) -> O
             "zone_example": "Asia/Almaty (example)",
             "keep": "Keep current",
             "confirm": "Confirm",
+            "consent_accept": "Agree and finish setup",
+            "consent_details": "Details",
+            "consent_preview": "Back to setup",
             "cancel": "Cancel",
             "settings": "Edit preferences",
         },
@@ -227,6 +262,9 @@ def _button(language: str, key: str, action: str, value: str | None = None) -> O
             "zone_example": "Asia/Almaty (пример)",
             "keep": "Оставить текущие",
             "confirm": "Подтвердить",
+            "consent_accept": "Согласиться и завершить настройку",
+            "consent_details": "Подробнее",
+            "consent_preview": "Вернуться к настройке",
             "cancel": "Отмена",
             "settings": "Изменить настройки",
         },

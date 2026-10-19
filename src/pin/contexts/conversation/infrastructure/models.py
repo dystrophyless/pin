@@ -30,6 +30,11 @@ class ProviderCallRecord(Base):
     __table_args__ = (
         UniqueConstraint("owner_id", "turn_id", "call_id", name="uq_model_call_identity"),
         UniqueConstraint("provider_request_id", name="uq_model_provider_request"),
+        CheckConstraint(
+            "(processing_grant_id IS NULL AND processing_policy_version IS NULL) OR "
+            "(processing_grant_id IS NOT NULL AND processing_policy_version IS NOT NULL)",
+            name="ck_conversation_provider_calls_processing_provenance",
+        ),
         CheckConstraint("call_number BETWEEN 1 AND 4", name="ck_model_call_number"),
         CheckConstraint(
             "state IN ('started', 'unknown', 'reported', 'deduplicated')",
@@ -69,6 +74,8 @@ class ProviderCallRecord(Base):
 
     call_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True)
     owner_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    processing_grant_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    processing_policy_version: Mapped[str | None] = mapped_column(String(64))
     turn_id: Mapped[str] = mapped_column(String(128), nullable=False)
     call_number: Mapped[int] = mapped_column(Integer, nullable=False)
     model: Mapped[str] = mapped_column(String(128), nullable=False)
@@ -91,11 +98,18 @@ class ConversationTurnResultRecord(Base):
     __tablename__ = "turn_results"
     __table_args__ = (
         UniqueConstraint("owner_id", "turn_id", name="uq_conversation_turn_result"),
+        CheckConstraint(
+            "(processing_grant_id IS NULL AND processing_policy_version IS NULL) OR "
+            "(processing_grant_id IS NOT NULL AND processing_policy_version IS NOT NULL)",
+            name="ck_conversation_turn_results_processing_provenance",
+        ),
         {"schema": "conversation"},
     )
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True)
     owner_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    processing_grant_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    processing_policy_version: Mapped[str | None] = mapped_column(String(64))
     turn_id: Mapped[str] = mapped_column(String(128), nullable=False)
     result: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
     provider_request_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False)

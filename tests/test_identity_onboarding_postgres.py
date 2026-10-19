@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 from collections.abc import Iterator
 from datetime import UTC, datetime
@@ -11,8 +12,9 @@ from uuid import uuid4
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 
+import pin.adapters.telegram.application_worker as telegram_application_worker
 from pin.adapters.telegram.application_worker import (
     claim_application_job,
     process_application_job,
@@ -23,23 +25,40 @@ from pin.adapters.telegram.ingress import (
     persist_update,
 )
 from pin.adapters.telegram.onboarding import handle_private_text
+from pin.adapters.telegram.presentation.tokens import TelegramCallbackTokenRecord
 from pin.contexts.billing.api import SqlAlchemyAccessUsageStore, StartTrial
 from pin.contexts.billing.infrastructure.models import (
     AccessPeriodRecord,
     TrialActivationRecord,
 )
+from pin.contexts.identity.application.contracts import ProcessingAuthorization
 from pin.contexts.identity.application.onboarding import (
     answer_onboarding,
     begin_onboarding,
     confirm_onboarding,
 )
+from pin.contexts.identity.application.processing_consent import (
+    PROCESSING_CONSENT_POLICY_VERSION,
+    ProcessingConsentAcceptance,
+    ProcessingConsentConflict,
+    accept_processing_consent,
+    authorize_processing_consent,
+    get_processing_consent,
+    invalidate_restored_processing_consent,
+    revoke_processing_consent,
+)
 from pin.contexts.identity.domain.preferences import Preferences
-from pin.contexts.identity.infrastructure.models import OnboardingRecord, PreferencesRecord
+from pin.contexts.identity.infrastructure.deletion import purge_owner as purge_identity_owner
+from pin.contexts.identity.infrastructure.models import (
+    OnboardingRecord,
+    PreferencesRecord,
+    ProcessingConsentRecord,
+)
 from pin.contexts.identity.infrastructure.store import SqlAlchemyIdentityStore
 from pin.persistence import run_local_async
 from pin.persistence.db import create_engine, create_session_factory
 from pin.platform.contracts import EventEnvelope
-from pin.platform.models import OutboxEvent
+from pin.platform.models import InboxUpdate, OutboxEvent
 
 ROOT = Path(__file__).resolve().parents[1]
 DATABASE_URL = os.getenv("PIN_TEST_ONBOARDING_DATABASE_URL")
@@ -107,6 +126,31 @@ def test_private_onboarding_survives_restarts_and_activates_one_trial(
                 assert claim is not None
                 await process_application_job(sessions, claim, now=now)
 
+            async def click(update_id: int, callback_data: str) -> None:
+                now = datetime.now(UTC)
+                async with sessions() as session, session.begin():
+                    receipt = await persist_update(
+                        session,
+                        bot_id=bot_id,
+                        payload={
+                            "update_id": update_id,
+                            "callback_query": {
+                                "id": f"onboarding-consent-{uuid4().hex}",
+                                "from": {"id": telegram_user_id, "is_bot": False},
+                                "message": {
+                                    "message_id": update_id,
+                                    "chat": {"id": telegram_user_id, "type": "private"},
+                                },
+                                "data": callback_data,
+                            },
+                        },
+                        owner_resolver=PostgresTelegramOwnerResolver(),
+                    )
+                    assert receipt is not None and receipt.accepted
+                claim = await claim_application_job(sessions, worker_id="onboarding-test")
+                assert claim is not None
+                await process_application_job(sessions, claim, now=now)
+
             await send(1, "/start")
             async with sessions() as session:
                 assert owner_id is not None
@@ -134,6 +178,29 @@ def test_private_onboarding_survives_restarts_and_activates_one_trial(
                 profile = await session.get(PreferencesRecord, owner_id)
                 assert profile is None
             await send(6, "confirm")
+            async with sessions() as session:
+                assert await session.get(PreferencesRecord, owner_id) is None
+                pending = await session.get(OnboardingRecord, owner_id)
+                assert pending is not None and pending.step == "confirm"
+                prompt = await session.scalar(
+                    select(OutboxEvent)
+                    .where(
+                        OutboxEvent.owner_id == owner_id,
+                        OutboxEvent.event_type == "telegram.reply.requested",
+                    )
+                    .order_by(OutboxEvent.created_at.desc())
+                    .limit(1)
+                )
+                assert prompt is not None
+                markup = prompt.payload["payload"]["reply_markup"]
+                buttons = markup["inline_keyboard"]
+                accept = next(
+                    button["callback_data"]
+                    for row in buttons
+                    for button in row
+                    if button["text"] == "Согласиться и завершить настройку"
+                )
+            await click(7, accept)
 
             async with sessions() as session:
                 profile = await session.get(PreferencesRecord, owner_id)
@@ -157,7 +224,7 @@ def test_private_onboarding_survives_restarts_and_activates_one_trial(
                     for event in events
                     if event.owner_id == owner_id and event.event_type == "telegram.reply.requested"
                 ]
-                assert len(replies) == 6
+                assert len(replies) == 7
                 assert "Пробный период начат" in replies[-1].payload["plain_text"]
                 assert replies[-1].payload["chat_id"] == telegram_user_id
                 assert (
@@ -169,7 +236,7 @@ def test_private_onboarding_survives_restarts_and_activates_one_trial(
                             OutboxEvent.event_type == "telegram.reply.requested",
                         )
                     )
-                    == 6
+                    == 7
                 )
                 assert (
                     await session.scalar(
@@ -184,8 +251,8 @@ def test_private_onboarding_survives_restarts_and_activates_one_trial(
                 )
 
             # /start is read-only for a retained profile and does not reset its trial.
-            await send(7, "/start")
-            await send(8, "Tomorrow at 5 pm, review the project")
+            await send(8, "/start")
+            await send(9, "Tomorrow at 5 pm, review the project")
             async with sessions() as session:
                 profile = await session.get(PreferencesRecord, owner_id)
                 assert profile is not None and profile.version == 1
@@ -308,14 +375,28 @@ def test_cancel_and_preview_are_non_mutating_and_zone_change_is_handed_off(
             ):
                 await send(offset, text)
             async with sessions() as session:
+                assert await session.get(PreferencesRecord, owner_id) is None
+                pending = await session.get(OnboardingRecord, owner_id)
+                assert pending is not None and pending.step == "confirm"
+                assert pending.mode == "initial"
+                reply = next(
+                    event
+                    for event in reversed(await _owner_events(session, owner_id))
+                    if event.owner_id == owner_id
+                    and event.event_type == "telegram.reply.requested"
+                )
+            consent_reply = cast(dict[str, object], reply.payload)
+            accept_callback = callback_for(consent_reply, "Agree and finish setup")
+            await send(108, callback=accept_callback)
+            async with sessions() as session:
                 baseline = await session.get(PreferencesRecord, owner_id)
                 assert baseline is not None
                 baseline_version = baseline.version
                 baseline_zone = baseline.home_zone
-            await send(108, "/settings")
-            await send(109, "keep")
-            await send(110, "Asia/Aqtobe")
-            await send(111, "/cancel")
+            await send(109, "/settings")
+            await send(110, "keep")
+            await send(111, "Asia/Aqtobe")
+            await send(112, "/cancel")
             async with sessions() as session:
                 profile = await session.get(PreferencesRecord, owner_id)
                 assert profile is not None
@@ -331,12 +412,12 @@ def test_cancel_and_preview_are_non_mutating_and_zone_change_is_handed_off(
                 )
 
             # A confirmed home-zone edit publishes a versioned downstream handoff.
-            await send(112, "/settings")
-            await send(113, "keep")
-            await send(114, "Asia/Aqtobe")
-            await send(115, "keep")
+            await send(113, "/settings")
+            await send(114, "keep")
+            await send(115, "Asia/Aqtobe")
             await send(116, "keep")
-            review = await send(117, "confirm")
+            await send(117, "keep")
+            review = await send(118, "confirm")
             async with sessions() as session:
                 before_confirmation = await session.get(PreferencesRecord, owner_id)
                 assert before_confirmation is not None
@@ -349,14 +430,14 @@ def test_cancel_and_preview_are_non_mutating_and_zone_change_is_handed_off(
                     and event.event_type == "identity.home_zone_change.requested"
                 ]
             preview = await send(
-                126, callback=callback_for(review, "Keep local schedules")
+                127, callback=callback_for(review, "Keep local schedules")
             )
             async with sessions() as session:
                 still_pending = await session.get(PreferencesRecord, owner_id)
                 assert still_pending is not None
                 assert still_pending.home_zone == baseline_zone
                 assert still_pending.version == baseline_version
-            await send(127, callback=callback_for(preview, "Confirm zone change"))
+            await send(128, callback=callback_for(preview, "Confirm zone change"))
             async with sessions() as session:
                 profile = await session.get(PreferencesRecord, owner_id)
                 assert profile is not None
@@ -385,11 +466,11 @@ def test_cancel_and_preview_are_non_mutating_and_zone_change_is_handed_off(
                 )
 
             # A newer version committed elsewhere wins; this preview cannot overwrite it.
-            await send(118, "/settings")
-            await send(119, "keep")
+            await send(119, "/settings")
             await send(120, "keep")
             await send(121, "keep")
             await send(122, "keep")
+            await send(123, "keep")
             async with sessions() as session, session.begin():
                 current = await session.get(PreferencesRecord, owner_id)
                 assert current is not None
@@ -409,23 +490,23 @@ def test_cancel_and_preview_are_non_mutating_and_zone_change_is_handed_off(
                     preferences=newer,
                 )
                 assert saved is not None
-            await send(123, "confirm")
+            await send(124, "confirm")
             async with sessions() as session:
                 current = await session.get(PreferencesRecord, owner_id)
                 assert current is not None
                 assert current.version == baseline_version + 2
                 assert current.review_time.hour == 19
                 assert await session.get(OnboardingRecord, owner_id) is None
-            await send(124, "/settings")
+            await send(125, "/settings")
             async with sessions() as session:
                 refreshed = await session.get(OnboardingRecord, owner_id)
                 assert refreshed is not None
                 assert refreshed.base_profile_version == baseline_version + 2
                 assert refreshed.draft["review_time"] == "19:00:00"
-            await send(125, "/cancel")
+            await send(126, "/cancel")
             async with sessions() as session:
                 assert await session.get(OnboardingRecord, owner_id) is None
-            plan_cancel = await send(128, "/cancel")
+            plan_cancel = await send(129, "/cancel")
             assert "There are no open tasks for this action." in str(plan_cancel["plain_text"])
             assert plan_cancel["handling"] == "handled"
         finally:
@@ -449,6 +530,9 @@ def test_profile_and_billing_trial_roll_back_in_the_same_unit_of_work(
     class FailAfterTrialWrite:
         def __init__(self, session) -> None:
             self.session = session
+
+        async def lock_account_lifecycle(self, owner_id):
+            await SqlAlchemyAccessUsageStore(self.session).lock_account_lifecycle(owner_id)
 
         async def activate_trial(self, *, owner_id, telegram_user_id, at):
             await SqlAlchemyAccessUsageStore(self.session).activate_trial(
@@ -481,17 +565,50 @@ def test_profile_and_billing_trial_roll_back_in_the_same_unit_of_work(
                     )
             with pytest.raises(RuntimeError, match="simulate transaction failure"):
                 async with sessions() as session, session.begin():
-                    await handle_private_text(
-                        SqlAlchemyIdentityStore(session),
+                    now = datetime.now(UTC)
+                    store = SqlAlchemyIdentityStore(session)
+                    draft = await store.get_onboarding(owner_id)
+                    assert draft is not None and draft.step == "confirm"
+                    inbox_id = uuid4()
+                    session.add(
+                        InboxUpdate(
+                            id=inbox_id,
+                            bot_id=987654,
+                            update_id=uuid4().int % 2**52,
+                            owner_id=owner_id,
+                            update_type="message",
+                            payload={
+                                "message": {
+                                    "from": {"id": telegram_user_id, "is_bot": False},
+                                    "chat": {"id": telegram_user_id, "type": "private"},
+                                }
+                            },
+                        )
+                    )
+                    await session.flush()
+                    await confirm_onboarding(
+                        store,
+                        FailAfterTrialWrite(session),
                         owner_id=owner_id,
                         telegram_user_id=telegram_user_id,
-                        text="confirm",
-                        now=datetime.now(UTC),
-                        trial_activator=FailAfterTrialWrite(session),
+                        now=now,
+                        consent_acceptance=ProcessingConsentAcceptance(
+                            expected_revision=0,
+                            policy_version=PROCESSING_CONSENT_POLICY_VERSION,
+                            language="en",
+                            accepted_at=now,
+                            telegram_user_id=telegram_user_id,
+                            inbox_update_id=inbox_id,
+                            draft_id=draft.draft_id,
+                            draft_version=draft.version,
+                        ),
                     )
             async with sessions() as session:
                 assert await session.get(PreferencesRecord, owner_id) is None
                 assert await session.get(TrialActivationRecord, owner_id) is None
+                from pin.contexts.identity.infrastructure.models import ProcessingConsentRecord
+
+                assert await session.get(ProcessingConsentRecord, owner_id) is None
                 assert (
                     await session.scalar(
                         select(func.count())
@@ -553,6 +670,9 @@ def test_simultaneous_confirmations_create_one_profile_and_one_trial(
         def __init__(self, session) -> None:
             self._store = SqlAlchemyAccessUsageStore(session)
 
+        async def lock_account_lifecycle(self, owner_id):
+            await self._store.lock_account_lifecycle(owner_id)
+
         async def activate_trial(self, *, owner_id, telegram_user_id, at):
             return await self._store.activate_trial(StartTrial(owner_id, telegram_user_id, at))
 
@@ -567,6 +687,35 @@ def test_simultaneous_confirmations_create_one_profile_and_one_trial(
                 await begin_onboarding(store, owner_id=owner_id, now=datetime.now(UTC))
                 for text in ("en", "Asia/Almaty", "suggested", "suggested"):
                     await answer_onboarding(store, owner_id=owner_id, text=text)
+                draft = await store.get_onboarding(owner_id)
+                assert draft is not None
+                now = datetime.now(UTC)
+                inbox_id = uuid4()
+                session.add(
+                    InboxUpdate(
+                        id=inbox_id,
+                        bot_id=987654,
+                        update_id=uuid4().int % 2**52,
+                        owner_id=owner_id,
+                        update_type="message",
+                        payload={
+                            "message": {
+                                "from": {"id": telegram_user_id, "is_bot": False},
+                                "chat": {"id": telegram_user_id, "type": "private"},
+                            }
+                        },
+                    )
+                )
+                acceptance = ProcessingConsentAcceptance(
+                    expected_revision=0,
+                    policy_version=PROCESSING_CONSENT_POLICY_VERSION,
+                    language="en",
+                    accepted_at=now,
+                    telegram_user_id=telegram_user_id,
+                    inbox_update_id=inbox_id,
+                    draft_id=draft.draft_id,
+                    draft_version=draft.version,
+                )
 
             async def confirm_once():
                 async with sessions() as session, session.begin():
@@ -576,6 +725,7 @@ def test_simultaneous_confirmations_create_one_profile_and_one_trial(
                         owner_id=owner_id,
                         telegram_user_id=telegram_user_id,
                         now=datetime.now(UTC),
+                        consent_acceptance=acceptance,
                     )
 
             results = await asyncio.gather(confirm_once(), confirm_once())
@@ -583,6 +733,11 @@ def test_simultaneous_confirmations_create_one_profile_and_one_trial(
             async with sessions() as session:
                 assert await session.get(PreferencesRecord, owner_id) is not None
                 assert await session.get(TrialActivationRecord, owner_id) is not None
+                from pin.contexts.identity.infrastructure.models import ProcessingConsentRecord
+
+                consent = await session.get(ProcessingConsentRecord, owner_id)
+                assert consent is not None and consent.state == "granted"
+                assert consent.grant_id is not None and consent.revision == 1
                 assert (
                     await session.scalar(
                         select(func.count())
@@ -708,6 +863,23 @@ def test_private_quick_replies_are_owner_bound_versioned_and_single_use(
             ):
                 await message_update(update_id, text)
             async with sessions() as session:
+                assert await session.get(PreferencesRecord, owner_id) is None
+                draft = await session.get(OnboardingRecord, owner_id)
+                assert draft is not None and draft.mode == "initial" and draft.step == "confirm"
+                pending_reply = [
+                    event
+                    for event in await _owner_events(session, owner_id)
+                    if event.event_type == "telegram.reply.requested"
+                ][-1]
+                pending_keyboard = pending_reply.payload["reply_markup"]
+                consent_token = next(
+                    button["callback_data"]
+                    for row in pending_keyboard["inline_keyboard"]
+                    for button in row
+                    if button["text"] == "Согласиться и завершить настройку"
+                )
+            await click(1_010, telegram_user_id, consent_token)
+            async with sessions() as session:
                 completed = await session.get(PreferencesRecord, owner_id)
                 assert completed is not None and completed.version == 1
                 profile_reply = [
@@ -722,7 +894,7 @@ def test_private_quick_replies_are_owner_bound_versioned_and_single_use(
                     for button in row
                     if button["text"] == "Изменить настройки"
                 )
-            await click(1_010, telegram_user_id, settings_token)
+            await click(1_011, telegram_user_id, settings_token)
             async with sessions() as session:
                 preview = await session.get(OnboardingRecord, owner_id)
                 assert preview is not None and preview.mode == "preferences"
@@ -731,11 +903,11 @@ def test_private_quick_replies_are_owner_bound_versioned_and_single_use(
             # Cancel and recreate a preview at the same step/version. An old confirm
             # button must not apply to the new draft (draft UUID prevents ABA reuse).
             for update_id, text in (
-                (1_011, "en"),
-                (1_012, "keep"),
+                (1_012, "en"),
                 (1_013, "keep"),
                 (1_014, "keep"),
                 (1_015, "keep"),
+                (1_016, "keep"),
             ):
                 await message_update(update_id, text)
             async with sessions() as session:
@@ -751,17 +923,17 @@ def test_private_quick_replies_are_owner_bound_versioned_and_single_use(
                     for button in row
                     if button["text"] == "Confirm"
                 )
-            await message_update(1_016, "/cancel")
-            await message_update(1_017, "/settings")
+            await message_update(1_017, "/cancel")
+            await message_update(1_018, "/settings")
             for update_id, text in (
-                (1_018, "en"),
-                (1_019, "keep"),
+                (1_019, "en"),
                 (1_020, "keep"),
                 (1_021, "keep"),
                 (1_022, "keep"),
+                (1_023, "keep"),
             ):
                 await message_update(update_id, text)
-            await click(1_023, telegram_user_id, stale_confirm)
+            await click(1_024, telegram_user_id, stale_confirm)
             async with sessions() as session:
                 recreated = await session.get(OnboardingRecord, owner_id)
                 current_profile = await session.get(PreferencesRecord, owner_id)
@@ -772,8 +944,8 @@ def test_private_quick_replies_are_owner_bound_versioned_and_single_use(
 
             # The preferences-only Keep current button for the home-zone step is
             # a valid answer callback and remains single-use.
-            await message_update(1_024, "/cancel")
-            await message_update(1_025, "/settings")
+            await message_update(1_025, "/cancel")
+            await message_update(1_026, "/settings")
             async with sessions() as session:
                 assert owner_id is not None
                 language_reply = [
@@ -788,7 +960,7 @@ def test_private_quick_replies_are_owner_bound_versioned_and_single_use(
                     for button in row
                     if button["text"] == "English"
                 )
-            await click(1_026, telegram_user_id, english_token)
+            await click(1_027, telegram_user_id, english_token)
             async with sessions() as session:
                 zone_reply = [
                     event
@@ -802,8 +974,8 @@ def test_private_quick_replies_are_owner_bound_versioned_and_single_use(
                     for button in row
                     if button["text"] == "Keep current"
                 )
-            await click(1_027, telegram_user_id, keep_zone_token)
             await click(1_028, telegram_user_id, keep_zone_token)
+            await click(1_029, telegram_user_id, keep_zone_token)
             async with sessions() as session:
                 kept = await session.get(OnboardingRecord, owner_id)
                 saved = await session.get(PreferencesRecord, owner_id)
@@ -832,7 +1004,7 @@ def test_private_quick_replies_are_owner_bound_versioned_and_single_use(
                 )
                 assert saved is not None
 
-            update_id = 1_100
+            update_id = 1_101
             await message_as(update_id, preview_user_id, "/settings")
             first_draft_id = None
             for text in ("en", "keep", "keep", "keep"):
@@ -966,6 +1138,652 @@ def test_lock_preferences_refreshes_cached_snapshot_and_holds_the_row_lock(
                 assert final is not None and final.version == 3
                 assert final.home_zone == "Asia/Aqtobe"
                 assert final.review_time.hour == 21
+        finally:
+            await engine.dispose()
+
+    run_local_async(scenario)
+
+
+async def _add_consent_inbox(
+    session, *, owner_id, telegram_user_id: int, bot_id: int = 7654321
+):
+    inbox_id = uuid4()
+    session.add(
+        InboxUpdate(
+            id=inbox_id,
+            bot_id=bot_id,
+            update_id=uuid4().int % 2**52,
+            owner_id=owner_id,
+            update_type="message",
+            payload={
+                "message": {
+                    "from": {"id": telegram_user_id, "is_bot": False},
+                    "chat": {"id": telegram_user_id, "type": "private"},
+                }
+            },
+        )
+    )
+    await session.flush()
+    return inbox_id
+
+
+def test_processing_consent_persists_revisions_regrant_invalidation_and_purge(
+    onboarding_database: str,
+) -> None:
+    async def scenario() -> None:
+        engine = create_engine(onboarding_database)
+        sessions = create_session_factory(engine)
+        owner_id = uuid4()
+        telegram_user_id = 4_503_599_627_370_000
+        now = datetime.now(UTC)
+        try:
+            async with sessions() as session:
+                missing_store = SqlAlchemyIdentityStore(session)
+                missing = await get_processing_consent(missing_store, owner_id=owner_id)
+                assert missing.state == "required" and missing.revision == 0
+                assert not await authorize_processing_consent(
+                    missing_store,
+                    owner_id=owner_id,
+                    authorization=ProcessingAuthorization(
+                        owner_id=owner_id,
+                        grant_id=uuid4(),
+                        policy_version=PROCESSING_CONSENT_POLICY_VERSION,
+                    ),
+                )
+
+            async with sessions() as session, session.begin():
+                store = SqlAlchemyIdentityStore(session)
+                update_id = await _add_consent_inbox(
+                    session, owner_id=owner_id, telegram_user_id=telegram_user_id
+                )
+                first = await accept_processing_consent(
+                    store,
+                    owner_id=owner_id,
+                    expected_revision=0,
+                    policy_version=PROCESSING_CONSENT_POLICY_VERSION,
+                    language="en",
+                    accepted_at=now,
+                    telegram_user_id=telegram_user_id,
+                    inbox_update_id=update_id,
+                )
+                assert first.state == "granted" and first.revision == 1
+                assert first.accepted_telegram_user_id == telegram_user_id
+                assert first.accepted_update_id == update_id
+                first_grant_id = first.grant_id
+                assert first_grant_id is not None
+
+            current_auth = ProcessingAuthorization(
+                owner_id=owner_id,
+                grant_id=first_grant_id,
+                policy_version=PROCESSING_CONSENT_POLICY_VERSION,
+            )
+            async with sessions() as session:
+                store = SqlAlchemyIdentityStore(session)
+                assert await authorize_processing_consent(
+                    store, owner_id=owner_id, authorization=current_auth
+                )
+                assert not await authorize_processing_consent(
+                    store, owner_id=uuid4(), authorization=current_auth
+                )
+                assert not await authorize_processing_consent(
+                    store,
+                    owner_id=owner_id,
+                    authorization=ProcessingAuthorization(
+                        owner_id=owner_id,
+                        grant_id=first_grant_id,
+                        policy_version="stale-policy",
+                    ),
+                )
+            with pytest.raises(ProcessingConsentConflict, match="policy is stale"):
+                async with sessions() as session, session.begin():
+                    update_id = await _add_consent_inbox(
+                        session, owner_id=owner_id, telegram_user_id=telegram_user_id
+                    )
+                    await accept_processing_consent(
+                        SqlAlchemyIdentityStore(session),
+                        owner_id=owner_id,
+                        expected_revision=1,
+                        policy_version="stale-policy",
+                        language="en",
+                        accepted_at=now,
+                        telegram_user_id=telegram_user_id,
+                        inbox_update_id=update_id,
+                    )
+
+            async with sessions() as session, session.begin():
+                revoked = await revoke_processing_consent(
+                    SqlAlchemyIdentityStore(session),
+                    owner_id=owner_id,
+                    expected_revision=1,
+                    expected_grant_id=first_grant_id,
+                    expected_policy_version=PROCESSING_CONSENT_POLICY_VERSION,
+                    revoked_at=datetime.now(UTC),
+                )
+                assert revoked.state == "revoked" and revoked.revision == 2
+            async with sessions() as session, session.begin():
+                store = SqlAlchemyIdentityStore(session)
+                update_id = await _add_consent_inbox(
+                    session, owner_id=owner_id, telegram_user_id=telegram_user_id
+                )
+                second = await accept_processing_consent(
+                    store,
+                    owner_id=owner_id,
+                    expected_revision=2,
+                    policy_version=PROCESSING_CONSENT_POLICY_VERSION,
+                    language="ru",
+                    accepted_at=datetime.now(UTC),
+                    telegram_user_id=telegram_user_id,
+                    inbox_update_id=update_id,
+                )
+                assert second.state == "granted" and second.revision == 3
+                assert second.grant_id is not None and second.grant_id != first_grant_id
+                assert not await authorize_processing_consent(
+                    store, owner_id=owner_id, authorization=current_auth
+                )
+                assert await invalidate_restored_processing_consent(store, owner_id=owner_id)
+                assert not await invalidate_restored_processing_consent(store, owner_id=owner_id)
+                required = await get_processing_consent(store, owner_id=owner_id)
+                assert required.state == "required" and required.revision == 4
+                assert required.grant_id is None and required.policy_version is None
+
+            async with sessions() as session, session.begin():
+                deleted = await purge_identity_owner(session, owner_id)
+                assert deleted >= 1
+            async with sessions() as session:
+                purged = await get_processing_consent(
+                    SqlAlchemyIdentityStore(session), owner_id=owner_id
+                )
+                assert purged.state == "required" and purged.revision == 0
+        finally:
+            await engine.dispose()
+
+    run_local_async(scenario)
+
+
+def test_missing_row_grant_and_revoke_race_is_serialized(
+    onboarding_database: str,
+) -> None:
+    async def scenario() -> None:
+        engine = create_engine(onboarding_database)
+        sessions = create_session_factory(engine)
+        owner_id = uuid4()
+        telegram_user_id = 4_503_599_627_370_000
+        now = datetime.now(UTC)
+        try:
+            async with sessions() as session, session.begin():
+                update_id = await _add_consent_inbox(
+                    session, owner_id=owner_id, telegram_user_id=telegram_user_id
+                )
+
+            barrier = asyncio.Barrier(2)
+
+            async def grant():
+                async with sessions() as session, session.begin():
+                    await barrier.wait()
+                    return await accept_processing_consent(
+                        SqlAlchemyIdentityStore(session),
+                        owner_id=owner_id,
+                        expected_revision=0,
+                        policy_version=PROCESSING_CONSENT_POLICY_VERSION,
+                        language="en",
+                        accepted_at=now,
+                        telegram_user_id=telegram_user_id,
+                        inbox_update_id=update_id,
+                    )
+
+            async def revoke_missing():
+                async with sessions() as session, session.begin():
+                    await barrier.wait()
+                    return await revoke_processing_consent(
+                        SqlAlchemyIdentityStore(session),
+                        owner_id=owner_id,
+                        expected_revision=0,
+                        expected_grant_id=uuid4(),
+                        expected_policy_version=PROCESSING_CONSENT_POLICY_VERSION,
+                        revoked_at=datetime.now(UTC),
+                    )
+
+            grant_task = asyncio.create_task(grant())
+            revoke_task = asyncio.create_task(revoke_missing())
+            try:
+                results = await asyncio.wait_for(
+                    asyncio.gather(grant_task, revoke_task, return_exceptions=True),
+                    timeout=5,
+                )
+            finally:
+                for task in (grant_task, revoke_task):
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(grant_task, revoke_task, return_exceptions=True)
+            assert sum(not isinstance(result, BaseException) for result in results) == 1
+            assert sum(isinstance(result, ProcessingConsentConflict) for result in results) == 1
+            async with sessions() as session:
+                current = await get_processing_consent(
+                    SqlAlchemyIdentityStore(session), owner_id=owner_id
+                )
+                assert current.state == "granted" and current.revision == 1
+        finally:
+            await engine.dispose()
+
+    run_local_async(scenario)
+
+
+def test_authorization_and_withdrawal_hold_the_owner_fence_through_commit(
+    onboarding_database: str,
+) -> None:
+    async def scenario() -> None:
+        engine = create_engine(onboarding_database)
+        sessions = create_session_factory(engine)
+        owner_id = uuid4()
+        telegram_user_id = 4_503_599_627_370_000
+        tasks: list[asyncio.Task[object]] = []
+        release_authorization = asyncio.Event()
+        release_withdrawal = asyncio.Event()
+
+        async def wait_until_blocked(blocked_pid: int, blocker_pid: int) -> None:
+            async def observe() -> None:
+                while True:
+                    async with sessions() as monitor:
+                        blockers = await monitor.scalar(
+                            text("SELECT pg_blocking_pids(:blocked_pid)"),
+                            {"blocked_pid": blocked_pid},
+                        )
+                    if blocker_pid in (blockers or []):
+                        return
+                    await asyncio.sleep(0.01)
+
+            await asyncio.wait_for(observe(), timeout=5)
+
+        try:
+            async with sessions() as session, session.begin():
+                inbox_id = await _add_consent_inbox(
+                    session, owner_id=owner_id, telegram_user_id=telegram_user_id
+                )
+                granted = await accept_processing_consent(
+                    SqlAlchemyIdentityStore(session),
+                    owner_id=owner_id,
+                    expected_revision=0,
+                    policy_version=PROCESSING_CONSENT_POLICY_VERSION,
+                    language="en",
+                    accepted_at=datetime.now(UTC),
+                    telegram_user_id=telegram_user_id,
+                    inbox_update_id=inbox_id,
+                )
+            granted_id = granted.grant_id
+            assert granted_id is not None
+            authorization = ProcessingAuthorization(
+                owner_id=owner_id,
+                grant_id=granted_id,
+                policy_version=PROCESSING_CONSENT_POLICY_VERSION,
+            )
+
+            authorized = asyncio.Event()
+            revoke_started = asyncio.Event()
+            authorization_backend_pid: list[int] = []
+            revoke_backend_pid: list[int] = []
+
+            async def hold_authorization() -> None:
+                async with sessions() as session, session.begin():
+                    assert await authorize_processing_consent(
+                        SqlAlchemyIdentityStore(session),
+                        owner_id=owner_id,
+                        authorization=authorization,
+                    )
+                    pid = await session.scalar(text("SELECT pg_backend_pid()"))
+                    assert isinstance(pid, int)
+                    authorization_backend_pid.append(pid)
+                    authorized.set()
+                    await release_authorization.wait()
+
+            async def withdraw_after_authorization() -> None:
+                await authorized.wait()
+                async with sessions() as session, session.begin():
+                    pid = await session.scalar(text("SELECT pg_backend_pid()"))
+                    assert isinstance(pid, int)
+                    revoke_backend_pid.append(pid)
+                    revoke_started.set()
+                    await revoke_processing_consent(
+                        SqlAlchemyIdentityStore(session),
+                        owner_id=owner_id,
+                        expected_revision=1,
+                        expected_grant_id=granted_id,
+                        expected_policy_version=PROCESSING_CONSENT_POLICY_VERSION,
+                        revoked_at=datetime.now(UTC),
+                    )
+
+            authorization_task = asyncio.create_task(hold_authorization())
+            tasks.append(authorization_task)
+            await asyncio.wait_for(authorized.wait(), timeout=5)
+            withdrawal_task = asyncio.create_task(withdraw_after_authorization())
+            tasks.append(withdrawal_task)
+            await asyncio.wait_for(revoke_started.wait(), timeout=5)
+            await wait_until_blocked(
+                revoke_backend_pid[0], authorization_backend_pid[0]
+            )
+            release_authorization.set()
+            await asyncio.wait_for(asyncio.gather(authorization_task, withdrawal_task), timeout=5)
+            async with sessions() as session:
+                revoked = await get_processing_consent(
+                    SqlAlchemyIdentityStore(session), owner_id=owner_id
+                )
+                assert revoked.state == "revoked" and revoked.revision == 2
+
+            async with sessions() as session, session.begin():
+                inbox_id = await _add_consent_inbox(
+                    session, owner_id=owner_id, telegram_user_id=telegram_user_id
+                )
+                regranted = await accept_processing_consent(
+                    SqlAlchemyIdentityStore(session),
+                    owner_id=owner_id,
+                    expected_revision=2,
+                    policy_version=PROCESSING_CONSENT_POLICY_VERSION,
+                    language="en",
+                    accepted_at=datetime.now(UTC),
+                    telegram_user_id=telegram_user_id,
+                    inbox_update_id=inbox_id,
+                )
+            regranted_id = regranted.grant_id
+            assert regranted_id is not None and regranted_id != granted_id
+            fresh_authorization = ProcessingAuthorization(
+                owner_id=owner_id,
+                grant_id=regranted_id,
+                policy_version=PROCESSING_CONSENT_POLICY_VERSION,
+            )
+            withdrawal_held = asyncio.Event()
+            authorization_started = asyncio.Event()
+            withdrawal_backend_pid: list[int] = []
+            authorization_backend_pid = []
+            authorization_result: list[bool] = []
+
+            async def hold_withdrawal() -> None:
+                async with sessions() as session, session.begin():
+                    await revoke_processing_consent(
+                        SqlAlchemyIdentityStore(session),
+                        owner_id=owner_id,
+                        expected_revision=3,
+                        expected_grant_id=regranted_id,
+                        expected_policy_version=PROCESSING_CONSENT_POLICY_VERSION,
+                        revoked_at=datetime.now(UTC),
+                    )
+                    pid = await session.scalar(text("SELECT pg_backend_pid()"))
+                    assert isinstance(pid, int)
+                    withdrawal_backend_pid.append(pid)
+                    withdrawal_held.set()
+                    await release_withdrawal.wait()
+
+            async def authorize_after_withdrawal() -> None:
+                await withdrawal_held.wait()
+                async with sessions() as session, session.begin():
+                    pid = await session.scalar(text("SELECT pg_backend_pid()"))
+                    assert isinstance(pid, int)
+                    authorization_backend_pid.append(pid)
+                    authorization_started.set()
+                    authorization_result.append(
+                        await authorize_processing_consent(
+                            SqlAlchemyIdentityStore(session),
+                            owner_id=owner_id,
+                            authorization=fresh_authorization,
+                        )
+                    )
+
+            withdrawal_task = asyncio.create_task(hold_withdrawal())
+            tasks.append(withdrawal_task)
+            await asyncio.wait_for(withdrawal_held.wait(), timeout=5)
+            authorization_task = asyncio.create_task(authorize_after_withdrawal())
+            tasks.append(authorization_task)
+            await asyncio.wait_for(authorization_started.wait(), timeout=5)
+            await wait_until_blocked(
+                authorization_backend_pid[0], withdrawal_backend_pid[0]
+            )
+            release_withdrawal.set()
+            await asyncio.wait_for(asyncio.gather(withdrawal_task, authorization_task), timeout=5)
+            assert authorization_result == [False]
+        finally:
+            release_authorization.set()
+            release_withdrawal.set()
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            await engine.dispose()
+
+    run_local_async(scenario)
+
+
+def test_migration_does_not_backfill_existing_profiles(
+    onboarding_database: str,
+) -> None:
+    async def scenario() -> None:
+        engine = create_engine(onboarding_database)
+        sessions = create_session_factory(engine)
+        owner_id = uuid4()
+        try:
+            command.downgrade(
+                _alembic_config(onboarding_database), "platform_recovery_gate_0001"
+            )
+            async with sessions() as session, session.begin():
+                saved = await SqlAlchemyIdentityStore(session).save_preferences(
+                    owner_id=owner_id,
+                    expected_version=None,
+                    preferences=Preferences(language="en", home_zone="Asia/Almaty"),
+                )
+                assert saved is not None
+            command.upgrade(_alembic_config(onboarding_database), "head")
+            async with sessions() as session:
+                assert await session.get(PreferencesRecord, owner_id) is not None
+                assert await session.get(ProcessingConsentRecord, owner_id) is None
+        finally:
+            await engine.dispose()
+
+    run_local_async(scenario)
+
+
+def test_initial_consent_details_and_callback_failure_roll_back_all_effects(
+    onboarding_database: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def scenario() -> None:
+        engine = create_engine(onboarding_database)
+        sessions = create_session_factory(engine)
+        owner_id = None
+        telegram_user_id = 4_503_599_627_370_000
+        bot_id = 8765432 + uuid4().int % 100_000
+        try:
+
+            async def dispatch(update_id: int, update: dict[str, object]) -> dict[str, object]:
+                nonlocal owner_id
+                now = datetime.now(UTC)
+                update["update_id"] = update_id
+                async with sessions() as session, session.begin():
+                    receipt = await persist_update(
+                        session,
+                        bot_id=bot_id,
+                        payload=update,
+                        owner_resolver=PostgresTelegramOwnerResolver(),
+                    )
+                    assert receipt is not None and receipt.accepted
+                    owner_id = await session.scalar(
+                        select(TelegramOwnerRecord.owner_id).where(
+                            TelegramOwnerRecord.bot_id == bot_id,
+                            TelegramOwnerRecord.telegram_user_id == telegram_user_id,
+                        )
+                    )
+                    assert owner_id is not None
+                claim = await claim_application_job(sessions, worker_id="consent-atomicity-test")
+                assert claim is not None
+                await telegram_application_worker.process_application_job(
+                    sessions, claim, now=now
+                )
+                async with sessions() as session:
+                    event = await session.scalar(
+                        select(OutboxEvent)
+                        .where(
+                            OutboxEvent.owner_id == claim.owner_id,
+                            OutboxEvent.event_type == "telegram.reply.requested",
+                            OutboxEvent.causation_id == claim.job_id,
+                        )
+                    )
+                    assert event is not None
+                    payload = event.payload.get("payload", event.payload)
+                    return cast(dict[str, object], payload)
+
+            async def message(update_id: int, text: str) -> dict[str, object]:
+                return await dispatch(
+                    update_id,
+                    {
+                        "message": {
+                            "message_id": update_id,
+                            "date": int(datetime.now(UTC).timestamp()),
+                            "chat": {"id": telegram_user_id, "type": "private"},
+                            "from": {"id": telegram_user_id, "is_bot": False},
+                            "text": text,
+                        }
+                    },
+                )
+
+            async def click_as(
+                update_id: int, actor_id: int, token: str
+            ) -> dict[str, object]:
+                return await dispatch(
+                    update_id,
+                    {
+                        "callback_query": {
+                            "id": f"consent-atomic-{update_id}",
+                            "from": {"id": actor_id, "is_bot": False},
+                            "message": {
+                                "message_id": update_id,
+                                "chat": {"id": actor_id, "type": "private"},
+                            },
+                            "data": token,
+                        }
+                    },
+                )
+
+            async def click(update_id: int, token: str) -> dict[str, object]:
+                return await click_as(update_id, telegram_user_id, token)
+
+            privacy = await message(9_000, "/privacy")
+            assert "has not been given" in str(privacy["plain_text"])
+            await message(9_001, "/start")
+            await message(9_002, "en")
+            await message(9_003, "Asia/Almaty")
+            await message(9_004, "suggested")
+            await message(9_005, "suggested")
+            plain_confirmation = await message(9_006, "yes")
+            assert owner_id is not None
+            async with sessions() as session:
+                assert await session.get(PreferencesRecord, owner_id) is None
+                draft = await session.get(OnboardingRecord, owner_id)
+                assert draft is not None and draft.step == "confirm"
+                before_details = (draft.draft_id, draft.version, dict(draft.draft))
+            keyboard = plain_confirmation["reply_markup"]["inline_keyboard"]
+            details_token = next(
+                button["callback_data"]
+                for row in keyboard
+                for button in row
+                if button["text"] == "Details"
+            )
+            details = await click(9_007, details_token)
+            assert "OpenRouter" in str(details["plain_text"])
+            details_keyboard = details["reply_markup"]["inline_keyboard"]
+            back_token = next(
+                button["callback_data"]
+                for row in details_keyboard
+                for button in row
+                if button["text"] == "Back to setup"
+            )
+            await click(9_008, back_token)
+            async with sessions() as session:
+                unchanged = await session.get(OnboardingRecord, owner_id)
+                assert unchanged is not None
+                assert (
+                    unchanged.draft_id, unchanged.version, dict(unchanged.draft)
+                ) == before_details
+                assert await session.get(PreferencesRecord, owner_id) is None
+
+            original_confirmation = await message(9_009, "confirm")
+            original_keyboard = original_confirmation["reply_markup"]["inline_keyboard"]
+            accept_token = next(
+                button["callback_data"]
+                for row in original_keyboard
+                for button in row
+                if button["text"] == "Agree and finish setup"
+            )
+            cancel_token = next(
+                button["callback_data"]
+                for row in original_keyboard
+                for button in row
+                if button["text"] == "Cancel"
+            )
+            await click_as(9_010, telegram_user_id + 1, accept_token)
+            async with sessions() as session:
+                assert await session.get(PreferencesRecord, owner_id) is None
+                assert await session.get(ProcessingConsentRecord, owner_id) is None
+            await click(9_011, cancel_token)
+            async with sessions() as session:
+                assert await session.get(OnboardingRecord, owner_id) is None
+            await message(9_012, "/start")
+            await message(9_013, "en")
+            await message(9_014, "Asia/Almaty")
+            await message(9_015, "suggested")
+            await message(9_016, "suggested")
+            renewed_confirmation = await message(9_017, "confirm")
+            renewed_keyboard = renewed_confirmation["reply_markup"]["inline_keyboard"]
+            renewed_accept_token = next(
+                button["callback_data"]
+                for row in renewed_keyboard
+                for button in row
+                if button["text"] == "Agree and finish setup"
+            )
+            with monkeypatch.context() as stale_policy:
+                stale_policy.setattr(
+                    telegram_application_worker,
+                    "PROCESSING_CONSENT_POLICY_VERSION",
+                    "processing-consent-v2",
+                )
+                await click(9_018, renewed_accept_token)
+            async with sessions() as session:
+                assert await session.get(PreferencesRecord, owner_id) is None
+                assert await session.get(ProcessingConsentRecord, owner_id) is None
+                current_draft = await session.get(OnboardingRecord, owner_id)
+                assert current_draft is not None and current_draft.step == "confirm"
+
+            refreshed_confirmation = await message(9_019, "confirm")
+            refreshed_keyboard = refreshed_confirmation["reply_markup"]["inline_keyboard"]
+            current_accept_token = next(
+                button["callback_data"]
+                for row in refreshed_keyboard
+                for button in row
+                if button["text"] == "Agree and finish setup"
+            )
+            await click(9_020, accept_token)
+            async with sessions() as session:
+                assert await session.get(PreferencesRecord, owner_id) is None
+                assert await session.get(ProcessingConsentRecord, owner_id) is None
+                current_draft = await session.get(OnboardingRecord, owner_id)
+                assert current_draft is not None and current_draft.step == "confirm"
+
+            complete_onboarding = SqlAlchemyIdentityStore.complete_onboarding
+
+            async def fail_after_trial_write(self, *args, **kwargs):
+                await complete_onboarding(self, *args, **kwargs)
+                raise RuntimeError("forced late onboarding failure")
+
+            monkeypatch.setattr(
+                SqlAlchemyIdentityStore, "complete_onboarding", fail_after_trial_write
+            )
+            with pytest.raises(RuntimeError, match="forced late onboarding failure"):
+                await click(9_021, current_accept_token)
+
+            async with sessions() as session:
+                assert await session.get(PreferencesRecord, owner_id) is None
+                assert await session.get(ProcessingConsentRecord, owner_id) is None
+                assert await session.get(TrialActivationRecord, owner_id) is None
+                token_hash = hashlib.sha256(current_accept_token.encode("utf-8")).hexdigest()
+                token_record = await session.get(TelegramCallbackTokenRecord, token_hash)
+                assert token_record is not None and token_record.consumed_at is None
+                pending = await session.get(OnboardingRecord, owner_id)
+                assert pending is not None and pending.step == "confirm"
         finally:
             await engine.dispose()
 

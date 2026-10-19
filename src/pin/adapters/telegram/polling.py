@@ -14,6 +14,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from pin.adapters.telegram.ingress import (
+    OwnerMappingRetry,
     PostgresTelegramOwnerResolver,
     TelegramIngressBotRecord,
     TelegramOwnerResolver,
@@ -119,7 +120,7 @@ async def poll_updates(
                                     locked_record.next_update_offset = max(
                                         locked_record.next_update_offset or 0, next_offset
                                     )
-                    except (SQLAlchemyError, TimeoutError):
+                    except (OwnerMappingRetry, SQLAlchemyError, TimeoutError):
                         logger.error("telegram_poll_persist_failed")
                         retry_batch = True
                         break
