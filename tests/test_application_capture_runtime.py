@@ -19,8 +19,10 @@ from pin.contexts.conversation.domain.capture import (
 )
 from pin.contexts.conversation.domain.proposals import FailureCategory, InputKind, SourceLanguage
 from pin.contexts.identity.api import PreferencesSnapshot
+from pin.contexts.identity.application.contracts import ProcessingAuthorization
+from pin.contexts.identity.application.processing_consent import PROCESSING_CONSENT_POLICY_VERSION
 from pin.platform.jobs import JobClaim, JobLane
-from pin.platform.models import InboxUpdate
+from pin.platform.models import InboxUpdate, Job
 
 
 class _Session:
@@ -34,13 +36,15 @@ class _Session:
         assert self.active
         return _EmptyResult()
 
-    async def scalar(self, _statement: object) -> UUID | None:
+    async def scalar(self, statement: object) -> UUID | None:
         assert self.active
         self.scalar_calls += 1
-        # A missing Billing row is valid before trial activation. The next
-        # scalar is the live-job lease fence; later lookup finds no pending
-        # mutation clarification for this owner.
-        return uuid4() if self.scalar_calls == 2 else None
+        # Resolve only the live-job lease query. Billing lifecycle and pending
+        # mutation reads are represented by their own runtime contracts.
+        descriptions = getattr(statement, "column_descriptions", ())
+        if descriptions and descriptions[0].get("entity") is Job:
+            return uuid4()
+        return None
 
 
 class _EmptyResult:
@@ -96,7 +100,29 @@ async def test_capture_runtime_calls_injected_provider_between_short_transaction
         def __call__(self) -> _SessionContext:
             return _SessionContext(session)
 
+    processing_grant_id = uuid4()
+
+    class AccessUsage:
+        async def lock_account_lifecycle(self, requested_owner: UUID) -> object:
+            assert session.active
+            assert requested_owner == owner_id
+            return capture.AccountLifecycle.PRESENT
+
     class Identity:
+        async def lock_processing_consent(self, requested_owner: UUID) -> None:
+            assert session.active
+            assert requested_owner == owner_id
+
+        async def authorize_processing_consent(
+            self, requested_owner: UUID, authorization: ProcessingAuthorization
+        ) -> bool:
+            assert session.active
+            assert requested_owner == owner_id
+            assert authorization.owner_id == owner_id
+            assert authorization.grant_id == processing_grant_id
+            assert authorization.policy_version == PROCESSING_CONSENT_POLICY_VERSION
+            return True
+
         async def get_preferences(self, requested_owner: UUID) -> PreferencesSnapshot:
             assert requested_owner == owner_id
             return profile
@@ -120,6 +146,8 @@ async def test_capture_runtime_calls_injected_provider_between_short_transaction
     )
     context = ConversationContext(
         owner_id=owner_id,
+        processing_grant_id=processing_grant_id,
+        processing_policy_version=PROCESSING_CONSENT_POLICY_VERSION,
         request_id=f"telegram-inbox:{inbox_id}",
         language=SourceLanguage.EN,
         input_kind=InputKind.TEXT,
@@ -132,7 +160,15 @@ async def test_capture_runtime_calls_injected_provider_between_short_transaction
 
     async def capture_inbound(_session: _Session, _claim: object) -> capture._Inbound:
         return capture._Inbound(
-            cast(InboxUpdate, SimpleNamespace(id=inbox_id, owner_id=owner_id)),
+            cast(
+                InboxUpdate,
+                SimpleNamespace(
+                    id=inbox_id,
+                    owner_id=owner_id,
+                    processing_grant_id=processing_grant_id,
+                    processing_policy_version=PROCESSING_CONSENT_POLICY_VERSION,
+                ),
+            ),
             telegram_user_id=101,
             text="Clean the kitchen",
             callback_data=None,
@@ -172,6 +208,7 @@ async def test_capture_runtime_calls_injected_provider_between_short_transaction
 
     monkeypatch.setattr(capture, "_capture_inbound", capture_inbound)
     monkeypatch.setattr(capture, "SqlAlchemyIdentityStore", lambda _session: Identity())
+    monkeypatch.setattr(capture, "SqlAlchemyAccessUsageStore", lambda _session: AccessUsage())
     monkeypatch.setattr(capture, "SqlAlchemyCaptureStore", lambda _session: object())
     monkeypatch.setattr(capture, "prepare_interpretation", prepare)
     monkeypatch.setattr(capture, "finish_interpretation", finish)
@@ -192,6 +229,8 @@ async def test_capture_runtime_calls_injected_provider_between_short_transaction
         token=uuid4(),
         fencing_generation=1,
         lease_until=at + timedelta(seconds=45),
+        processing_grant_id=processing_grant_id,
+        processing_policy_version=PROCESSING_CONSENT_POLICY_VERSION,
     )
     handled = await capture.process_capture_application_job(
         Sessions(),  # type: ignore[arg-type]
