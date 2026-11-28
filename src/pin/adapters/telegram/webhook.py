@@ -17,6 +17,7 @@ from pin.adapters.telegram.ingress import (
     PostgresTelegramOwnerResolver,
     TelegramOwnerResolver,
     acknowledge_callback,
+    acknowledge_widget_query,
     persist_update_with_owner_retry,
     select_ingress_mode,
     validate_update,
@@ -121,6 +122,16 @@ def create_webhook_app(
 
         if receipt is not None and receipt.callback_query_id is not None:
             await acknowledge_callback(bot, receipt.callback_query_id)
+        if (
+            receipt is not None
+            and receipt.widget_query_id is not None
+            and receipt.widget_query_ack_data is not None
+        ):
+            await acknowledge_widget_query(
+                bot,
+                receipt.widget_query_id,
+                data=receipt.widget_query_ack_data,
+            )
         if pre_checkout_query(update) is not None:
             try:
                 await answer_pre_checkout(

@@ -9,6 +9,7 @@ from aiogram import Bot
 from aiogram.exceptions import (
     TelegramBadRequest,
     TelegramForbiddenError,
+    TelegramNotFound,
     TelegramRetryAfter,
 )
 from aiogram.types import (
@@ -23,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from pin.adapters.telegram.ingress import TelegramOwnerRecord
 from pin.adapters.telegram.presentation.delivery import send_formatted_message
+from pin.adapters.telegram.widget_api import SendWidget
 from pin.contexts.billing.domain.payments import STARS_CURRENCY, STARS_PERIOD_SECONDS, STARS_PRICE
 from pin.contexts.notifications.application.delivery import (
     KnownDeliveryFailure,
@@ -69,7 +71,30 @@ class TelegramReminderTransport:
     async def send_reply(self, message: TelegramReplySend) -> str:
         try:
             markup = _parse_markup(message.reply_markup)
-            if message.parse_mode is None:
+            if message.widget_html is not None:
+                try:
+                    result = await self._bot(
+                        SendWidget(
+                            chat_id=message.destination_id,
+                            html=message.widget_html,
+                            caption=message.plain_text,
+                            reply_markup=markup
+                            if isinstance(markup, InlineKeyboardMarkup)
+                            else None,
+                            allow_queries=True,
+                        )
+                    )
+                except (TelegramBadRequest, TelegramNotFound):
+                    try:
+                        result = await self._bot.send_message(
+                            chat_id=message.destination_id,
+                            text=message.plain_text,
+                            parse_mode=None,
+                            reply_markup=markup,
+                        )
+                    except TelegramNotFound as error:
+                        raise KnownDeliveryFailure("provider_rejected_message") from error
+            elif message.parse_mode is None:
                 result = await self._bot.send_message(
                     chat_id=message.destination_id,
                     text=message.plain_text,

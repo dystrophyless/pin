@@ -20,6 +20,7 @@ from pin.contexts.identity.api import (
     OnboardingDraft,
     Preferences,
     PreferencesSnapshot,
+    begin_preferences_edit,
 )
 from pin.contexts.identity.application.onboarding import OnboardingResult
 from pin.contexts.identity.infrastructure.store import SqlAlchemyIdentityStore
@@ -119,6 +120,33 @@ async def begin_home_zone_review(
     if changed is None:
         return _stale_result(profile, draft.values)
     return _scope_choice(profile, changed.values)
+
+
+async def preview_device_home_zone(
+    session: AsyncSession,
+    identity: IdentityStore,
+    *,
+    profile: PreferencesSnapshot,
+    zone: str,
+    now: datetime,
+) -> HomeZoneRuntimeResult:
+    await begin_preferences_edit(identity, owner_id=profile.owner_id)
+    draft = await identity.get_onboarding(profile.owner_id)
+    if draft is None or draft.step != "language" or draft.base_profile_version != profile.version:
+        return _stale_result(profile, None)
+    flow: dict[str, object] = {
+        "state": "scope", "occurrences": [], "series": [], "qualified": [],
+    }
+    changed = await identity.advance_onboarding(
+        draft,
+        step="confirm",
+        values={**draft.values, "home_zone": zone, _FLOW_KEY: flow},
+    )
+    if changed is None:
+        return _stale_result(profile, None)
+    return await _create_preview(
+        session, identity, draft=changed, profile=profile, now=now, flow=flow,
+    )
 
 
 async def handle_home_zone_action(

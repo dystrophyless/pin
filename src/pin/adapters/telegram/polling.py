@@ -19,6 +19,7 @@ from pin.adapters.telegram.ingress import (
     TelegramIngressBotRecord,
     TelegramOwnerResolver,
     acknowledge_callback,
+    acknowledge_widget_query,
     persist_update,
     select_ingress_mode,
     validate_update,
@@ -32,7 +33,7 @@ from pin.adapters.telegram.payments import (
 )
 
 logger = getLogger("pin.telegram.polling")
-ALLOWED_UPDATES = ["message", "callback_query", "pre_checkout_query"]
+ALLOWED_UPDATES = ["message", "callback_query", "widget_query", "pre_checkout_query"]
 POLL_TIMEOUT_SECONDS = 25
 
 
@@ -85,6 +86,8 @@ async def poll_updates(
                         raise RuntimeError("Telegram returned an invalid update identifier")
                     next_offset = update_id + 1
                     callback_id: str | None = None
+                    widget_query_id: str | None = None
+                    widget_query_ack_data: str | None = None
                     is_pre_checkout = pre_checkout_query(payload) is not None
                     try:
                         if is_pre_checkout:
@@ -116,7 +119,13 @@ async def poll_updates(
                                 )
                                 if receipt is not None:
                                     callback_id = receipt.callback_query_id
-                                if callback_id is None and not is_pre_checkout:
+                                    widget_query_id = receipt.widget_query_id
+                                    widget_query_ack_data = receipt.widget_query_ack_data
+                                if (
+                                    callback_id is None
+                                    and widget_query_id is None
+                                    and not is_pre_checkout
+                                ):
                                     locked_record.next_update_offset = max(
                                         locked_record.next_update_offset or 0, next_offset
                                     )
@@ -126,6 +135,11 @@ async def poll_updates(
                         break
                     if callback_id is not None:
                         await acknowledge_callback(bot, callback_id)
+                    elif widget_query_id is not None and widget_query_ack_data is not None:
+                        await acknowledge_widget_query(
+                            bot, widget_query_id, data=widget_query_ack_data
+                        )
+                    if callback_id is not None or widget_query_id is not None:
                         async with sessions() as session, session.begin():
                             locked_record = await session.scalar(
                                 select(TelegramIngressBotRecord)

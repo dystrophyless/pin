@@ -49,6 +49,7 @@ class TelegramReplySend:
     plain_text: str
     reply_markup: dict[str, object] | None = None
     parse_mode: Literal["MarkdownV2"] | None = "MarkdownV2"
+    widget_html: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

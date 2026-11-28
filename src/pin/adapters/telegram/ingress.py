@@ -26,6 +26,7 @@ from pin.platform.jobs import InboxResult, JobLane, receive_update
 
 logger = getLogger("pin.telegram.ingress")
 CALLBACK_ACK_TIMEOUT_SECONDS = 2
+WIDGET_QUERY_ACK_TIMEOUT_SECONDS = 2
 
 
 async def acknowledge_callback(bot: Bot, callback_query_id: str) -> bool:
@@ -39,6 +40,22 @@ async def acknowledge_callback(bot: Bot, callback_query_id: str) -> bool:
         logger.info("telegram_callback_ack_terminal_rejection")
     except Exception as error:
         logger.warning("telegram_callback_ack_failed error=%s", type(error).__name__)
+    return False
+
+
+async def acknowledge_widget_query(bot: Bot, widget_query_id: str, *, data: str) -> bool:
+    """Return a short widget response after its durable ingress decision."""
+    from pin.adapters.telegram.widget_api import AnswerWidgetQuery
+
+    try:
+        return await bot(
+            AnswerWidgetQuery(widget_query_id=widget_query_id, data=data),
+            request_timeout=WIDGET_QUERY_ACK_TIMEOUT_SECONDS,
+        )
+    except TelegramBadRequest:
+        logger.info("telegram_widget_query_ack_terminal_rejection")
+    except Exception as error:
+        logger.warning("telegram_widget_query_ack_failed error=%s", type(error).__name__)
     return False
 
 
@@ -195,18 +212,27 @@ class IngressReceipt:
     accepted: bool
     update_id: int
     callback_query_id: str | None = None
+    widget_query_id: str | None = None
+    widget_query_ack_data: str | None = None
 
 
 def validate_update(payload: object, bot: Bot) -> dict[str, Any]:
     if isinstance(payload, Update):
-        return cast(dict[str, Any], _trusted_model_dump(payload))
+        result = cast(dict[str, Any], _trusted_model_dump(payload))
+        extras = getattr(payload, "__pydantic_extra__", None)
+        if isinstance(extras, Mapping) and "widget_query" in extras:
+            result["widget_query"] = extras["widget_query"]
+        return result
     if not isinstance(payload, Mapping):
         raise ValueError("Telegram update must be an object")
     try:
         update = Update.model_validate(payload, context={"bot": bot})
     except Exception as error:
         raise ValueError("Telegram update is malformed") from error
-    return cast(dict[str, Any], _trusted_model_dump(update))
+    result = cast(dict[str, Any], _trusted_model_dump(update))
+    if "widget_query" in payload:
+        result["widget_query"] = payload["widget_query"]
+    return result
 
 
 def _trusted_model_dump(value: object, annotation: Any | None = None) -> Any:
@@ -256,8 +282,20 @@ async def persist_update(
     actor = private_actor(payload)
     if actor is None:
         callback_id = _callback_query_id(payload)
-        return IngressReceipt(False, update_id, callback_id) if callback_id else None
+        widget_id = _widget_query_id(payload)
+        return (
+            IngressReceipt(
+                False,
+                update_id,
+                callback_id,
+                widget_id,
+                '{"status":"invalid"}' if widget_id else None,
+            )
+            if callback_id or widget_id
+            else None
+        )
     telegram_user_id, update_type, callback_query_id = actor
+    widget_id = _widget_query_id(payload) if update_type == "widget_query" else None
     owner_id = await owner_resolver.resolve(
         session, bot_id=bot_id, telegram_user_id=telegram_user_id
     )
@@ -266,6 +304,12 @@ async def persist_update(
     )
     speech = update_type == "speech_message"
     fast_path = update_type in {"pre_checkout_query", "successful_payment"}
+    stored_payload = dict(payload)
+    if update_type == "widget_query":
+        query = payload.get("widget_query")
+        if not isinstance(query, Mapping):
+            raise ValueError("widget query is malformed")
+        stored_payload["widget_query"] = _normalized_widget_query(query)
     result: InboxResult = await receive_update(
         session,
         bot_id=bot_id,
@@ -280,13 +324,19 @@ async def persist_update(
             else None
         ),
         update_type=update_type,
-        payload=dict(payload),
+        payload=stored_payload,
         received_at=receipt_instant,
         lane=JobLane.SPEECH if speech else JobLane.APPLICATION,
         conversation_ordered=not fast_path,
         priority=100 if fast_path else 0,
     )
-    return IngressReceipt(result.accepted, update_id, callback_query_id)
+    return IngressReceipt(
+        result.accepted,
+        update_id,
+        callback_query_id,
+        widget_id,
+        '{"status":"queued"}' if widget_id else None,
+    )
 
 
 async def persist_update_with_owner_retry(
@@ -316,6 +366,12 @@ async def persist_update_with_owner_retry(
 
 def private_actor(update: Mapping[str, Any]) -> tuple[int, str, str | None] | None:
     """Return a private-chat actor and typed update, ignoring unsupported groups."""
+    widget = update.get("widget_query")
+    if isinstance(widget, Mapping):
+        actor_id = _private_widget_actor(widget)
+        if actor_id is not None:
+            return actor_id, "widget_query", None
+
     query = update.get("pre_checkout_query")
     if isinstance(query, Mapping):
         sender = query.get("from")
@@ -358,6 +414,69 @@ def private_actor(update: Mapping[str, Any]) -> tuple[int, str, str | None] | No
             kind = "successful_payment"
         return actor_id, kind, None
     return None
+
+
+def _private_widget_actor(query: Mapping[str, Any]) -> int | None:
+    """Accept only ordinary data requests attached to the sender's private message."""
+    if set(query) - {"id", "from", "chat", "message_id", "chat_instance", "type", "data"}:
+        return None
+    query_id = query.get("id")
+    sender = query.get("from")
+    chat = query.get("chat")
+    query_type = query.get("type")
+    data = query.get("data")
+    chat_instance = query.get("chat_instance")
+    if (
+        not isinstance(query_id, str)
+        or not query_id
+        or len(query_id) > 256
+        or not isinstance(sender, Mapping)
+        or sender.get("is_bot") is not False
+        or not isinstance(chat, Mapping)
+        or query_type != {"type": "data"}
+        or chat.get("type") != "private"
+        or not isinstance(chat_instance, str)
+        or not chat_instance
+        or not isinstance(data, str)
+        or not _widget_data_is_valid(data)
+    ):
+        return None
+    actor_id = _positive_id(sender.get("id"))
+    if actor_id is None or _positive_id(chat.get("id")) != actor_id:
+        return None
+    if _positive_id(query.get("message_id")) is None:
+        return None
+    return actor_id
+
+
+def _widget_data_is_valid(data: str) -> bool:
+    try:
+        return 1 <= len(data.encode("utf-8")) <= 64
+    except UnicodeEncodeError:
+        return False
+
+
+def _widget_query_id(update: Mapping[str, Any]) -> str | None:
+    query = update.get("widget_query")
+    if not isinstance(query, Mapping):
+        return None
+    query_id = query.get("id")
+    return query_id if isinstance(query_id, str) and 0 < len(query_id) <= 256 else None
+
+
+def _normalized_widget_query(query: Mapping[str, Any]) -> dict[str, Any]:
+    """Keep only the sender, private message binding, query ID and opaque data."""
+    sender = cast(Mapping[str, Any], query["from"])
+    chat = cast(Mapping[str, Any], query["chat"])
+    return {
+        "id": query["id"],
+        "from": {"id": sender["id"], "is_bot": False},
+        "chat": {"id": chat["id"], "type": "private"},
+        "message_id": query["message_id"],
+        "chat_instance": query["chat_instance"],
+        "type": query["type"],
+        "data": query["data"],
+    }
 
 
 def _positive_id(value: object) -> int | None:

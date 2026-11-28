@@ -42,6 +42,7 @@ from pin.adapters.telegram.presentation.capture import (
     capture_confirmation_callback_data,
     render_capture_response,
 )
+from pin.adapters.telegram.presentation.templates import processing_consent_required_text
 from pin.adapters.telegram.presentation.tokens import SqlAlchemyCallbackTokenStore
 from pin.adapters.telegram.support import with_owned_plans
 from pin.contexts.billing.api import (
@@ -175,7 +176,7 @@ async def process_capture_application_job(
     now: datetime,
     assistant: PlanningAssistant | None,
 ) -> bool:
-    """Handle capture text and callbacks; return False for onboarding/agenda work."""
+    """Handle capture text and callbacks; return False for settings and agenda work."""
     return await _process_capture_job(sessions, claim, now=now, assistant=assistant)
 
 
@@ -227,14 +228,18 @@ async def _process_capture_job(
             raise RuntimeError("capture inbox update has no trusted owner")
         preferences = await identity.get_preferences(owner_id)
         onboarding = await identity.get_onboarding(owner_id)
-        onboarding_active = onboarding is not None and onboarding.step != "complete"
+        editing_preferences = (
+            onboarding is not None
+            and onboarding.mode == "preferences"
+            and onboarding.step != "complete"
+        )
         language = preferences.language if preferences is not None else "ru"
 
         if (
             transcript is None
             and inbound.text is not None
             and preferences is not None
-            and not onboarding_active
+            and not editing_preferences
         ):
             words = inbound.text.strip().split(maxsplit=1)
             if len(words) == 1 and words[0].split("@", 1)[0].casefold() == "/cancel":
@@ -274,7 +279,7 @@ async def _process_capture_job(
             assistant is not None
             and inbound.text is not None
             and preferences is not None
-            and not onboarding_active
+            and not editing_preferences
             and (transcript is not None or not inbound.text.lstrip().startswith("/"))
             and (transcript is not None or agenda_command(inbound.text) is None)
         )
@@ -301,7 +306,7 @@ async def _process_capture_job(
                     session,
                     claim,
                     chat_id=telegram_user_id,
-                    text=_consent_required_text(language),
+                    text=processing_consent_required_text(language),
                     language=language,
                     now=at,
                 )
@@ -398,7 +403,7 @@ async def _process_capture_job(
                         session,
                         claim,
                         chat_id=telegram_user_id,
-                        text=_consent_required_text(language),
+                        text=processing_consent_required_text(language),
                         language=language,
                         now=at,
                     )
@@ -747,7 +752,7 @@ async def _process_capture_callback_job(
                     session,
                     claim,
                     chat_id=chat_id,
-                    text=_consent_required_text(current_language),
+                    text=processing_consent_required_text(current_language),
                     language=current_language,
                     now=now,
                 )
@@ -1013,14 +1018,6 @@ def _claim_authorization(claim: JobClaim) -> ProcessingAuthorization | None:
         return None
     return ProcessingAuthorization(
         claim.owner_id, claim.processing_grant_id, claim.processing_policy_version or ""
-    )
-
-
-def _consent_required_text(language: str) -> str:
-    return (
-        "Allow processing in /privacy before sending this task. Then send it again."
-        if language == "en"
-        else "Разрешите обработку в /privacy, затем отправьте задачу ещё раз."
     )
 
 

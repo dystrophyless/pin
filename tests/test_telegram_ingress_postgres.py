@@ -459,6 +459,81 @@ def test_webhook_callback_ack_waits_for_committed_receipt(
     run_local_async(scenario)
 
 
+def test_webhook_widget_ack_waits_for_normalized_durable_receipt(
+    ingress_database: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def scenario() -> None:
+        engine = create_engine(ingress_database)
+        sessions = create_session_factory(engine)
+        bot_id, user_id, update_id = _bot_id(), 420_007, 9_000_007
+        bot = Bot(BOT_TOKEN)
+        acknowledgements: list[str] = []
+
+        async def answer_widget_query(
+            _bot: Bot, method: object, *, request_timeout: int | None = None
+        ) -> bool:
+            assert request_timeout == 2
+            assert method.widget_query_id == "widget-durable"  # type: ignore[attr-defined]
+            assert method.data == '{"status":"queued"}'  # type: ignore[attr-defined]
+            async with sessions() as session:
+                record = await session.scalar(
+                    select(InboxUpdate).where(
+                        InboxUpdate.bot_id == bot_id,
+                        InboxUpdate.update_id == update_id,
+                    )
+                )
+                assert record is not None
+                assert record.update_type == "widget_query"
+                widget = record.payload["widget_query"]
+                assert widget["data"] == '{"timezone":"Europe/Paris"}'
+                assert widget["chat_instance"] == "private-instance"
+                assert widget["from"] == {"id": user_id, "is_bot": False}
+                assert widget["chat"] == {"id": user_id, "type": "private"}
+            acknowledgements.append(method.widget_query_id)  # type: ignore[attr-defined]
+            return True
+
+        monkeypatch.setattr(Bot, "__call__", answer_widget_query)
+        client = TestClient(
+            TestServer(
+                create_webhook_app(
+                    engine=engine,
+                    sessions=sessions,
+                    bot=bot,
+                    bot_id=bot_id,
+                    webhook_secret=WEBHOOK_SECRET,
+                )
+            )
+        )
+        payload = {
+            "update_id": update_id,
+            "widget_query": {
+                "id": "widget-durable",
+                "from": {
+                    "id": user_id,
+                    "is_bot": False,
+                    "first_name": "Test",
+                    "owner_id": "untrusted",
+                },
+                "chat": {"id": user_id, "type": "private", "owner_id": "untrusted"},
+                "message_id": update_id,
+                "chat_instance": "private-instance",
+                "type": {"type": "data"},
+                "data": '{"timezone":"Europe/Paris"}',
+            },
+        }
+        try:
+            await client.start_server()
+            response = await client.post(
+                "/telegram/webhook", json=payload, headers={SECRET_HEADER: WEBHOOK_SECRET}
+            )
+            assert response.status == 200
+            assert acknowledgements == ["widget-durable"]
+        finally:
+            await client.close()
+
+    run_local_async(scenario)
+
+
 @pytest.mark.parametrize("ack_failure", ["expired", "timeout"])
 def test_webhook_committed_callback_is_accepted_when_ack_fails(
     ingress_database: str, monkeypatch: pytest.MonkeyPatch, ack_failure: str

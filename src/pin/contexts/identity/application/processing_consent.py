@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import datetime
 from uuid import UUID
 
@@ -16,18 +15,6 @@ PROCESSING_CONSENT_LOCK_ACTION = "identity.processing_consent"
 
 class ProcessingConsentConflict(RuntimeError):
     """The caller acted on a consent revision or grant that is no longer current."""
-
-
-@dataclass(frozen=True, slots=True)
-class ProcessingConsentAcceptance:
-    expected_revision: int
-    policy_version: str
-    language: str
-    accepted_at: datetime
-    telegram_user_id: int
-    inbox_update_id: UUID
-    draft_id: UUID
-    draft_version: int
 
 
 async def get_processing_consent(

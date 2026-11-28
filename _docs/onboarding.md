@@ -1,20 +1,22 @@
-# Preferences onboarding runtime
+# Telegram start and preferences
 
-Private Telegram text updates enter through the trusted owner resolver and durable inbox. The application worker claims each update through the application lane, checks the inbox owner against the fenced claim, then runs Identity and the published Billing trial API in one SQLAlchemy session. Profile confirmation, trial activation, the durable job receipt, and the render request commit or roll back together.
+The application worker initializes preferences on the first valid private text update under the trusted owner and job fences. Its transaction also records the job receipt and the reply request. Returning users keep all saved preferences. An unfinished legacy initial draft is discarded when the default profile is created, and obsolete initial callbacks cannot resume setup or grant consent.
 
-The first-run flow asks for a language (`ru` or `en`), an explicitly confirmed IANA home time zone, reminder offsets, and quiet/review times. `suggested` (shown as localized quick replies) selects one calendar day and one elapsed hour for reminders, plus quiet hours `22:00–08:00` and review time `20:00`. The `Asia/Almaty` example button applies only after an explicit tap; the bot does not infer a zone from language or location. The final summary requires an explicit localized confirmation; `/cancel` removes the draft without saving preferences or starting a trial. Each step is stored and resumes after a worker restart.
+Telegram provides the sender's language tag. Pin uses Russian for the `ru` primary tag and English otherwise. Pin starts with UTC and shows the active zone on `/start`. The initial reminder offsets are one calendar day and one elapsed hour. Quiet hours run from 22:00 to 08:00, with evening review at 20:00 in the saved zone.
 
-`/settings` opens a versioned preference preview. `keep` preserves the value for the current step. Preview cancellation leaves the profile and trial untouched. Confirmation uses optimistic profile versions; a stale preview is discarded and the user is asked to reopen `/settings`. Quick replies use opaque, expiring, owner-bound, single-use callback tokens. Their server-side binding includes the active draft UUID and version, preventing an unused button from applying to a new draft after cancellation and restart. A confirmed home-zone change emits `identity.home_zone_change.requested`, including the prior zone, requested zone, and preference version. This is a handoff for future plan-mutation work; the current worker does not shift saved plans.
+Users can open `/settings` when they want to edit preferences. The editor recognizes supported city names, such as London, New York, Moscow (Москва), and Almaty (Алматы), as well as IANA names. For an ambiguous or unrecognized city, the editor asks for a different input. Keep current preserves the saved value at each step. Cancellation leaves the profile unchanged. Confirmation uses optimistic profile versions. Settings callbacks are opaque, expiring, owner-bound and single-use. They include the draft UUID and version. Changing the home zone uses the existing schedule-impact preview and confirmation.
 
-Planning consumers that validate a saved schedule against preferences use `IdentityStore.lock_preferences(owner_id)` inside their existing unit of work. It refreshes any cached preference row, returns an immutable snapshot, and holds a PostgreSQL row lock until that caller commits or rolls back. The method does not create or finish its own session or transaction.
+On first `/start`, on `/timezone`, and on the home-zone step of `/settings`, Pin can show a Telegram HTML Widget in the private chat. It displays the device's named time zone and sends only that zone and an expiring action token after a tap. The first-start and `/timezone` widget opens the normal confirmation preview with existing event schedules preserved. The settings widget fills the current draft and the remaining settings steps continue normally. Existing profiles and pending plans do not change before confirmation.
 
-Replies are appended as `telegram.reply.requested` outbox events with the private chat ID, MarkdownV2 and plain-text renderings, handling disposition, and source job ID. The application worker does not send to Telegram. Ordinary free text outside onboarding/settings returns `unhandled` and explicitly says the message was not saved. Plan capture, AI fallback, and production delivery outcomes remain later work.
+Webhook registrations that list specific update types must include `widget_query`. Local polling requests it explicitly. The widget needs no hosted page or location permission. The message caption gives a manual fallback through `/settings`.
 
-Trial creation and retained-account return behavior belong to Billing. Confirmation can activate one trial; replay and later `/start` do not reset preferences or trial history. The Billing lifecycle marker records only the identity facts needed to prevent a repeat trial. No retention duration or deleted-plan restoration is implied here.
+`/privacy` shows the disclosure and the explicit grant or withdrawal action. Granting consent activates an eligible one-time trial in the same transaction. AI work still requires an authorized grant at ingress and processing time. Users resend a request rejected for missing consent. Read the [processing consent contract](specifications/SPEC-001_processing_consent.md) for authorization and recovery details.
+
+Planning reads the profile through Identity. Schedule validation uses `IdentityStore.lock_preferences(owner_id)` inside the caller's transaction to refresh and lock the profile. Telegram replies are appended as `telegram.reply.requested` outbox events with MarkdownV2, a plain-text fallback, and the source job ID.
 
 ## Local verification
 
-Run the onboarding PostgreSQL tests against an owned disposable PostgreSQL database with the schema upgraded to Alembic `head`:
+Run the profile and settings integration tests against an owned disposable PostgreSQL database upgraded to Alembic `head`.
 
 ```powershell
 $env:PIN_TEST_ONBOARDING_DATABASE_URL = 'postgresql+psycopg://pin_test@127.0.0.1:51017/<owned-test-database>'
@@ -22,4 +24,10 @@ uv run pytest -q tests/test_identity_onboarding_postgres.py
 Remove-Item Env:PIN_TEST_ONBOARDING_DATABASE_URL
 ```
 
-The integration suite covers the real Telegram owner resolver and durable inbox/job path, restart-safe steps, defaults, confirmation with the Billing API, replay and return behavior, cancellation, settings preview/cancel, stale-version conflict, zone-change handoff, explicit unsupported-plan disposition, same-transaction rollback after Billing writes, invalid zone/offset/time inputs, forged/foreign/stale/duplicate callbacks, same-version cancel/recreate protection, and concurrent confirmation.
+The tests cover language inference, defaults, retry and restart, obsolete setup callback rejection, explicit consent and one-trial activation, rollback, and versioned settings changes.
+
+On 2026-11-28, the Windows working tree based on `593397c` passed the CI offline pytest selection (324 tests), the native Identity profile/settings module (18 tests), and the native core-lifecycle, payment/support, home-zone runtime, and consent integration modules (20 tests). The native runs used separate disposable databases on PostgreSQL 18.6. The test launcher set the expected port and data directory to the disposable cluster for the guarded modules, retaining their fixture identity checks. Ruff, mypy, architecture checks, and `git diff --check` passed.
+
+The separate capture-runtime PostgreSQL module failed the same five cases on the working tree and the archived `593397c` source. That module's existing fixtures do not establish processing consent. Live Telegram and deployment were outside this verification.
+
+The HTML Widget change passed the CI offline selection (335 tests), 19 native profile/settings tests, 13 native ingress tests, and 10 native home-zone runtime tests on the same PostgreSQL version. The new cases verify private webhook acknowledgement after durable commit and the widget-to-preview-to-save path, including invalid zones, foreign actors, and reused tokens. A local JavaScript harness verified the documented request/answer shape and the retry UI. Live Telegram client rendering and deployment remain unverified.

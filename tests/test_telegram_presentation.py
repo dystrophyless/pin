@@ -208,57 +208,62 @@ def test_markdown_v2_escapes_all_reserved_characters_and_preserves_unicode() -> 
     assert escaped == "Привет " + "".join(f"\\{char}" for char in specials) + " 😀 e\u0301"
 
 
-def test_onboarding_markdown_keeps_code_spans_and_ru_buttons_are_localized() -> None:
+def test_preference_editor_localizes_choices_and_accepts_free_form_zone() -> None:
     language = render_onboarding(
-        OnboardingResult("started", step="language", mode="initial", draft={"language": "ru"})
+        OnboardingResult("started", step="language", mode="preferences", draft={"language": "ru"})
     )
     assert language is not None
-    assert language.markdown == r"Выберите язык: отправьте `ru` или `en`\."
-    assert language.plain_text == "Выберите язык: отправьте ru или en."
-    assert {button.text for button in language.buttons} >= {"English", "Русский", "Отмена"}
+    assert language.plain_text != "Choose your conversation language."
+    assert any(button.value == "language|keep" for button in language.buttons)
+    assert all(button.action != "consent.accept" for button in language.buttons)
+
+    zone = render_onboarding(
+        OnboardingResult(
+            "started",
+            step="home_zone",
+            mode="preferences",
+            draft={"language": "ru", "home_zone": "UTC"},
+        )
+    )
+    assert zone is not None and "UTC" in zone.plain_text
+    assert "Asia/Almaty" not in {button.text for button in zone.buttons}
+    assert any(button.value == "home_zone|keep" for button in zone.buttons)
 
     reminders = render_onboarding(
-        OnboardingResult("started", step="reminders", mode="initial", draft={"language": "ru"})
+        OnboardingResult("started", step="reminders", mode="preferences", draft={"language": "ru"})
     )
     assert reminders is not None
     assert "suggested" not in reminders.plain_text.casefold()
-    assert any(button.text == "Использовать предложенное" for button in reminders.buttons)
-    zone = render_onboarding(
-        OnboardingResult("started", step="home_zone", mode="initial", draft={"language": "ru"})
-    )
-    assert zone is not None and "Asia/Almaty (пример)" in {button.text for button in zone.buttons}
+    assert any(button.action == "answer" for button in reminders.buttons)
+
     quiet = render_onboarding(
-        OnboardingResult("started", step="quiet_review", mode="initial", draft={"language": "ru"})
+        OnboardingResult(
+            "started", step="quiet_review", mode="preferences", draft={"language": "ru"}
+        )
     )
     assert quiet is not None
-    assert "`22:00-08:00; 20:00`" in quiet.markdown
     assert "22:00-08:00; 20:00" in quiet.plain_text
 
     confirmation = render_onboarding(
         OnboardingResult(
             "advanced",
             step="confirm",
-            mode="initial",
-            draft={"language": "ru", "home_zone": "Asia/Almaty"},
+            mode="preferences",
+            draft={"language": "ru", "home_zone": "UTC"},
         )
     )
     assert confirmation is not None
-    assert "*Проверьте настройки:*" in confirmation.markdown
+    assert confirmation.markdown.startswith("*")
+    assert "UTC" in confirmation.markdown
     assert "**" not in confirmation.plain_text
 
 
-def test_onboarding_cancel_copy_matches_initial_and_preview_states() -> None:
-    initial = render_onboarding(OnboardingResult("cancelled", mode="initial"))
-    preview = render_onboarding(
+def test_preference_cancel_copy_preserves_saved_settings_and_access() -> None:
+    reply = render_onboarding(
         OnboardingResult("cancelled", mode="preferences", draft={"language": "en"})
     )
-    assert initial is not None and "no trial was started" in initial.plain_text
-    assert (
-        preview is not None
-        and "saved preferences and access are unchanged" in preview.plain_text.casefold()
-    )
-    assert "no trial was started" not in preview.plain_text
-
+    assert reply is not None
+    assert "saved preferences and access are unchanged" in reply.plain_text.casefold()
 
 def test_pagination_keeps_unicode_and_button_targets_on_safe_pages() -> None:
     entries = [

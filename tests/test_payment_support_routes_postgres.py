@@ -673,13 +673,14 @@ def test_privacy_is_a_durable_private_command_for_every_access_state(
 
         cases = (
             (9001, "no_profile", "/privacy", "Pin is an independent planning service"),
-            (9002, "draft_ru", "/PRIVACY@PIN_APPBOT", "самостоятельный сервис планирования"),
+            (9002, "draft_ru", "/PRIVACY@PIN_APPBOT", "Pin is an independent planning service"),
             (9003, "expired_ru", "/privacy@pin_appbot", "самостоятельный сервис планирования"),
             (9004, "expired_en", "/privacy", "Pin is an independent planning service"),
             (9005, "exhausted_ru", "/privacy", "самостоятельный сервис планирования"),
             (9006, "exhausted_en", "/privacy", "Pin is an independent planning service"),
         )
         baseline: dict[str, dict[str, tuple[Any, ...]]] = {}
+        after_route: dict[str, dict[str, tuple[Any, ...]]] = {}
         for key, owner_id in owner_ids.items():
             async with support_sessions() as session:
                 baseline[key] = await snapshot_owner(session, owner_id)
@@ -697,10 +698,20 @@ def test_privacy_is_a_durable_private_command_for_every_access_state(
                 async with support_sessions() as session:
                     assert await session.get(AccessAccountRecord, owner_id) is None
                     assert await session.get(TrialActivationRecord, owner_id) is None
-                    assert await session.get(PreferencesRecord, owner_id) is None
+                    profile = await session.get(PreferencesRecord, owner_id)
+                    assert profile is not None and profile.language == "en" and profile.version == 1
 
             async with support_sessions() as session:
-                assert await snapshot_owner(session, owner_id) == baseline[key]
+                if key in {"no_profile", "draft_ru"}:
+                    profile = await session.get(PreferencesRecord, owner_id)
+                    assert profile is not None and profile.language == "en" and profile.version == 1
+                    assert await session.get(OnboardingRecord, owner_id) is None
+                    snapshot = await snapshot_owner(session, owner_id)
+                    assert snapshot != baseline[key]
+                else:
+                    snapshot = await snapshot_owner(session, owner_id)
+                    assert snapshot == baseline[key]
+                after_route[key] = snapshot
                 if update_id == 9001:
                     reply_count = await session.scalar(
                         select(func.count())
@@ -756,7 +767,7 @@ def test_privacy_is_a_durable_private_command_for_every_access_state(
                         )
                     )
                     assert reply_count == 1
-                    assert await snapshot_owner(session, owner_id) == baseline[key]
+                    assert await snapshot_owner(session, owner_id) == after_route[key]
 
         async with support_sessions() as session, session.begin():
             group = await persist_update(

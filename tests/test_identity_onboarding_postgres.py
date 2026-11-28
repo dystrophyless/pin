@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import os
+import re
 from collections.abc import Iterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
 from uuid import uuid4
@@ -24,9 +26,8 @@ from pin.adapters.telegram.ingress import (
     TelegramOwnerRecord,
     persist_update,
 )
-from pin.adapters.telegram.onboarding import handle_private_text
 from pin.adapters.telegram.presentation.tokens import TelegramCallbackTokenRecord
-from pin.contexts.billing.api import SqlAlchemyAccessUsageStore, StartTrial
+from pin.contexts.billing.api import SqlAlchemyAccessUsageStore
 from pin.contexts.billing.infrastructure.models import (
     AccessPeriodRecord,
     TrialActivationRecord,
@@ -34,12 +35,11 @@ from pin.contexts.billing.infrastructure.models import (
 from pin.contexts.identity.application.contracts import ProcessingAuthorization
 from pin.contexts.identity.application.onboarding import (
     answer_onboarding,
-    begin_onboarding,
-    confirm_onboarding,
+    begin_preferences_edit,
+    confirm_preferences_edit,
 )
 from pin.contexts.identity.application.processing_consent import (
     PROCESSING_CONSENT_POLICY_VERSION,
-    ProcessingConsentAcceptance,
     ProcessingConsentConflict,
     accept_processing_consent,
     authorize_processing_consent,
@@ -81,8 +81,21 @@ def onboarding_database() -> Iterator[str]:
     yield DATABASE_URL
 
 
-def test_private_onboarding_survives_restarts_and_activates_one_trial(
+@pytest.mark.parametrize(
+    ("language_code", "first_text", "expected_language"),
+    [
+        ("ru", "/start", "ru"),
+        ("ru-RU", "hello", "ru"),
+        ("en", "/start", "en"),
+        ("kk", "hello", "en"),
+        (None, "/start", "en"),
+    ],
+)
+def test_first_private_message_creates_preferences_and_privacy_grant_starts_one_trial(
     onboarding_database: str,
+    language_code: str | None,
+    first_text: str,
+    expected_language: str,
 ) -> None:
     async def scenario() -> None:
         engine = create_engine(onboarding_database)
@@ -92,7 +105,12 @@ def test_private_onboarding_survives_restarts_and_activates_one_trial(
         bot_id = 987654 + uuid4().int % 1_000_000
         try:
 
-            async def send(update_id: int, text: str) -> None:
+            async def send(
+                update_id: int,
+                text: str,
+                *,
+                language_code: str | None = "ru",
+            ) -> None:
                 nonlocal owner_id
                 now = datetime.now(UTC)
                 async with sessions() as session, session.begin():
@@ -105,7 +123,11 @@ def test_private_onboarding_survives_restarts_and_activates_one_trial(
                                 "message_id": update_id,
                                 "date": int(now.timestamp()),
                                 "chat": {"id": telegram_user_id, "type": "private"},
-                                "from": {"id": telegram_user_id, "is_bot": False},
+                                "from": {
+                                    "id": telegram_user_id,
+                                    "is_bot": False,
+                                    **({"language_code": language_code} if language_code else {}),
+                                },
                                 "text": text,
                             },
                         },
@@ -151,38 +173,37 @@ def test_private_onboarding_survives_restarts_and_activates_one_trial(
                 assert claim is not None
                 await process_application_job(sessions, claim, now=now)
 
-            await send(1, "/start")
+            await send(1, first_text, language_code=language_code)
             async with sessions() as session:
                 assert owner_id is not None
-                draft = await session.get(OnboardingRecord, owner_id)
-                assert draft is not None and draft.step == "language"
-
-            # Each message is a new durable job and every assertion reads after the prior
-            # worker session has committed, exercising restart-safe continuation.
-            await send(2, "ru")
-            async with sessions() as session:
-                draft = await session.get(OnboardingRecord, owner_id)
-                assert draft is not None and draft.step == "home_zone"
-            await send(3, "Asia/Almaty")
-            async with sessions() as session:
-                draft = await session.get(OnboardingRecord, owner_id)
-                assert draft is not None and draft.step == "reminders"
-            await send(4, "suggested")
-            async with sessions() as session:
-                draft = await session.get(OnboardingRecord, owner_id)
-                assert draft is not None and draft.step == "quiet_review"
-            await send(5, "suggested")
-            async with sessions() as session:
-                draft = await session.get(OnboardingRecord, owner_id)
-                assert draft is not None and draft.step == "confirm"
                 profile = await session.get(PreferencesRecord, owner_id)
-                assert profile is None
-            await send(6, "confirm")
+                assert profile is not None
+                assert (profile.language, profile.home_zone, profile.version) == (
+                    expected_language,
+                    "UTC",
+                    1,
+                )
+                assert profile.reminder_calendar_days == profile.reminder_elapsed_hours == 1
+                assert profile.quiet_start.isoformat() == "22:00:00"
+                assert profile.quiet_end.isoformat() == "08:00:00"
+                assert profile.review_time.isoformat() == "20:00:00"
+                assert await session.get(OnboardingRecord, owner_id) is None
+                assert await session.get(TrialActivationRecord, owner_id) is None
+
+            # Returning /start keeps the inferred profile and leaves consent and trial untouched.
+            await send(2, "/start", language_code="en")
+            await send(3, "/privacy", language_code="en")
             async with sessions() as session:
-                assert await session.get(PreferencesRecord, owner_id) is None
-                pending = await session.get(OnboardingRecord, owner_id)
-                assert pending is not None and pending.step == "confirm"
-                prompt = await session.scalar(
+                profile = await session.get(PreferencesRecord, owner_id)
+                consent = await session.get(ProcessingConsentRecord, owner_id)
+                trial = await session.get(TrialActivationRecord, owner_id)
+                assert (
+                    profile is not None
+                    and profile.language == expected_language
+                    and profile.version == 1
+                )
+                assert consent is None and trial is None
+                privacy_reply = await session.scalar(
                     select(OutboxEvent)
                     .where(
                         OutboxEvent.owner_id == owner_id,
@@ -191,52 +212,26 @@ def test_private_onboarding_survives_restarts_and_activates_one_trial(
                     .order_by(OutboxEvent.created_at.desc())
                     .limit(1)
                 )
-                assert prompt is not None
-                markup = prompt.payload["payload"]["reply_markup"]
-                buttons = markup["inline_keyboard"]
-                accept = next(
-                    button["callback_data"]
-                    for row in buttons
-                    for button in row
-                    if button["text"] == "Согласиться и завершить настройку"
-                )
-            await click(7, accept)
+                assert privacy_reply is not None
+                buttons = privacy_reply.payload["payload"]["reply_markup"]["inline_keyboard"]
+                assert len(buttons) == 1 and len(buttons[0]) == 1
+                grant = buttons[0][0]["callback_data"]
+            await click(4, grant)
 
             async with sessions() as session:
                 profile = await session.get(PreferencesRecord, owner_id)
-                draft = await session.get(OnboardingRecord, owner_id)
+                consent = await session.get(ProcessingConsentRecord, owner_id)
                 trial = await session.get(TrialActivationRecord, owner_id)
-                assert profile is not None
-                assert (profile.language, profile.home_zone, profile.version) == (
-                    "ru",
-                    "Asia/Almaty",
-                    1,
-                )
-                assert profile.reminder_calendar_days == profile.reminder_elapsed_hours == 1
-                assert profile.quiet_start.isoformat() == "22:00:00"
-                assert profile.quiet_end.isoformat() == "08:00:00"
-                assert profile.review_time.isoformat() == "20:00:00"
-                assert draft is not None and draft.step == "complete"
+                assert profile is not None and profile.version == 1
+                assert consent is not None and consent.state == "granted"
                 assert trial is not None and trial.telegram_user_id == telegram_user_id
-                events = await _owner_events(session, owner_id)
-                replies = [
-                    event
-                    for event in events
-                    if event.owner_id == owner_id and event.event_type == "telegram.reply.requested"
-                ]
-                assert len(replies) == 7
-                assert "Пробный период начат" in replies[-1].payload["plain_text"]
-                assert replies[-1].payload["chat_id"] == telegram_user_id
                 assert (
                     await session.scalar(
                         select(func.count())
-                        .select_from(OutboxEvent)
-                        .where(
-                            OutboxEvent.owner_id == owner_id,
-                            OutboxEvent.event_type == "telegram.reply.requested",
-                        )
+                        .select_from(TrialActivationRecord)
+                        .where(TrialActivationRecord.owner_id == owner_id)
                     )
-                    == 7
+                    == 1
                 )
                 assert (
                     await session.scalar(
@@ -250,12 +245,15 @@ def test_private_onboarding_survives_restarts_and_activates_one_trial(
                     == 1
                 )
 
-            # /start is read-only for a retained profile and does not reset its trial.
-            await send(8, "/start")
-            await send(9, "Tomorrow at 5 pm, review the project")
+            # Repeating /start never resets Preferences or starts another trial.
+            await send(5, "/start", language_code="en")
             async with sessions() as session:
                 profile = await session.get(PreferencesRecord, owner_id)
-                assert profile is not None and profile.version == 1
+                assert (
+                    profile is not None
+                    and profile.version == 1
+                    and profile.language == expected_language
+                )
                 assert (
                     await session.scalar(
                         select(func.count())
@@ -264,14 +262,6 @@ def test_private_onboarding_survives_restarts_and_activates_one_trial(
                     )
                     == 1
                 )
-                events = await _owner_events(session, owner_id)
-                last_reply = next(
-                    event
-                    for event in reversed(events)
-                    if event.owner_id == owner_id and event.event_type == "telegram.reply.requested"
-                )
-                assert last_reply.payload["handling"] == "unhandled"
-                assert "не сохранено" in last_reply.payload["plain_text"]
 
         finally:
             await engine.dispose()
@@ -362,41 +352,18 @@ def test_cancel_and_preview_are_non_mutating_and_zone_change_is_handed_off(
                 raise AssertionError(f"button {label!r} was not rendered")
 
             await send(100, "/start")
-            await send(101, "/cancel")
-            async with sessions() as session:
-                assert await session.get(PreferencesRecord, owner_id) is None
-                assert await session.get(OnboardingRecord, owner_id) is None
-                assert await session.get(TrialActivationRecord, owner_id) is None
-
-            # Start afresh, confirm, then cancel a preview and ensure the saved state remains.
-            for offset, text in enumerate(
-                ("/start", "en", "Asia/Almaty", "suggested", "suggested", "confirm"),
-                start=102,
-            ):
-                await send(offset, text)
-            async with sessions() as session:
-                assert await session.get(PreferencesRecord, owner_id) is None
-                pending = await session.get(OnboardingRecord, owner_id)
-                assert pending is not None and pending.step == "confirm"
-                assert pending.mode == "initial"
-                reply = next(
-                    event
-                    for event in reversed(await _owner_events(session, owner_id))
-                    if event.owner_id == owner_id
-                    and event.event_type == "telegram.reply.requested"
-                )
-            consent_reply = cast(dict[str, object], reply.payload)
-            accept_callback = callback_for(consent_reply, "Agree and finish setup")
-            await send(108, callback=accept_callback)
             async with sessions() as session:
                 baseline = await session.get(PreferencesRecord, owner_id)
                 assert baseline is not None
                 baseline_version = baseline.version
                 baseline_zone = baseline.home_zone
-            await send(109, "/settings")
-            await send(110, "keep")
-            await send(111, "Asia/Aqtobe")
-            await send(112, "/cancel")
+                assert await session.get(TrialActivationRecord, owner_id) is None
+            # Settings edits remain available before AI consent; cancelling preserves
+            # the automatically created profile and does not start its trial.
+            await send(101, "/settings")
+            await send(102, "keep")
+            await send(103, "Asia/Aqtobe")
+            await send(104, "/cancel")
             async with sessions() as session:
                 profile = await session.get(PreferencesRecord, owner_id)
                 assert profile is not None
@@ -408,7 +375,7 @@ def test_cancel_and_preview_are_non_mutating_and_zone_change_is_handed_off(
                         .select_from(TrialActivationRecord)
                         .where(TrialActivationRecord.owner_id == owner_id)
                     )
-                    == 1
+                    == 0
                 )
 
             # A confirmed home-zone edit publishes a versioned downstream handoff.
@@ -452,7 +419,7 @@ def test_cancel_and_preview_are_non_mutating_and_zone_change_is_handed_off(
                 assert len(handoffs) == 1
                 assert handoffs[0].aggregate_version == profile.version
                 assert handoffs[0].payload == {
-                    "previous_home_zone": "Asia/Almaty",
+                    "previous_home_zone": baseline_zone,
                     "requested_home_zone": "Asia/Aqtobe",
                     "preferences_version": profile.version,
                 }
@@ -462,7 +429,7 @@ def test_cancel_and_preview_are_non_mutating_and_zone_change_is_handed_off(
                         .select_from(TrialActivationRecord)
                         .where(TrialActivationRecord.owner_id == owner_id)
                     )
-                    == 1
+                    == 0
                 )
 
             # A newer version committed elsewhere wins; this preview cannot overwrite it.
@@ -515,6 +482,127 @@ def test_cancel_and_preview_are_non_mutating_and_zone_change_is_handed_off(
     run_local_async(scenario)
 
 
+def test_private_timezone_widget_previews_and_confirms_device_zone(
+    onboarding_database: str,
+) -> None:
+    async def scenario() -> None:
+        engine = create_engine(onboarding_database)
+        sessions = create_session_factory(engine)
+        bot_id = 987654 + uuid4().int % 1_000_000
+        user_id = 1 + uuid4().int % (2**52 - 2)
+        now = datetime.now(UTC)
+        update_id = 0
+
+        async def dispatch(kind: str, payload: dict[str, object]) -> dict[str, object]:
+            nonlocal update_id
+            update_id += 1
+            async with sessions() as session, session.begin():
+                receipt = await persist_update(
+                    session,
+                    bot_id=bot_id,
+                    payload={"update_id": update_id, kind: payload},
+                    owner_resolver=PostgresTelegramOwnerResolver(),
+                )
+                assert receipt is not None and receipt.accepted
+            claim = await claim_application_job(sessions, worker_id="timezone-widget")
+            assert claim is not None
+            await process_application_job(sessions, claim, now=now)
+            async with sessions() as session:
+                event = await session.scalar(
+                    select(OutboxEvent).where(
+                        OutboxEvent.event_type == "telegram.reply.requested",
+                        OutboxEvent.causation_id == claim.job_id,
+                    )
+                )
+                assert event is not None
+                return cast(dict[str, object], event.payload["payload"])
+
+        def message(text: str) -> dict[str, object]:
+            return {
+                "message_id": update_id + 1,
+                "chat": {"id": user_id, "type": "private"},
+                "from": {"id": user_id, "is_bot": False, "language_code": "en"},
+                "text": text,
+            }
+
+        def query(token: str, zone: str, actor_id: int = user_id) -> dict[str, object]:
+            return {
+                "id": f"zone-widget-{update_id + 1}",
+                "from": {"id": actor_id, "is_bot": False, "first_name": "Pin Test"},
+                "chat": {"id": actor_id, "type": "private"},
+                "message_id": 1,
+                "chat_instance": "123456",
+                "type": {"type": "data"},
+                "data": f"{token}|{zone}",
+            }
+
+        def token_from(reply: dict[str, object]) -> str:
+            html = reply["widget_html"]
+            assert isinstance(html, str)
+            match = re.search(r'const token = ("[^"]+");', html)
+            assert match is not None
+            return cast(str, json.loads(match[1]))
+
+        try:
+            token = token_from(await dispatch("message", message("/start")))
+            denied = await dispatch("widget_query", query(token, "Europe/Paris", user_id + 1))
+            assert "Could not accept" in str(denied["plain_text"])
+            invalid = await dispatch("widget_query", query(token, "Not/AZone"))
+            assert "Could not accept" in str(invalid["plain_text"])
+            preview = await dispatch("widget_query", query(token, "Asia/Almaty"))
+            assert "Asia/Almaty" in str(preview["plain_text"])
+
+            async with sessions() as session:
+                owner_id = await session.scalar(
+                    select(TelegramOwnerRecord.owner_id).where(
+                        TelegramOwnerRecord.bot_id == bot_id,
+                        TelegramOwnerRecord.telegram_user_id == user_id,
+                    )
+                )
+                assert owner_id is not None
+                profile = await session.get(PreferencesRecord, owner_id)
+                assert profile is not None and profile.home_zone == "UTC"
+
+            markup = cast(dict[str, list[list[dict[str, str]]]], preview["reply_markup"])
+            confirmation = next(
+                button["callback_data"]
+                for row in markup["inline_keyboard"]
+                for button in row
+                if button["text"] == "Confirm zone change"
+            )
+            await dispatch(
+                "callback_query",
+                {
+                    "id": "zone-widget-confirm",
+                    "from": {"id": user_id, "is_bot": False},
+                    "message": {"chat": {"id": user_id, "type": "private"}},
+                    "data": confirmation,
+                },
+            )
+            replay = await dispatch("widget_query", query(token, "Europe/Paris"))
+            assert "Could not accept" in str(replay["plain_text"])
+            assert "widget_html" in await dispatch("message", message("/timezone"))
+            assert "widget_html" not in await dispatch("message", message("/start"))
+
+            await dispatch("message", message("/settings"))
+            settings_token = token_from(await dispatch("message", message("keep")))
+            reminders = await dispatch("widget_query", query(settings_token, "Europe/Paris"))
+            assert "Reminder suggestions" in str(reminders["plain_text"])
+
+            async with sessions() as session:
+                profile = await session.get(PreferencesRecord, owner_id)
+                assert profile is not None and profile.home_zone == "Asia/Almaty"
+                assert profile.version == 2 and profile.reminder_calendar_days == 1
+                assert await session.get(TrialActivationRecord, owner_id) is None
+                draft = await session.get(OnboardingRecord, owner_id)
+                assert draft is not None and draft.step == "reminders"
+                assert draft.draft["home_zone"] == "Europe/Paris"
+        finally:
+            await engine.dispose()
+
+    run_local_async(scenario)
+
+
 async def _owner_events(session, owner_id) -> list[EventEnvelope]:
     rows = await session.scalars(
         select(OutboxEvent)
@@ -524,91 +612,107 @@ async def _owner_events(session, owner_id) -> list[EventEnvelope]:
     return [EventEnvelope.from_dict(row.payload) for row in rows]
 
 
-def test_profile_and_billing_trial_roll_back_in_the_same_unit_of_work(
+def test_privacy_grant_and_trial_roll_back_in_the_same_unit_of_work(
     onboarding_database: str,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    class FailAfterTrialWrite:
-        def __init__(self, session) -> None:
-            self.session = session
-
-        async def lock_account_lifecycle(self, owner_id):
-            await SqlAlchemyAccessUsageStore(self.session).lock_account_lifecycle(owner_id)
-
-        async def activate_trial(self, *, owner_id, telegram_user_id, at):
-            await SqlAlchemyAccessUsageStore(self.session).activate_trial(
-                StartTrial(owner_id, telegram_user_id, at)
-            )
-            raise RuntimeError("simulate transaction failure after Billing writes")
-
     async def scenario() -> None:
         engine = create_engine(onboarding_database)
         sessions = create_session_factory(engine)
-        owner_id = uuid4()
+        owner_id = None
         telegram_user_id = uuid4().int % 2**52 or 1
+        bot_id = 987654 + uuid4().int % 1_000_000
         try:
-            async with sessions() as session, session.begin():
-                await begin_onboarding(
-                    SqlAlchemyIdentityStore(session),
-                    owner_id=owner_id,
-                    now=datetime.now(UTC),
-                )
-            for text in ("en", "Asia/Almaty", "suggested", "suggested"):
+
+            async def dispatch(update_id: int, payload: dict[str, object]) -> dict[str, object]:
+                nonlocal owner_id
+                now = datetime.now(UTC)
+                payload["update_id"] = update_id
                 async with sessions() as session, session.begin():
-                    store = SqlAlchemyIdentityStore(session)
-                    await handle_private_text(
-                        store,
-                        owner_id=owner_id,
-                        telegram_user_id=telegram_user_id,
-                        text=text,
-                        now=datetime.now(UTC),
-                        trial_activator=FailAfterTrialWrite(session),
+                    receipt = await persist_update(
+                        session,
+                        bot_id=bot_id,
+                        payload=payload,
+                        owner_resolver=PostgresTelegramOwnerResolver(),
                     )
-            with pytest.raises(RuntimeError, match="simulate transaction failure"):
-                async with sessions() as session, session.begin():
-                    now = datetime.now(UTC)
-                    store = SqlAlchemyIdentityStore(session)
-                    draft = await store.get_onboarding(owner_id)
-                    assert draft is not None and draft.step == "confirm"
-                    inbox_id = uuid4()
-                    session.add(
-                        InboxUpdate(
-                            id=inbox_id,
-                            bot_id=987654,
-                            update_id=uuid4().int % 2**52,
-                            owner_id=owner_id,
-                            update_type="message",
-                            payload={
-                                "message": {
-                                    "from": {"id": telegram_user_id, "is_bot": False},
-                                    "chat": {"id": telegram_user_id, "type": "private"},
-                                }
-                            },
+                    assert receipt is not None and receipt.accepted
+                    owner_id = await session.scalar(
+                        select(TelegramOwnerRecord.owner_id).where(
+                            TelegramOwnerRecord.bot_id == bot_id,
+                            TelegramOwnerRecord.telegram_user_id == telegram_user_id,
                         )
                     )
-                    await session.flush()
-                    await confirm_onboarding(
-                        store,
-                        FailAfterTrialWrite(session),
-                        owner_id=owner_id,
-                        telegram_user_id=telegram_user_id,
-                        now=now,
-                        consent_acceptance=ProcessingConsentAcceptance(
-                            expected_revision=0,
-                            policy_version=PROCESSING_CONSENT_POLICY_VERSION,
-                            language="en",
-                            accepted_at=now,
-                            telegram_user_id=telegram_user_id,
-                            inbox_update_id=inbox_id,
-                            draft_id=draft.draft_id,
-                            draft_version=draft.version,
-                        ),
+                    assert owner_id is not None
+                claim = await claim_application_job(sessions, worker_id="privacy-grant-rollback")
+                assert claim is not None
+                await process_application_job(sessions, claim, now=now)
+                async with sessions() as session:
+                    event = await session.scalar(
+                        select(OutboxEvent).where(
+                            OutboxEvent.owner_id == owner_id,
+                            OutboxEvent.event_type == "telegram.reply.requested",
+                            OutboxEvent.causation_id == claim.job_id,
+                        )
                     )
-            async with sessions() as session:
-                assert await session.get(PreferencesRecord, owner_id) is None
-                assert await session.get(TrialActivationRecord, owner_id) is None
-                from pin.contexts.identity.infrastructure.models import ProcessingConsentRecord
+                    assert event is not None
+                    return cast(dict[str, object], event.payload["payload"])
 
+            async def message(update_id: int, text: str) -> dict[str, object]:
+                return await dispatch(
+                    update_id,
+                    {
+                        "message": {
+                            "message_id": update_id,
+                            "date": int(datetime.now(UTC).timestamp()),
+                            "chat": {"id": telegram_user_id, "type": "private"},
+                            "from": {
+                                "id": telegram_user_id,
+                                "is_bot": False,
+                                "language_code": "en",
+                            },
+                            "text": text,
+                        }
+                    },
+                )
+
+            await message(1, "/start")
+            privacy = await message(2, "/privacy")
+            privacy_buttons = privacy["reply_markup"]["inline_keyboard"]
+            assert len(privacy_buttons) == 1 and len(privacy_buttons[0]) == 1
+            grant = privacy_buttons[0][0]["callback_data"]
+            original_activate_trial = SqlAlchemyAccessUsageStore.activate_trial
+
+            async def fail_after_trial_write(self, command):
+                await original_activate_trial(self, command)
+                raise RuntimeError("simulate transaction failure after Billing writes")
+
+            monkeypatch.setattr(
+                SqlAlchemyAccessUsageStore, "activate_trial", fail_after_trial_write
+            )
+            callback = {
+                "callback_query": {
+                    "id": "privacy-grant-rollback",
+                    "from": {
+                        "id": telegram_user_id,
+                        "is_bot": False,
+                        "language_code": "en",
+                    },
+                    "message": {
+                        "message_id": 3,
+                        "chat": {"id": telegram_user_id, "type": "private"},
+                    },
+                    "data": grant,
+                }
+            }
+            with pytest.raises(RuntimeError, match="simulate transaction failure"):
+                await dispatch(3, callback)
+
+            async with sessions() as session:
+                assert owner_id is not None
+                profile = await session.get(PreferencesRecord, owner_id)
+                assert profile is not None and profile.language == "en" and profile.version == 1
                 assert await session.get(ProcessingConsentRecord, owner_id) is None
+                assert await session.get(TrialActivationRecord, owner_id) is None
                 assert (
                     await session.scalar(
                         select(func.count())
@@ -622,8 +726,9 @@ def test_profile_and_billing_trial_roll_back_in_the_same_unit_of_work(
 
     run_local_async(scenario)
 
-
-def test_invalid_answers_leave_their_step_unchanged(onboarding_database: str) -> None:
+def test_invalid_preference_answers_keep_the_step_and_city_zone_is_accepted(
+    onboarding_database: str,
+) -> None:
     async def scenario() -> None:
         engine = create_engine(onboarding_database)
         sessions = create_session_factory(engine)
@@ -631,16 +736,22 @@ def test_invalid_answers_leave_their_step_unchanged(onboarding_database: str) ->
         try:
             async with sessions() as session, session.begin():
                 store = SqlAlchemyIdentityStore(session)
-                await begin_onboarding(store, owner_id=owner_id, now=datetime.now(UTC))
+                saved = await store.save_preferences(
+                    owner_id=owner_id,
+                    expected_version=None,
+                    preferences=Preferences(language="en", home_zone="UTC"),
+                )
+                assert saved is not None and saved.version == 1
+                assert (await begin_preferences_edit(store, owner_id=owner_id)).step == "language"
                 assert (
-                    await answer_onboarding(store, owner_id=owner_id, text="ru")
+                    await answer_onboarding(store, owner_id=owner_id, text="keep")
                 ).step == "home_zone"
                 invalid_zone = await answer_onboarding(
                     store, owner_id=owner_id, text="Mars/Olympus"
                 )
                 assert invalid_zone.state == "invalid_input" and invalid_zone.step == "home_zone"
                 assert (
-                    await answer_onboarding(store, owner_id=owner_id, text="Asia/Almaty")
+                    await answer_onboarding(store, owner_id=owner_id, text="Astana")
                 ).step == "reminders"
                 for invalid_offset in ("-1, 1", "one, two", "-1 hours"):
                     invalid = await answer_onboarding(store, owner_id=owner_id, text=invalid_offset)
@@ -655,7 +766,20 @@ def test_invalid_answers_leave_their_step_unchanged(onboarding_database: str) ->
                 ):
                     invalid = await answer_onboarding(store, owner_id=owner_id, text=invalid_hours)
                     assert invalid.state == "invalid_input" and invalid.step == "quiet_review"
-                assert await store.get_preferences(owner_id) is None
+                ready = await answer_onboarding(
+                    store, owner_id=owner_id, text="suggested"
+                )
+                assert ready.step == "confirm"
+                unchanged = await store.get_preferences(owner_id)
+                assert unchanged is not None
+                assert unchanged.version == 1 and unchanged.home_zone == "UTC"
+                result = await confirm_preferences_edit(
+                    store, owner_id=owner_id, now=datetime.now(UTC)
+                )
+                assert result.state == "confirmed"
+                assert result.preferences is not None
+                assert result.preferences.version == 2
+                assert result.preferences.home_zone == "Asia/Almaty"
                 assert await store.get_onboarding(owner_id) is not None
         finally:
             await engine.dispose()
@@ -663,96 +787,197 @@ def test_invalid_answers_leave_their_step_unchanged(onboarding_database: str) ->
     run_local_async(scenario)
 
 
-def test_simultaneous_confirmations_create_one_profile_and_one_trial(
+def test_simultaneous_preference_confirmations_advance_one_version(
     onboarding_database: str,
 ) -> None:
-    class TrialActivator:
-        def __init__(self, session) -> None:
-            self._store = SqlAlchemyAccessUsageStore(session)
-
-        async def lock_account_lifecycle(self, owner_id):
-            await self._store.lock_account_lifecycle(owner_id)
-
-        async def activate_trial(self, *, owner_id, telegram_user_id, at):
-            return await self._store.activate_trial(StartTrial(owner_id, telegram_user_id, at))
-
     async def scenario() -> None:
         engine = create_engine(onboarding_database)
         sessions = create_session_factory(engine)
         owner_id = uuid4()
-        telegram_user_id = uuid4().int % 2**52 or 1
         try:
             async with sessions() as session, session.begin():
                 store = SqlAlchemyIdentityStore(session)
-                await begin_onboarding(store, owner_id=owner_id, now=datetime.now(UTC))
-                for text in ("en", "Asia/Almaty", "suggested", "suggested"):
+                saved = await store.save_preferences(
+                    owner_id=owner_id,
+                    expected_version=None,
+                    preferences=Preferences(language="en", home_zone="UTC"),
+                )
+                assert saved is not None
+                await begin_preferences_edit(store, owner_id=owner_id)
+                for text in ("keep", "Astana", "suggested", "suggested"):
                     await answer_onboarding(store, owner_id=owner_id, text=text)
-                draft = await store.get_onboarding(owner_id)
-                assert draft is not None
-                now = datetime.now(UTC)
-                inbox_id = uuid4()
-                session.add(
-                    InboxUpdate(
-                        id=inbox_id,
-                        bot_id=987654,
-                        update_id=uuid4().int % 2**52,
-                        owner_id=owner_id,
-                        update_type="message",
-                        payload={
-                            "message": {
-                                "from": {"id": telegram_user_id, "is_bot": False},
-                                "chat": {"id": telegram_user_id, "type": "private"},
-                            }
-                        },
-                    )
-                )
-                acceptance = ProcessingConsentAcceptance(
-                    expected_revision=0,
-                    policy_version=PROCESSING_CONSENT_POLICY_VERSION,
-                    language="en",
-                    accepted_at=now,
-                    telegram_user_id=telegram_user_id,
-                    inbox_update_id=inbox_id,
-                    draft_id=draft.draft_id,
-                    draft_version=draft.version,
-                )
 
             async def confirm_once():
                 async with sessions() as session, session.begin():
-                    return await confirm_onboarding(
+                    return await confirm_preferences_edit(
                         SqlAlchemyIdentityStore(session),
-                        TrialActivator(session),
                         owner_id=owner_id,
-                        telegram_user_id=telegram_user_id,
                         now=datetime.now(UTC),
-                        consent_acceptance=acceptance,
                     )
 
             results = await asyncio.gather(confirm_once(), confirm_once())
             assert sum(result.state == "confirmed" for result in results) == 1
             async with sessions() as session:
-                assert await session.get(PreferencesRecord, owner_id) is not None
-                assert await session.get(TrialActivationRecord, owner_id) is not None
-                from pin.contexts.identity.infrastructure.models import ProcessingConsentRecord
+                profile = await session.get(PreferencesRecord, owner_id)
+                assert profile is not None and profile.version == 2
+                assert profile.home_zone == "Asia/Almaty"
+                assert await session.get(TrialActivationRecord, owner_id) is None
+        finally:
+            await engine.dispose()
 
-                consent = await session.get(ProcessingConsentRecord, owner_id)
-                assert consent is not None and consent.state == "granted"
-                assert consent.grant_id is not None and consent.revision == 1
-                assert (
-                    await session.scalar(
-                        select(func.count())
-                        .select_from(TrialActivationRecord)
-                        .where(TrialActivationRecord.owner_id == owner_id)
+    run_local_async(scenario)
+
+def test_legacy_initial_draft_and_callback_are_ignored_after_profile_creation(
+    onboarding_database: str,
+) -> None:
+    async def scenario() -> None:
+        engine = create_engine(onboarding_database)
+        sessions = create_session_factory(engine)
+        owner_id = uuid4()
+        telegram_user_id = uuid4().int % 2**52 or 1
+        bot_id = 987654 + uuid4().int % 1_000_000
+        old_token = "old-initial-setup-token"
+        try:
+            async with sessions() as session, session.begin():
+                session.add(
+                    TelegramOwnerRecord(
+                        bot_id=bot_id,
+                        telegram_user_id=telegram_user_id,
+                        owner_id=owner_id,
                     )
-                    == 1
                 )
+                await session.flush()
+                store = SqlAlchemyIdentityStore(session)
+                draft = await store.begin_onboarding(
+                    owner_id=owner_id,
+                    mode="initial",
+                    initial_values={},
+                    base_profile_version=None,
+                )
+                session.add(
+                    TelegramCallbackTokenRecord(
+                        token_hash=hashlib.sha256(old_token.encode("ascii")).hexdigest(),
+                        owner_id=owner_id,
+                        action="answer",
+                        target_id=f"{draft.draft_id}|language|ru",
+                        target_version=draft.version,
+                        expires_at=datetime.now(UTC) + timedelta(hours=1),
+                    )
+                )
+
+            async def dispatch(update_id: int, payload: dict[str, object]) -> None:
+                now = datetime.now(UTC)
+                payload["update_id"] = update_id
+                async with sessions() as session, session.begin():
+                    receipt = await persist_update(
+                        session,
+                        bot_id=bot_id,
+                        payload=payload,
+                        owner_resolver=PostgresTelegramOwnerResolver(),
+                    )
+                    assert receipt is not None and receipt.accepted
+                claim = await claim_application_job(sessions, worker_id="legacy-setup-callback")
+                assert claim is not None
+                await process_application_job(sessions, claim, now=now)
+
+            await dispatch(
+                1,
+                {
+                    "message": {
+                        "message_id": 1,
+                        "date": int(datetime.now(UTC).timestamp()),
+                        "chat": {"id": telegram_user_id, "type": "private"},
+                        "from": {
+                            "id": telegram_user_id,
+                            "is_bot": False,
+                            "language_code": "ru-RU",
+                        },
+                        "text": "/start",
+                    }
+                },
+            )
+            await dispatch(
+                2,
+                {
+                    "callback_query": {
+                        "id": "old-initial-setup-callback",
+                        "from": {"id": telegram_user_id, "is_bot": False},
+                        "message": {
+                            "message_id": 1,
+                            "chat": {"id": telegram_user_id, "type": "private"},
+                        },
+                        "data": old_token,
+                    }
+                },
+            )
+            async with sessions() as session:
+                profile = await session.get(PreferencesRecord, owner_id)
+                assert profile is not None and profile.language == "ru" and profile.version == 1
+                assert await session.get(OnboardingRecord, owner_id) is None
+                assert await session.get(ProcessingConsentRecord, owner_id) is None
+                assert await session.get(TrialActivationRecord, owner_id) is None
         finally:
             await engine.dispose()
 
     run_local_async(scenario)
 
 
-def test_private_quick_replies_are_owner_bound_versioned_and_single_use(
+def test_payment_receipt_does_not_create_initial_preferences(
+    onboarding_database: str,
+) -> None:
+    async def scenario() -> None:
+        engine = create_engine(onboarding_database)
+        sessions = create_session_factory(engine)
+        telegram_user_id = uuid4().int % 2**52 or 1
+        bot_id = 987654 + uuid4().int % 1_000_000
+        try:
+            now = datetime.now(UTC)
+            async with sessions() as session, session.begin():
+                receipt = await persist_update(
+                    session,
+                    bot_id=bot_id,
+                    payload={
+                        "update_id": 1,
+                        "message": {
+                            "message_id": 1,
+                            "date": int(now.timestamp()),
+                            "chat": {"id": telegram_user_id, "type": "private"},
+                            "from": {"id": telegram_user_id, "is_bot": False},
+                            "successful_payment": {
+                                "invoice_payload": "unmatched-invoice",
+                                "telegram_payment_charge_id": "unmatched-charge",
+                                "provider_payment_charge_id": "provider-charge",
+                                "currency": "XTR",
+                                "total_amount": 100,
+                                "is_recurring": False,
+                                "is_first_recurring": False,
+                            },
+                        },
+                    },
+                    owner_resolver=PostgresTelegramOwnerResolver(),
+                )
+                assert receipt is not None and receipt.accepted
+                owner_id = await session.scalar(
+                    select(TelegramOwnerRecord.owner_id).where(
+                        TelegramOwnerRecord.bot_id == bot_id,
+                        TelegramOwnerRecord.telegram_user_id == telegram_user_id,
+                    )
+                )
+                assert owner_id is not None
+            claim = await claim_application_job(sessions, worker_id="payment-receipt-first")
+            assert claim is not None
+            await process_application_job(sessions, claim, now=now)
+            async with sessions() as session:
+                assert await session.get(PreferencesRecord, owner_id) is None
+                assert await session.get(ProcessingConsentRecord, owner_id) is None
+                assert await session.get(TrialActivationRecord, owner_id) is None
+        finally:
+            await engine.dispose()
+
+    run_local_async(scenario)
+
+
+def test_settings_callbacks_are_owner_bound_versioned_and_single_use(
     onboarding_database: str,
 ) -> None:
     async def scenario() -> None:
@@ -764,7 +989,7 @@ def test_private_quick_replies_are_owner_bound_versioned_and_single_use(
         owner_id = None
         try:
 
-            async def dispatch(update_id: int, update: dict[str, object]) -> None:
+            async def dispatch(update_id: int, update: dict[str, object]) -> dict[str, object]:
                 nonlocal owner_id
                 now = datetime.now(UTC)
                 update["update_id"] = update_id
@@ -783,32 +1008,42 @@ def test_private_quick_replies_are_owner_bound_versioned_and_single_use(
                                 TelegramOwnerRecord.telegram_user_id == telegram_user_id,
                             )
                         )
-                claim = await claim_application_job(sessions, worker_id="quick-reply-test")
+                claim = await claim_application_job(sessions, worker_id="settings-callback-test")
                 assert claim is not None
                 await process_application_job(sessions, claim, now=now)
+                async with sessions() as session:
+                    event = await session.scalar(
+                        select(OutboxEvent).where(
+                            OutboxEvent.event_type == "telegram.reply.requested",
+                            OutboxEvent.causation_id == claim.job_id,
+                        )
+                    )
+                    assert event is not None
+                    return cast(dict[str, object], event.payload["payload"])
 
-            async def message_update(update_id: int, text: str) -> None:
-                await message_as(update_id, telegram_user_id, text)
-
-            async def message_as(update_id: int, actor_id: int, text: str) -> None:
-                await dispatch(
+            async def message(update_id: int, actor_id: int, text: str) -> dict[str, object]:
+                return await dispatch(
                     update_id,
                     {
                         "message": {
                             "message_id": update_id,
                             "chat": {"id": actor_id, "type": "private"},
-                            "from": {"id": actor_id, "is_bot": False},
+                            "from": {
+                                "id": actor_id,
+                                "is_bot": False,
+                                "language_code": "ru",
+                            },
                             "text": text,
                         }
                     },
                 )
 
-            async def click(update_id: int, actor_id: int, token: str) -> None:
-                await dispatch(
+            async def click(update_id: int, actor_id: int, token: str) -> dict[str, object]:
+                return await dispatch(
                     update_id,
                     {
                         "callback_query": {
-                            "id": f"callback-{update_id}",
+                            "id": f"settings-callback-{update_id}",
                             "from": {"id": actor_id, "is_bot": False},
                             "message": {
                                 "message_id": update_id,
@@ -819,238 +1054,44 @@ def test_private_quick_replies_are_owner_bound_versioned_and_single_use(
                     },
                 )
 
-            await message_update(1_000, "/start")
+            start_reply = await message(1_000, telegram_user_id, "/start")
             assert owner_id is not None
-            async with sessions() as session:
-                start_reply = next(
-                    event
-                    for event in await _owner_events(session, owner_id)
-                    if event.event_type == "telegram.reply.requested"
-                )
-                keyboard = start_reply.payload["reply_markup"]
-                assert isinstance(keyboard, dict)
-                russian_token = keyboard["inline_keyboard"][0][1]["callback_data"]
-                english_token = keyboard["inline_keyboard"][0][0]["callback_data"]
-                assert isinstance(russian_token, str) and isinstance(english_token, str)
+            buttons = start_reply["reply_markup"]["inline_keyboard"]
+            assert len(buttons) == 1 and len(buttons[0]) == 1
+            settings_token = buttons[0][0]["callback_data"]
+            await click(1_001, foreign_telegram_user_id, settings_token)
+            settings_reply = await click(1_002, telegram_user_id, settings_token)
+            await click(1_003, telegram_user_id, settings_token)  # duplicate use
+            await click(1_004, telegram_user_id, "forged-token")
 
-            await click(1_001, foreign_telegram_user_id, russian_token)
-            await click(1_002, telegram_user_id, russian_token)
-            await click(1_003, telegram_user_id, russian_token)  # duplicate use
-            await click(1_004, telegram_user_id, english_token)  # stale version/step
-            await click(1_005, telegram_user_id, "forged-token")
+            language_buttons = settings_reply["reply_markup"]["inline_keyboard"]
+            flattened_buttons = [button for row in language_buttons for button in row]
+            assert len(flattened_buttons) == 4
+            keep_token = flattened_buttons[2]["callback_data"]
+            home_zone_reply = await click(1_005, telegram_user_id, keep_token)
+            await click(1_006, telegram_user_id, keep_token)  # stale step
+            await message(1_007, telegram_user_id, "Almaty")
 
             async with sessions() as session:
+                profile = await session.get(PreferencesRecord, owner_id)
                 draft = await session.get(OnboardingRecord, owner_id)
-                assert draft is not None and draft.step == "home_zone"
-                assert draft.draft["language"] == "ru"
-                assert await session.get(PreferencesRecord, owner_id) is None
+                assert profile is not None and profile.language == "ru" and profile.version == 1
+                assert draft is not None and draft.mode == "preferences"
+                assert draft.step == "reminders"
+                assert draft.draft["home_zone"] == "Asia/Almaty"
                 assert await session.get(TrialActivationRecord, owner_id) is None
+                assert await session.get(ProcessingConsentRecord, owner_id) is None
                 replies = [
                     event
                     for event in await _owner_events(session, owner_id)
                     if event.event_type == "telegram.reply.requested"
                 ]
-                assert len(replies) == 5  # /start plus four original-owner callback outcomes
-                assert "часовой пояс" in replies[1].payload["plain_text"]
-
-            # Complete setup with the requested values; the profile's Edit button must
-            # work even though the completed onboarding row is retained.
-            for update_id, text in (
-                (1_006, "Asia/Almaty"),
-                (1_007, "suggested"),
-                (1_008, "suggested"),
-                (1_009, "подтверждаю"),
-            ):
-                await message_update(update_id, text)
-            async with sessions() as session:
-                assert await session.get(PreferencesRecord, owner_id) is None
-                draft = await session.get(OnboardingRecord, owner_id)
-                assert draft is not None and draft.mode == "initial" and draft.step == "confirm"
-                pending_reply = [
-                    event
-                    for event in await _owner_events(session, owner_id)
-                    if event.event_type == "telegram.reply.requested"
-                ][-1]
-                pending_keyboard = pending_reply.payload["reply_markup"]
-                consent_token = next(
-                    button["callback_data"]
-                    for row in pending_keyboard["inline_keyboard"]
-                    for button in row
-                    if button["text"] == "Согласиться и завершить настройку"
-                )
-            await click(1_010, telegram_user_id, consent_token)
-            async with sessions() as session:
-                completed = await session.get(PreferencesRecord, owner_id)
-                assert completed is not None and completed.version == 1
-                profile_reply = [
-                    event
-                    for event in await _owner_events(session, owner_id)
-                    if event.event_type == "telegram.reply.requested"
-                ][-1]
-                profile_keyboard = profile_reply.payload["reply_markup"]
-                settings_token = next(
-                    button["callback_data"]
-                    for row in profile_keyboard["inline_keyboard"]
-                    for button in row
-                    if button["text"] == "Изменить настройки"
-                )
-            await click(1_011, telegram_user_id, settings_token)
-            async with sessions() as session:
-                preview = await session.get(OnboardingRecord, owner_id)
-                assert preview is not None and preview.mode == "preferences"
-                assert preview.step == "language"
-
-            # Cancel and recreate a preview at the same step/version. An old confirm
-            # button must not apply to the new draft (draft UUID prevents ABA reuse).
-            for update_id, text in (
-                (1_012, "en"),
-                (1_013, "keep"),
-                (1_014, "keep"),
-                (1_015, "keep"),
-                (1_016, "keep"),
-            ):
-                await message_update(update_id, text)
-            async with sessions() as session:
-                preview_reply = [
-                    event
-                    for event in await _owner_events(session, owner_id)
-                    if event.event_type == "telegram.reply.requested"
-                ][-1]
-                preview_keyboard = preview_reply.payload["reply_markup"]
-                stale_confirm = next(
-                    button["callback_data"]
-                    for row in preview_keyboard["inline_keyboard"]
-                    for button in row
-                    if button["text"] == "Confirm"
-                )
-            await message_update(1_017, "/cancel")
-            await message_update(1_018, "/settings")
-            for update_id, text in (
-                (1_019, "en"),
-                (1_020, "keep"),
-                (1_021, "keep"),
-                (1_022, "keep"),
-                (1_023, "keep"),
-            ):
-                await message_update(update_id, text)
-            await click(1_024, telegram_user_id, stale_confirm)
-            async with sessions() as session:
-                recreated = await session.get(OnboardingRecord, owner_id)
-                current_profile = await session.get(PreferencesRecord, owner_id)
-                assert recreated is not None and recreated.mode == "preferences"
-                assert recreated.step == "confirm"
-                assert current_profile is not None and current_profile.version == 1
-                assert current_profile.home_zone == "Asia/Almaty"
-
-            # The preferences-only Keep current button for the home-zone step is
-            # a valid answer callback and remains single-use.
-            await message_update(1_025, "/cancel")
-            await message_update(1_026, "/settings")
-            async with sessions() as session:
-                assert owner_id is not None
-                language_reply = [
-                    event
-                    for event in await _owner_events(session, owner_id)
-                    if event.event_type == "telegram.reply.requested"
-                ][-1]
-                language_keyboard = language_reply.payload["reply_markup"]
-                english_token = next(
-                    button["callback_data"]
-                    for row in language_keyboard["inline_keyboard"]
-                    for button in row
-                    if button["text"] == "English"
-                )
-            await click(1_027, telegram_user_id, english_token)
-            async with sessions() as session:
-                zone_reply = [
-                    event
-                    for event in await _owner_events(session, owner_id)
-                    if event.event_type == "telegram.reply.requested"
-                ][-1]
-                zone_keyboard = zone_reply.payload["reply_markup"]
-                keep_zone_token = next(
-                    button["callback_data"]
-                    for row in zone_keyboard["inline_keyboard"]
-                    for button in row
-                    if button["text"] == "Keep current"
-                )
-            await click(1_028, telegram_user_id, keep_zone_token)
-            await click(1_029, telegram_user_id, keep_zone_token)
-            async with sessions() as session:
-                kept = await session.get(OnboardingRecord, owner_id)
-                saved = await session.get(PreferencesRecord, owner_id)
-                assert kept is not None and kept.step == "reminders"
-                assert kept.draft["language"] == "en"
-                assert kept.draft["home_zone"] == "Asia/Almaty"
-                assert saved is not None and saved.version == 1
-                assert saved.language == "ru" and saved.home_zone == "Asia/Almaty"
-
-            # A profile with no retained onboarding row starts each preview at the
-            # same version. The old confirm token must still fail after cancel/restart.
-            preview_user_id = foreign_telegram_user_id + 1
-            preview_owner_id = uuid4()
-            async with sessions() as session, session.begin():
-                session.add(
-                    TelegramOwnerRecord(
-                        bot_id=bot_id,
-                        telegram_user_id=preview_user_id,
-                        owner_id=preview_owner_id,
-                    )
-                )
-                saved = await SqlAlchemyIdentityStore(session).save_preferences(
-                    owner_id=preview_owner_id,
-                    expected_version=None,
-                    preferences=Preferences(language="en", home_zone="Asia/Almaty"),
-                )
-                assert saved is not None
-
-            update_id = 1_101
-            await message_as(update_id, preview_user_id, "/settings")
-            first_draft_id = None
-            for text in ("en", "keep", "keep", "keep"):
-                update_id += 1
-                await message_as(update_id, preview_user_id, text)
-            async with sessions() as session:
-                first_preview = await session.get(OnboardingRecord, preview_owner_id)
-                assert first_preview is not None and first_preview.step == "confirm"
-                first_draft_id = first_preview.draft_id
-                first_version = first_preview.version
-                first_reply = [
-                    event
-                    for event in await _owner_events(session, preview_owner_id)
-                    if event.event_type == "telegram.reply.requested"
-                ][-1]
-                first_keyboard = first_reply.payload["reply_markup"]
-                stale_confirm = next(
-                    button["callback_data"]
-                    for row in first_keyboard["inline_keyboard"]
-                    for button in row
-                    if button["text"] == "Confirm"
-                )
-            update_id += 1
-            await message_as(update_id, preview_user_id, "/cancel")
-            update_id += 1
-            await message_as(update_id, preview_user_id, "/settings")
-            for text in ("en", "keep", "keep", "keep"):
-                update_id += 1
-                await message_as(update_id, preview_user_id, text)
-            async with sessions() as session:
-                recreated = await session.get(OnboardingRecord, preview_owner_id)
-                assert recreated is not None and recreated.step == "confirm"
-                assert recreated.version == first_version
-                assert recreated.draft_id != first_draft_id
-            update_id += 1
-            await click(update_id, preview_user_id, stale_confirm)
-            async with sessions() as session:
-                recreated = await session.get(OnboardingRecord, preview_owner_id)
-                untouched = await session.get(PreferencesRecord, preview_owner_id)
-                assert recreated is not None and recreated.step == "confirm"
-                assert untouched is not None and untouched.version == 1
+                assert len(replies) == 7
+                assert home_zone_reply["plain_text"]
         finally:
             await engine.dispose()
 
     run_local_async(scenario)
-
 
 def test_lock_preferences_refreshes_cached_snapshot_and_holds_the_row_lock(
     onboarding_database: str,
@@ -1578,7 +1619,7 @@ def test_migration_does_not_backfill_existing_profiles(
     run_local_async(scenario)
 
 
-def test_initial_consent_details_and_callback_failure_roll_back_all_effects(
+def test_privacy_grant_is_explicit_owner_bound_and_policy_versioned(
     onboarding_database: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1609,23 +1650,19 @@ def test_initial_consent_details_and_callback_failure_roll_back_all_effects(
                         )
                     )
                     assert owner_id is not None
-                claim = await claim_application_job(sessions, worker_id="consent-atomicity-test")
+                claim = await claim_application_job(sessions, worker_id="privacy-grant-acceptance")
                 assert claim is not None
-                await telegram_application_worker.process_application_job(
-                    sessions, claim, now=now
-                )
+                await process_application_job(sessions, claim, now=now)
                 async with sessions() as session:
                     event = await session.scalar(
-                        select(OutboxEvent)
-                        .where(
+                        select(OutboxEvent).where(
                             OutboxEvent.owner_id == claim.owner_id,
                             OutboxEvent.event_type == "telegram.reply.requested",
                             OutboxEvent.causation_id == claim.job_id,
                         )
                     )
                     assert event is not None
-                    payload = event.payload.get("payload", event.payload)
-                    return cast(dict[str, object], payload)
+                    return cast(dict[str, object], event.payload["payload"])
 
             async def message(update_id: int, text: str) -> dict[str, object]:
                 return await dispatch(
@@ -1635,7 +1672,11 @@ def test_initial_consent_details_and_callback_failure_roll_back_all_effects(
                             "message_id": update_id,
                             "date": int(datetime.now(UTC).timestamp()),
                             "chat": {"id": telegram_user_id, "type": "private"},
-                            "from": {"id": telegram_user_id, "is_bot": False},
+                            "from": {
+                                "id": telegram_user_id,
+                                "is_bot": False,
+                                "language_code": "en",
+                            },
                             "text": text,
                         }
                     },
@@ -1648,7 +1689,7 @@ def test_initial_consent_details_and_callback_failure_roll_back_all_effects(
                     update_id,
                     {
                         "callback_query": {
-                            "id": f"consent-atomic-{update_id}",
+                            "id": f"privacy-grant-{update_id}",
                             "from": {"id": actor_id, "is_bot": False},
                             "message": {
                                 "message_id": update_id,
@@ -1659,131 +1700,44 @@ def test_initial_consent_details_and_callback_failure_roll_back_all_effects(
                     },
                 )
 
-            async def click(update_id: int, token: str) -> dict[str, object]:
-                return await click_as(update_id, telegram_user_id, token)
-
-            privacy = await message(9_000, "/privacy")
-            assert "has not been given" in str(privacy["plain_text"])
-            await message(9_001, "/start")
-            await message(9_002, "en")
-            await message(9_003, "Asia/Almaty")
-            await message(9_004, "suggested")
-            await message(9_005, "suggested")
-            plain_confirmation = await message(9_006, "yes")
-            assert owner_id is not None
+            privacy = await message(1, "/privacy")
+            assert "OpenRouter" in privacy["plain_text"]
+            assert len(privacy["reply_markup"]["inline_keyboard"]) == 1
+            original_token = privacy["reply_markup"]["inline_keyboard"][0][0]["callback_data"]
             async with sessions() as session:
-                assert await session.get(PreferencesRecord, owner_id) is None
-                draft = await session.get(OnboardingRecord, owner_id)
-                assert draft is not None and draft.step == "confirm"
-                before_details = (draft.draft_id, draft.version, dict(draft.draft))
-            keyboard = plain_confirmation["reply_markup"]["inline_keyboard"]
-            details_token = next(
-                button["callback_data"]
-                for row in keyboard
-                for button in row
-                if button["text"] == "Details"
-            )
-            details = await click(9_007, details_token)
-            assert "OpenRouter" in str(details["plain_text"])
-            details_keyboard = details["reply_markup"]["inline_keyboard"]
-            back_token = next(
-                button["callback_data"]
-                for row in details_keyboard
-                for button in row
-                if button["text"] == "Back to setup"
-            )
-            await click(9_008, back_token)
-            async with sessions() as session:
-                unchanged = await session.get(OnboardingRecord, owner_id)
-                assert unchanged is not None
-                assert (
-                    unchanged.draft_id, unchanged.version, dict(unchanged.draft)
-                ) == before_details
-                assert await session.get(PreferencesRecord, owner_id) is None
-
-            original_confirmation = await message(9_009, "confirm")
-            original_keyboard = original_confirmation["reply_markup"]["inline_keyboard"]
-            accept_token = next(
-                button["callback_data"]
-                for row in original_keyboard
-                for button in row
-                if button["text"] == "Agree and finish setup"
-            )
-            cancel_token = next(
-                button["callback_data"]
-                for row in original_keyboard
-                for button in row
-                if button["text"] == "Cancel"
-            )
-            await click_as(9_010, telegram_user_id + 1, accept_token)
-            async with sessions() as session:
-                assert await session.get(PreferencesRecord, owner_id) is None
+                profile = await session.get(PreferencesRecord, owner_id)
+                assert profile is not None and profile.language == "en" and profile.version == 1
                 assert await session.get(ProcessingConsentRecord, owner_id) is None
-            await click(9_011, cancel_token)
+                assert await session.get(TrialActivationRecord, owner_id) is None
+
+            await click_as(2, telegram_user_id + 1, original_token)
             async with sessions() as session:
-                assert await session.get(OnboardingRecord, owner_id) is None
-            await message(9_012, "/start")
-            await message(9_013, "en")
-            await message(9_014, "Asia/Almaty")
-            await message(9_015, "suggested")
-            await message(9_016, "suggested")
-            renewed_confirmation = await message(9_017, "confirm")
-            renewed_keyboard = renewed_confirmation["reply_markup"]["inline_keyboard"]
-            renewed_accept_token = next(
-                button["callback_data"]
-                for row in renewed_keyboard
-                for button in row
-                if button["text"] == "Agree and finish setup"
-            )
+                assert await session.get(ProcessingConsentRecord, owner_id) is None
+                assert await session.get(TrialActivationRecord, owner_id) is None
+
             with monkeypatch.context() as stale_policy:
                 stale_policy.setattr(
                     telegram_application_worker,
                     "PROCESSING_CONSENT_POLICY_VERSION",
                     "processing-consent-v2",
                 )
-                await click(9_018, renewed_accept_token)
+                await click_as(3, telegram_user_id, original_token)
             async with sessions() as session:
-                assert await session.get(PreferencesRecord, owner_id) is None
-                assert await session.get(ProcessingConsentRecord, owner_id) is None
-                current_draft = await session.get(OnboardingRecord, owner_id)
-                assert current_draft is not None and current_draft.step == "confirm"
-
-            refreshed_confirmation = await message(9_019, "confirm")
-            refreshed_keyboard = refreshed_confirmation["reply_markup"]["inline_keyboard"]
-            current_accept_token = next(
-                button["callback_data"]
-                for row in refreshed_keyboard
-                for button in row
-                if button["text"] == "Agree and finish setup"
-            )
-            await click(9_020, accept_token)
-            async with sessions() as session:
-                assert await session.get(PreferencesRecord, owner_id) is None
-                assert await session.get(ProcessingConsentRecord, owner_id) is None
-                current_draft = await session.get(OnboardingRecord, owner_id)
-                assert current_draft is not None and current_draft.step == "confirm"
-
-            complete_onboarding = SqlAlchemyIdentityStore.complete_onboarding
-
-            async def fail_after_trial_write(self, *args, **kwargs):
-                await complete_onboarding(self, *args, **kwargs)
-                raise RuntimeError("forced late onboarding failure")
-
-            monkeypatch.setattr(
-                SqlAlchemyIdentityStore, "complete_onboarding", fail_after_trial_write
-            )
-            with pytest.raises(RuntimeError, match="forced late onboarding failure"):
-                await click(9_021, current_accept_token)
-
-            async with sessions() as session:
-                assert await session.get(PreferencesRecord, owner_id) is None
                 assert await session.get(ProcessingConsentRecord, owner_id) is None
                 assert await session.get(TrialActivationRecord, owner_id) is None
-                token_hash = hashlib.sha256(current_accept_token.encode("utf-8")).hexdigest()
-                token_record = await session.get(TelegramCallbackTokenRecord, token_hash)
-                assert token_record is not None and token_record.consumed_at is None
-                pending = await session.get(OnboardingRecord, owner_id)
-                assert pending is not None and pending.step == "confirm"
+
+            refreshed_privacy = await message(4, "/privacy")
+            current_token = refreshed_privacy["reply_markup"]["inline_keyboard"][0][0][
+                "callback_data"
+            ]
+            await click_as(5, telegram_user_id, current_token)
+            async with sessions() as session:
+                profile = await session.get(PreferencesRecord, owner_id)
+                consent = await session.get(ProcessingConsentRecord, owner_id)
+                trial = await session.get(TrialActivationRecord, owner_id)
+                assert profile is not None and profile.version == 1
+                assert consent is not None and consent.state == "granted"
+                assert trial is not None and trial.telegram_user_id == telegram_user_id
         finally:
             await engine.dispose()
 

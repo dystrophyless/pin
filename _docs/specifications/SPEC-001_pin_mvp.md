@@ -1,5 +1,13 @@
 # SPEC-001: Pin overall MVP
 
+## Owner amendment v0.22 — 2026-11-28
+
+The owner removed mandatory Telegram onboarding. A first valid private text update creates a profile with RU for a Russian Telegram language tag and EN for other or missing tags. New profiles use UTC until the user selects another home zone in /settings. /start shows the zone in use. Preference edits accept supported city names and IANA zone names. Existing profiles keep their saved values.
+
+Default reminders remain one calendar day and one elapsed hour before timed plans. Quiet hours default to 22:00–08:00 and evening review to 20:00 in the profile's zone. Users can change these values in /settings. AI still requires an explicit grant from /privacy. This grant activates an eligible trial once through Billing. See the [processing consent contract](SPEC-001_processing_consent.md).
+
+For private Telegram chats, offer an HTML Widget on the first /start, through /timezone, and at the home-zone step of /settings. It reads the named device time zone locally and submits it only after the user taps. Zone proposals remain subject to preference confirmation and the existing schedule-impact rules. Settings continue to accept manual zone input.
+
 ## Owner scope amendment v0.21 — 2026-10-20
 
 **Owner decision:** jurisdiction-specific validated statutory financial-retention, entity-form and tax analysis is waived as a bot-phase acceptance/issue-closure gate. The owner explicitly prioritized Terms of Use, Privacy Policy and the required user protections. This supersedes earlier statements that such financial legal validation was mandatory. Its disposition is **WAIVED / NOT ASSESSED**, never PASS or a legal-compliance certification.
@@ -12,10 +20,10 @@ Landing remains deferred under v0.20. Actual Stars tests and the formal 99%/corp
 
 **Owner-confirmed:** pause landing work and focus exclusively on the Telegram bot. Landing design/content, hosting migration or upgrade, site CI/CD, referral/browser checks and Vercel commercial eligibility are outside the current bot phase. This is a phase deferral, not deletion of the eventual landing requirement or a claim of provider permission. Existing sites, deployments and integrations are left unchanged; this instruction does not authorize unpublishing them.
 
-For the current phase, AC15's landing portion and landing-specific dependencies in deployment, paid integration and release acceptance do not block Telegram-bot implementation or its phase verdict. Retain bot onboarding, subscription/offer presentation, synthetic payment/entitlement checks, support, privacy/deletion, operations and recovery. The owner's commercial intent and operation without IP/TOO are unchanged. The financial legal-validation gate is waived under v0.21; functional retention/recovery, processing consent and final bot-phase acceptance remain required. Historical full-MVP task text still applies to the later whole-product phase; it must not be mistaken for the current bot-only completion boundary. Actual Stars testing and the formal quantitative benchmark remain removed, not deferred. No new provider calls or spending are authorized.
+For the current phase, AC15's landing portion and landing-specific dependencies in deployment, paid integration and release acceptance do not block Telegram-bot implementation or its phase verdict. Retain private bot entry, subscription/offer presentation, synthetic payment/entitlement checks, support, privacy/deletion, operations and recovery. The owner's commercial intent and operation without IP/TOO are unchanged. The financial legal-validation gate is waived under v0.21; functional retention/recovery, processing consent and final bot-phase acceptance remain required. Historical full-MVP task text still applies to the later whole-product phase; it must not be mistaken for the current bot-only completion boundary. Actual Stars testing and the formal quantitative benchmark remain removed, not deferred. No new provider calls or spending are authorized.
 
 Status: **approved**
-Version: 0.21
+Version: 0.22
 Created: 2026-10-13 (Asia/Qyzylorda)
 Owner: Pin product owner (the user)
 Requirements source: [PROJECT_BRAINSTORM.md](../PROJECT_BRAINSTORM.md)
@@ -87,13 +95,13 @@ The following IDs refer directly to brainstorm sections; they do not allocate ne
 | R01 | Telegram is the only initial messenger; natural-language text and voice capture | §§1, 3–4 | Other messengers deferred; private chats only |
 | R02 | One-off appointments/tasks, deadlines, recurring tasks, and untimed daily tasks | §3 | Supported recurrence vocabulary and editing semantics O04 |
 | R03 | Ask about missing time; suggest options using known plans/preferences; allow untimed storage | §3 | One suggestion still requires confirmation; apparent gaps do not prove availability |
-| R04 | Personal reminder defaults in onboarding; explicit instructions override them; confirmation shows schedule | §§2–3 | Actual defaults, day-before interpretation, past reminder handling O01–O03 |
+| R04 | Personal reminder defaults in preferences; explicit instructions override them; confirmation shows schedule | §§2–3 | Actual defaults, day-before interpretation, past reminder handling O01–O03 |
 | R05 | Appointment-end, deadline, and evening-review completion checks | §3 | Appointment duration and review scheduling O03, O06 |
 | R06 | One extra nudge after an unanswered check-in with Done, Reschedule, Cancel | §3 | Delay and review-versus-item granularity O06; silence stays unconfirmed |
 | R07 | Daily/weekly plan views and practical help with steps, priorities, and rescheduling | §§3–4 | View layouts and saving suggested steps/priorities O08, O09 |
 | R08 | Suitable quick buttons, organized formatting, typing indicators | §4 | Parse mode, commands, layout, and fallback behavior O08, O10 |
 | R09 | Quiet hours for default reminders/nudges; explicit requested times take priority with visible conflicts | §3 | Defaults, initial check-in handling, and edge conflicts O03 |
-| R10 | Onboarding home zone; event-specific zones and explicit home-zone changes | §3 | Existing-plan shift choice must be clarified; DST and date rules O01, O04 |
+| R10 | Default and editable home zone; event-specific zones and explicit home-zone changes | §3 | Existing-plan shift choice must be clarified; DST and date rules O01, O04 |
 | R11 | Russian and English conversation, voice, and date interpretation; maximum three-minute recordings | §3 | Voice oversize/failure policy O07; Kazakh later |
 | R12 | Public paid launch with trial then subscription; pause reminders at trial expiry and warn beforehand | §6 | Commercial configuration/payment rules/paid expiry O11–O13 |
 | R13 | Clearly stated monthly AI-chat/voice allowances; allowance exhaustion preserves active subscribers' scheduled reminders | §6 | Units, reset boundaries, reservations/refunds, and exhaustion UX O12 |
@@ -129,13 +137,13 @@ The source's pricing snapshots, 600-call examples, and Whisper benchmark are his
 
 Each flow distinguishes its required outcome from the proposed mechanics and decisions that prevent final acceptance.
 
-### F01 — Start, onboard, and establish access
+### F01 — Start and establish access
 
-C: enter from the landing or directly in Telegram; establish Russian/English conversation, confirm the home zone, and configure personal reminders. The offer is trial then subscription.
+C: enter the bot directly in Telegram or from the landing. Show a short start message in Russian or English and offer optional preference edits. The offer is trial then subscription.
 
-P: identify the user from Telegram, persist a profile, present concise language/zone/reminder/quiet-hour choices, and show access/allowance status. Returning users retain saved preferences. Avoid guessing a timezone from language or the server location.
+P: identify the user from Telegram and persist a default profile on the first private text update. Returning users retain their saved preferences. /settings edits language, zone, reminder offsets, quiet hours, and review time. /subscription shows access and allowances.
 
-Section 11 resolves O02/O03/O11/O12/O17: onboarding defaults/order, trial and allowances, and private-chat scope. Onboarding is not permission for external calendar access.
+Section 11 records O02/O03/O11/O12/O17, including default preferences, trial, allowances, and private-chat scope.
 
 ### F02 — Capture a complete one-off plan
 
@@ -313,7 +321,7 @@ Section 11 records exact choices and routine implementation defaults. The prior 
 | ID | Current contract / resolution |
 |---|---|
 | O01 | Same-local-time previous calendar day; exact elapsed offsets remain distinct; clarify ambiguous dates and past requested times. |
-| O02 | Preview every mutation and confirm before saving; atomic editable batches; explicit onboarding and 24-hour draft lifetime. |
+| O02 | Preview every mutation and confirm before saving; atomic editable batches; optional preference edits and 24-hour plan draft lifetime. |
 | O03 | Default reminders one day/one hour; quiet hours 22:00–08:00; review 20:00; defer eligible defaults and disclose omitted reminders. |
 | O04 | Daily/weekly/monthly recurrence; missing monthly date clamps; DST gap shifts; edit this or this-and-future; preserve history and ask about zone changes. |
 | O05 | Useful future-event reminders and one recovery summary; no automatic unknown-send retry; document unavoidable in-flight race. |
@@ -322,7 +330,7 @@ Section 11 records exact choices and routine implementation defaults. The prior 
 | O08 | Monday-start local week, localized templates, deterministic commands, explicit empty/untimed/overdue views. |
 | O09 | Editable atomic batches; advice saved only on request as ordinary previewed tasks; no dedicated subtasks/priority schema. |
 | O10 | MarkdownV2 with escaping, focused inline buttons, truthful processing/typing, safe format-error fallback. |
-| O11 | Seven-day trial after onboarding; 250 Stars/30 days, auto-renew/cancel; manual support refunds; receipts grant access. |
+| O11 | Seven-day trial after explicit AI consent for eligible accounts; 250 Stars/30 days, auto-renew/cancel; manual support refunds; receipts grant access. |
 | O12 | Paid 1,000 AI turns/60 voice minutes; trial 250 turns/15 minutes; period-based atomic reservations, no rollover, failed-work refunds. |
 | O13 | Trial/paid expiry pauses reminders/new planning; allow viewing, completion and cancellation; useful recovery on renewal. |
 | O14 | Pin, Russian/English responsive referral landing, product examples and truthful price; no website checkout or analytics. |
@@ -354,7 +362,7 @@ All criteria are **unexecuted**. C denotes a confirmed product outcome and P sup
 
 | AC | Basis and observable acceptance result | Decisions / evidence needed |
 |---|---|---|
-| AC01 | C: onboarding persists the user's selected language/home zone and personal reminders; returning sessions recover them | O02/O03/O11/O17; RU/EN onboarding and restart integration |
+| AC01 | C: first private text persists Telegram-derived language, UTC, and reminder defaults without a wizard. Returning sessions recover saved values and users can edit preferences | O02/O03/O11/O17, RU/EN start and restart integration |
 | AC02 | C/P: complete text capture produces one owned saved plan and a truthful confirmation with resolved schedule; duplicate delivery creates no second plan | O01/O02/O09; persisted-state plus message and command-retry evidence |
 | AC03 | C: a valid 180-second-or-shorter recording can produce RU/EN text and the same validated creation/clarification outcome as text; >180 seconds cannot be accepted as a valid full recording | O02/O07; actual voice fixtures and duration boundary checks; no claimed perfect recognition |
 | AC04 | C: absent time asks and offers appropriate choices/untimed option; one suggestion is confirmed; explicit reminders override defaults and appear in confirmation | O01/O02/O03; ambiguous, sole-option, multiple-option, untimed, conflicting-default fixtures |
@@ -420,13 +428,13 @@ Approval evidence: the user's request to decompose the “approved Pin MVP speci
 - **Owner scope amendment, 2026-10-15:** actual Telegram Stars payment testing (including Test Server top-up, actual checkout/receipt, renewal/cancellation and refund transactions) is removed from required verification and acceptance, not deferred to a later gate. This supersedes payment-test/provider-payment-proof requirements elsewhere in this specification and tasks #20, #26 and #28. Keep the Stars payment feature and validate its application logic locally using synthetic trusted transport events and PostgreSQL, including receipt validation/idempotency, access periods, refunds, quotas and expiry. Such evidence must be labelled synthetic; it does not establish actual provider operation. This change does not authorize real payments or deployment and does not remove unrelated legal, model-provider or hosting requirements.
 - Preview **every change**, including Done, cancellation, editing, and creation; persist only after confirmation. Multiple tasks use one editable, fully clarified, atomic batch. Cancelling a draft has no plan effect.
 - “One day before” means the same local time on the preceding calendar day; “24 hours before” is an elapsed offset.
-- Onboarding reminder suggestions: one calendar day and one hour before timed plans, editable by the user.
+- Reminder defaults: one calendar day and one hour before timed plans, editable by the user.
 - Quiet hours 22:00–08:00 apply to defaults, initial completion checks, and nudges; explicitly requested reminder times take priority with visible conflicts.
 - One evening review at 20:00, editable, for outstanding untimed tasks; task-specific actions and at most one summary follow-up.
 - Ask for missing appointment duration/end; completion check at confirmed end. Extra nudge one hour after confirmed check-in delivery, deferred out of quiet hours.
 - Daily, weekly, monthly repeats with N-intervals, selected weekdays, monthly day/last-day, optional end date or count. Missing monthly day uses the month's last day but retains the original pattern. DST forward gaps shift that occurrence forward by the gap.
 - Recurring changes offer this occurrence or this-and-future; past history remains unchanged.
-- Trial starts after completed onboarding, lasts seven days, and includes 250 AI turns and 15 voice minutes.
+- An eligible trial starts on explicit AI consent in /privacy, lasts seven days, and includes 250 AI turns and 15 voice minutes.
 - One paid plan: **250 Stars per 30 days**, auto-renewal disclosed, cancellation retains paid-through access. Allowances: 1,000 AI turns and 60 voice minutes per paid period. A user turn is one AI interaction, not each internal model call; deterministic commands/buttons do not consume AI allowance.
 - Trial/paid expiry pauses reminders and new planning/AI/voice, while preserving view, complete, and cancel actions.
 - Recovery/renewal sends useful coalesced reminders if the event is still ahead, skips expired advance reminders, and offers one summary of unresolved past tasks; never auto-reschedules.
@@ -491,7 +499,7 @@ The owner removed the 99% model-quality target, mandatory 400-request corpus and
 
 These complete implementable contracts without changing the choices above; they are distinct from the historical brainstorm's confirmed requirements.
 
-- Onboarding: language -> explicitly confirmed IANA home zone -> reminders -> quiet hours/review time -> policy summary/confirmation. Enable the trial only after final confirmation. Offer suggested defaults, never guess the zone from language. Warn 24 hours and one hour before expiry, respecting quiet hours; the effective expiry remains unchanged. Show expiry state on the next interaction even if notification delivery fails.
+- First start uses Telegram's language and the default preferences above. Offer optional edits in /settings and enable an eligible trial after explicit AI consent in /privacy. Warn 24 hours and one hour before expiry, respecting quiet hours; the effective expiry remains unchanged. Show expiry state on the next interaction even if notification delivery fails.
 - Preview records expire after 24 hours; corrections regenerate the preview and version. Clarify ambiguous relative dates, AM/PM, target tasks, and past requested instants rather than applying a guessed interpretation. Omit past **default** reminder offsets with an explicit preview notice; require the user's acceptance of the displayed remaining schedule.
 - Quiet-hour defaults may be deferred only if still useful before event start; otherwise omit and flag them in preview, offering an explicitly chosen alternative. Completion checks defer until quiet hours end. Deadline checks are due when the deadline passes. A timezone-change preview offers keeping event schedules or deliberately reinterpreting selected future local schedules; event zones and history are otherwise preserved.
 - For an ambiguous one-off DST time ask earlier/later. A recurring repeated DST time uses the earlier occurrence, disclosed in the series preview; count it once. Stop conditions operate on generated occurrences. Completing one occurrence never completes later repeats. Reopening completed tasks is outside MVP.
@@ -524,7 +532,7 @@ The task package was independently reviewed and published as 28 GitHub Issues on
 | `formatting` — Render safe Russian/English Telegram results | structured results become usable localized messages and owner-bound controls without corrupt formatting. | [#4](https://github.com/dystrophyless/pin/issues/4) |
 | `ingress` — Persist authenticated Telegram updates before acknowledging them | private-chat updates reliably enter durable processing without duplicate work or cross-user identity claims. | [#5](https://github.com/dystrophyless/pin/issues/5) |
 | `access` — Enforce entitlement and usage reservations independently | every operation receives an authoritative access decision, with concurrent usage unable to overspend the chosen allowance. | [#6](https://github.com/dystrophyless/pin/issues/6) |
-| `profile` — Complete onboarding and retain personal preferences | a returning user recovers explicitly confirmed RU/EN language, home zone, reminders, quiet hours, and review time; onboarding activates one trial. | [#7](https://github.com/dystrophyless/pin/issues/7) |
+| `profile` — Historical MVP profile implementation | the original issue delivered durable editable preferences and one-trial behavior. Amendment v0.22 governs the current start flow. | [#7](https://github.com/dystrophyless/pin/issues/7) |
 | `plans` — Persist validated one-off and untimed commands without duplicates | a confirmed typed command creates exactly one owned plan and preserves its intended calendar meaning. | [#8](https://github.com/dystrophyless/pin/issues/8) |
 | `agenda` — Show persisted today/week plans and clear empty states | `/today` and `/week` display the user's saved local calendar accurately, including untimed and overdue items. | [#9](https://github.com/dystrophyless/pin/issues/9) |
 | `recurrence` — Generate stable recurring occurrences and calendar exceptions | daily/weekly/monthly series generate independent, uniquely identifiable occurrences under the adopted calendar rules. | [#10](https://github.com/dystrophyless/pin/issues/10) |

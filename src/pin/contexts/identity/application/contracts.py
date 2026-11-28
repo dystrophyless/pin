@@ -7,7 +7,6 @@ from datetime import datetime, time
 from typing import Protocol
 from uuid import UUID
 
-from pin.contexts.billing.api import TrialActivationResult
 from pin.contexts.identity.domain.preferences import Preferences
 
 
@@ -140,10 +139,3 @@ class IdentityStore(Protocol):
     async def invalidate_restored_processing_consent(self, owner_id: UUID) -> bool: ...
 
     async def list_granted_processing_consent_owners(self) -> tuple[UUID, ...]: ...
-
-
-class TrialActivator(Protocol):
-    async def lock_account_lifecycle(self, owner_id: UUID) -> None: ...
-    async def activate_trial(
-        self, *, owner_id: UUID, telegram_user_id: int, at: datetime
-    ) -> TrialActivationResult: ...

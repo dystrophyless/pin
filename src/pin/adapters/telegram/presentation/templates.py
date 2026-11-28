@@ -10,6 +10,7 @@ _HELP = {
         "/today — today's plans\n"
         "/week — this week's plans\n"
         "/settings — preferences\n"
+        "/timezone — use your device time zone\n"
         "/subscription — access and allowance\n"
         "/privacy — privacy information\n"
         "/support — contact support"
@@ -19,6 +20,7 @@ _HELP = {
         "/today — планы на сегодня\n"
         "/week — планы на эту неделю\n"
         "/settings — настройки\n"
+        "/timezone — пояс устройства\n"
         "/subscription — доступ и лимиты\n"
         "/privacy — конфиденциальность\n"
         "/support — связь с поддержкой"
@@ -86,6 +88,14 @@ def plain_privacy(language: str) -> str:
         return _PRIVACY[language]
     except KeyError as error:
         raise ValueError("unsupported language") from error
+
+
+def processing_consent_required_text(language: str) -> str:
+    return (
+        "Allow processing in /privacy before sending this task. Then send it again."
+        if language == "en"
+        else "Разрешите обработку в /privacy, затем отправьте задачу ещё раз."
+    )
 
 
 def render_help(language: str) -> str:

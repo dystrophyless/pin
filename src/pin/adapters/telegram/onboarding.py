@@ -1,4 +1,4 @@
-"""Translate private Telegram text updates into Identity onboarding commands."""
+"""Route Telegram start and preferences commands."""
 
 from __future__ import annotations
 
@@ -7,16 +7,22 @@ from datetime import datetime
 from enum import StrEnum
 from uuid import UUID
 
-from pin.adapters.telegram.presentation.onboarding import OnboardingReply, render_onboarding
-from pin.contexts.identity.application.contracts import IdentityStore, TrialActivator
+from pin.adapters.telegram.presentation.formatting import escape_markdown_v2
+from pin.adapters.telegram.presentation.onboarding import (
+    OnboardingReply,
+    render_device_timezone,
+    render_onboarding,
+    render_start,
+)
+from pin.adapters.telegram.presentation.templates import processing_consent_required_text
+from pin.contexts.identity.application.contracts import IdentityStore
 from pin.contexts.identity.application.onboarding import (
     OnboardingResult,
     answer_onboarding,
-    begin_onboarding,
     begin_preferences_edit,
-    confirm_onboarding,
-    get_preferences,
+    confirm_preferences_edit,
 )
+from pin.contexts.identity.application.processing_consent import get_processing_consent
 
 
 class DispatchDisposition(StrEnum):
@@ -35,33 +41,61 @@ async def handle_private_text(
     store: IdentityStore,
     *,
     owner_id: UUID,
-    telegram_user_id: int,
     text: str,
     now: datetime,
-    trial_activator: TrialActivator,
 ) -> PrivateMessageResult:
-    """Handle only the owned onboarding/settings flow; ordinary plans stay unhandled."""
+    """Handle start and optional settings; ordinary plans stay unhandled."""
     command = _command(text)
     if command == "/start":
-        result = await begin_onboarding(store, owner_id=owner_id, now=now)
+        profile = await store.get_preferences(owner_id)
+        if profile is not None:
+            consent = await get_processing_consent(store, owner_id=owner_id)
+            return PrivateMessageResult(
+                DispatchDisposition.HANDLED,
+                OnboardingResult("started_bot", preferences=profile),
+                render_start(profile, ai_enabled=consent.state == "granted"),
+            )
+        result = OnboardingResult("not_in_progress")
     elif command == "/settings":
-        result = await begin_preferences_edit(store, owner_id=owner_id, now=now)
+        result = await begin_preferences_edit(store, owner_id=owner_id)
+    elif command == "/timezone":
+        profile = await store.get_preferences(owner_id)
+        if profile is None:
+            result = OnboardingResult("not_in_progress")
+        else:
+            draft = await store.get_onboarding(owner_id)
+            if draft is not None and draft.mode == "preferences" and draft.step != "complete":
+                text = (
+                    "Завершите текущую настройку или отправьте /cancel, затем /timezone."
+                    if profile.language == "ru"
+                    else "Finish the current edit or send /cancel, then /timezone."
+                )
+                return PrivateMessageResult(
+                    DispatchDisposition.HANDLED,
+                    OnboardingResult("device_zone_reply", preferences=profile),
+                    OnboardingReply(escape_markdown_v2(text), text),
+                )
+            return PrivateMessageResult(
+                DispatchDisposition.HANDLED,
+                OnboardingResult("device_timezone", preferences=profile),
+                render_device_timezone(profile),
+            )
     else:
         result = await answer_onboarding(store, owner_id=owner_id, text=text)
-        if result.state in {"not_in_progress", "already_complete"}:
-            profile = await get_preferences(store, owner_id)
-            if profile is None:
-                result = await begin_onboarding(store, owner_id=owner_id, now=now)
-            else:
-                result = OnboardingResult("unhandled", preferences=profile)
+        if result.state == "not_in_progress":
+            profile = await store.get_preferences(owner_id)
+            result = OnboardingResult("unhandled", preferences=profile)
+            if profile is not None and command is None:
+                consent = await get_processing_consent(store, owner_id=owner_id)
+                if consent.state != "granted":
+                    notice = processing_consent_required_text(profile.language)
+                    return PrivateMessageResult(
+                        DispatchDisposition.HANDLED,
+                        result,
+                        OnboardingReply(escape_markdown_v2(notice), notice),
+                    )
         elif result.state == "ready_to_confirm":
-            result = await confirm_onboarding(
-                store,
-                trial_activator,
-                owner_id=owner_id,
-                telegram_user_id=telegram_user_id,
-                now=now,
-            )
+            result = await confirm_preferences_edit(store, owner_id=owner_id, now=now)
     disposition = (
         DispatchDisposition.UNHANDLED
         if result.state == "unhandled"

@@ -207,6 +207,7 @@ async def _text(
     value: str,
     at: datetime,
     assistant: BoundedPlanningAssistant,
+    language_code: str | None = None,
 ) -> tuple[UUID, UUID, dict[str, object]]:
     return await _submit(
         sessions,
@@ -216,7 +217,12 @@ async def _text(
         update={
             "message": {
                 "message_id": uuid4().int % 1_000_000,
-                "from": {"id": telegram_user_id, "is_bot": False, "first_name": "Fixture"},
+                "from": {
+                    "id": telegram_user_id,
+                    "is_bot": False,
+                    "first_name": "Fixture",
+                    **({"language_code": language_code} if language_code else {}),
+                },
                 "chat": {"id": telegram_user_id, "type": "private"},
                 "date": int(at.timestamp()),
                 "text": value,
@@ -314,7 +320,33 @@ def test_initial_consent_flows_through_capture_and_reply_with_localized_determin
         assistant = _assistant(sessions, provider, now)
         delivery = _FakeTelegram()
         try:
-            owner_id, _, _ = await _text(
+            owner_id, denied_inbox_id, denied = await _text(
+                sessions,
+                delivery,
+                bot_id=bot_id,
+                telegram_user_id=telegram_user_id,
+                value=(
+                    "Schedule a review tomorrow at 9"
+                    if language == "en"
+                    else "Р—Р°РїР»Р°РЅРёСЂСѓР№ РѕР±Р·РѕСЂ РЅР° Р·Р°РІС‚СЂР° РІ 9"
+                ),
+                at=now,
+                assistant=assistant,
+                language_code=language,
+            )
+            assert "privacy" in str(denied["plain_text"]).casefold()
+            assert provider.calls == 0
+            assert await _reservation_count(sessions, owner_id) == 0
+            async with sessions() as session:
+                profile = await session.get(PreferencesRecord, owner_id)
+                consent = await session.get(ProcessingConsentRecord, owner_id)
+                trial = await session.get(TrialActivationRecord, owner_id)
+                denied_inbox = await session.get(InboxUpdate, denied_inbox_id)
+            assert profile is not None and profile.language == language and profile.version == 1
+            assert consent is None and trial is None
+            assert denied_inbox is not None and denied_inbox.processing_grant_id is None
+
+            start = await _text(
                 sessions,
                 delivery,
                 bot_id=bot_id,
@@ -323,87 +355,26 @@ def test_initial_consent_flows_through_capture_and_reply_with_localized_determin
                 at=now,
                 assistant=assistant,
             )
-            for answer in (
-                language,
-                "Asia/Almaty",
-                "suggested"
-                if language == "en"
-                else "по умолчанию",
-                "suggested"
-                if language == "en"
-                else "по умолчанию",
-            ):
-                await _text(
-                    sessions,
-                    delivery,
-                    bot_id=bot_id,
-                    telegram_user_id=telegram_user_id,
-                    value=answer,
-                    at=now,
-                    assistant=assistant,
-                )
-            consent_prompt = await _text(
+            assert len(start[2]["reply_markup"]["inline_keyboard"]) == 1
+            privacy = await _text(
                 sessions,
                 delivery,
                 bot_id=bot_id,
                 telegram_user_id=telegram_user_id,
-                value="confirm"
-                if language == "en"
-                else "подтверждаю",
+                value="/privacy",
                 at=now,
                 assistant=assistant,
             )
-            details_label = (
-                "Details"
-                if language == "en"
-                else "Подробнее"
-            )
-            details = await _callback(
-                sessions,
-                delivery,
-                bot_id=bot_id,
-                telegram_user_id=telegram_user_id,
-                value=_button(consent_prompt[2], details_label),
-                at=now,
-                assistant=assistant,
-            )
-            assert "OpenRouter" in str(details[2]["plain_text"])
-            back_label = (
-                "Back to setup"
-                if language == "en"
-                else "Вернуться к настройке"
-            )
+            assert "OpenRouter" in str(privacy[2]["plain_text"])
+            privacy_buttons = privacy[2]["reply_markup"]["inline_keyboard"]
+            assert len(privacy_buttons) == 1 and len(privacy_buttons[0]) == 1
+            grant_token = privacy_buttons[0][0]["callback_data"]
             await _callback(
                 sessions,
                 delivery,
                 bot_id=bot_id,
                 telegram_user_id=telegram_user_id,
-                value=_button(details[2], back_label),
-                at=now,
-                assistant=assistant,
-            )
-            consent_prompt = await _text(
-                sessions,
-                delivery,
-                bot_id=bot_id,
-                telegram_user_id=telegram_user_id,
-                value="confirm"
-                if language == "en"
-                else "подтверждаю",
-                at=now,
-                assistant=assistant,
-            )
-            accept_label = (
-                "Agree and finish setup"
-                if language == "en"
-                else "Согласиться и завершить настройку"
-            )
-            await _callback(
-                sessions,
-                delivery,
-                bot_id=bot_id,
-                telegram_user_id=telegram_user_id,
-                value=_button(consent_prompt[2], accept_label),
+                value=grant_token,
                 at=now,
                 assistant=assistant,
             )
@@ -414,9 +385,9 @@ def test_initial_consent_flows_through_capture_and_reply_with_localized_determin
             assert profile is not None and profile.language == language
             assert consent is not None and consent.state == "granted"
             assert trial is not None
+            # The denied text is not replayed when consent is granted.
             assert await _reservation_count(sessions, owner_id) == 0
             assert provider.calls == 0
-
             reply_start = len(delivery.replies)
             _, inbox_id, reply = await _text(
                 sessions,

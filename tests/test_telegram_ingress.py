@@ -11,7 +11,13 @@ from aiogram import Bot
 from aiogram.types import Update
 
 from pin.adapters.telegram import polling
-from pin.adapters.telegram.ingress import IngressReceipt, private_actor, validate_update
+from pin.adapters.telegram.ingress import (
+    IngressReceipt,
+    _normalized_widget_query,
+    acknowledge_widget_query,
+    private_actor,
+    validate_update,
+)
 from pin.bootstrap.config import ProcessRole, SettingsError, load_settings
 
 BOT_TOKEN = "712345678:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijk"
@@ -44,6 +50,90 @@ def test_update_validation_discards_untrusted_owner_fields() -> None:
         assert "owner_id" not in validated["message"]
     finally:
         asyncio.run(bot.session.close())
+
+
+def test_widget_query_is_preserved_and_binds_private_sender_message_and_data() -> None:
+    bot = Bot(BOT_TOKEN)
+    query = {
+        "id": "widget-query-1",
+        "from": {"id": 42, "is_bot": False, "first_name": "Test"},
+        "chat": {"id": 42, "type": "private"},
+        "message_id": 17,
+        "chat_instance": "private-instance",
+        "type": {"type": "data"},
+        "data": '{"timezone":"Europe/Paris"}',
+    }
+    try:
+        validated = validate_update({"update_id": 99, "widget_query": query}, bot)
+    finally:
+        asyncio.run(bot.session.close())
+
+    assert validated["widget_query"] == query
+    assert private_actor(validated) == (42, "widget_query", None)
+
+
+def test_normalized_widget_query_remains_worker_valid_without_untrusted_extras() -> None:
+    normalized = _normalized_widget_query(
+        {
+            "id": "widget-query-1",
+            "from": {"id": 42, "is_bot": False, "first_name": "Test", "owner_id": "bad"},
+            "chat": {"id": 42, "type": "private", "owner_id": "bad"},
+            "message_id": 17,
+            "chat_instance": "private-instance",
+            "type": {"type": "data"},
+            "data": '{"timezone":"Europe/Paris"}',
+        }
+    )
+
+    assert private_actor({"widget_query": normalized}) == (42, "widget_query", None)
+    assert normalized["from"] == {"id": 42, "is_bot": False}
+    assert normalized["chat"] == {"id": 42, "type": "private"}
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"chat": {"id": 43, "type": "private"}},
+        {"chat": {"id": 42, "type": "group"}},
+        {"message_id": 0},
+        {"type": {"type": "sign_data"}},
+        {"data": "я" * 33},
+        {"inline_message_id": "inline-only"},
+    ],
+)
+def test_widget_query_rejects_non_private_or_unsupported_shapes(change: dict[str, Any]) -> None:
+    query: dict[str, Any] = {
+        "id": "widget-query-1",
+        "from": {"id": 42, "is_bot": False, "first_name": "Test"},
+        "chat": {"id": 42, "type": "private"},
+        "message_id": 17,
+        "chat_instance": "private-instance",
+        "type": {"type": "data"},
+        "data": '{"timezone":"Europe/Paris"}',
+    }
+    query.update(change)
+    assert private_actor({"widget_query": query}) is None
+
+
+def test_widget_query_ack_returns_status_to_widget() -> None:
+    async def scenario() -> None:
+        class FakeBot:
+            async def __call__(self, method: object, **kwargs: object) -> bool:
+                assert kwargs == {"request_timeout": 2}
+                assert method.widget_query_id == "widget-query-1"  # type: ignore[attr-defined]
+                assert method.data == '{"status":"queued"}'  # type: ignore[attr-defined]
+                return True
+
+        assert (
+            await acknowledge_widget_query(
+                FakeBot(),  # type: ignore[arg-type]
+                "widget-query-1",
+                data='{"status":"queued"}',
+            )
+            is True
+        )
+
+    asyncio.run(scenario())
 
 
 @pytest.mark.parametrize(

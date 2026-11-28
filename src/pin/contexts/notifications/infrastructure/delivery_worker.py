@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, time, timedelta
 from typing import Protocol, cast
 from uuid import UUID, uuid4
@@ -877,12 +877,20 @@ async def deliver_reply_job(
                     markdown = payload.get("markdown")
                     plain_text = payload.get("plain_text")
                     markup = payload.get("reply_markup")
+                    widget_html = payload.get("widget_html")
                     if (
                         not isinstance(markdown, str)
                         or not markdown.strip()
                         or not isinstance(plain_text, str)
                         or not plain_text.strip()
                         or (markup is not None and not isinstance(markup, dict))
+                        or (
+                            widget_html is not None
+                            and (
+                                not isinstance(widget_html, str)
+                                or not 1 <= len(widget_html.encode("utf-8")) <= 32768
+                            )
+                        )
                     ):
                         immediate = await _record_reply_outcome(
                             session,
@@ -934,7 +942,13 @@ async def deliver_reply_job(
                             )
                             await complete_job(session, claim)
                         else:
-                            fallback = TelegramReplySend(destination, markdown, plain_text, markup)
+                            fallback = TelegramReplySend(
+                                destination,
+                                markdown,
+                                plain_text,
+                                markup,
+                                widget_html=widget_html,
+                            )
                             if safe_deleted_denial:
                                 final_message: TelegramReplySend | None = fallback
                                 immediate = None
@@ -1065,6 +1079,8 @@ async def _prepare_reply_message(
             and (message.reply_markup is None or isinstance(message.reply_markup, dict))
             and message.parse_mode in {None, "MarkdownV2"}
         ):
+            if fallback.widget_html is not None:
+                message = replace(message, widget_html=fallback.widget_html)
             return message, None
         decision = ReplyPreparation(reason="reply_preparation_invalid")
     outcome = await _record_reply_outcome(

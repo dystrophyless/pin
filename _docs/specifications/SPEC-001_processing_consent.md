@@ -2,6 +2,8 @@
 
 **Owner scope amendment, 2026-10-20:** [MVP v0.21](SPEC-001_pin_mvp.md) waives jurisdiction-specific financial-retention/entity/tax validation as an acceptance/closure gate (WAIVED / NOT ASSESSED). Required Terms of Use, Privacy Policy, explicit processing consent, support/payment transparency, functional retention/deletion/recovery and technical delivery remain. This changes no C1–C5 enforcement invariant, runtime behavior or retained-data lifetime; historical review records remain attributable to their original revision.
 
+**Owner amendment, 2026-11-28:** [MVP v0.22](SPEC-001_pin_mvp.md) removes initial onboarding. C2 and PC-01/PC-02 below describe the current start and consent entry. Historical baseline and review evidence retain their original scope.
+
 Status: draft for independent specification review
 Created: 2026-10-19
 Scope owner: Pin owner
@@ -11,13 +13,13 @@ Approval: the owner approved the product choices recorded below; this implementa
 
 ## Goal, authority, and scope
 
-Enable explicit, durable, revocable consent before Pin sends a user's text, voice transcript, or relevant saved-plan context to external AI providers. Obtain it within onboarding using one explicit final action, with a concise provider-neutral notice and a working details button. Existing users must give the same consent before their next AI request. Reading a notice, sending a message, owning a profile, using a trial, or paying does not grant consent.
+Enable explicit, durable, revocable consent before Pin sends a user's text, voice transcript, or relevant saved-plan context to external AI providers. Offer the full localized notice and an explicit acceptance action in /privacy. Direct users with missing, revoked, or obsolete consent to /privacy before their next AI request. Reading a notice, sending a message, owning a profile, using a trial, or paying does not grant consent.
 
 This increment covers the Telegram bot, including text, voice, advice, clarification, queued/replayed work, deletion/return, and restored snapshots. Landing work remains deferred by the owner. Payment authorization remains a separate Billing contract. No KGD inquiry, external provider requests, real Stars tests, new spend, retained-data lifetime, or assertion of legal compliance is authorized by this document. The existing 24-attempt provider allowance is exhausted.
 
 ## Inspected implementation anchors
 
-Paths are repository-relative. These are current implementation anchors, not claims that consent already exists.
+Paths are repository-relative. These anchors document the baseline reviewed for the original consent increment.
 
 | Boundary | Inspected code and required reach |
 |---|---|
@@ -45,20 +47,13 @@ Identity exposes owner-checked reads, grant, revoke, and verification of that tu
 
 No numeric consent retention/expiry is selected. The operational current record follows account deletion; this does not authorize retaining new consent evidence after deletion.
 
-### C2. Explicit onboarding and existing-user actions
+### C2. Explicit consent in Telegram
 
-At the final initial-onboarding preview, display the existing preference summary and this concise notice in the selected language:
+The first private text update persists default preferences. Show the current zone and the /privacy route on /start when consent is needed. /privacy displays the full current bilingual notice, consent status, and one action. The labels are EN "Agree and enable AI" / RU "Согласиться и включить ИИ" for consent and the corresponding withdrawal action while granted. The notice names OpenRouter and the selected model-provider role, explains local voice transcription and potential external transcript processing, and gives the existing retention, deletion, provider-copy, and unresolved statutory-payment details.
 
-- EN: "Pin uses external AI services to interpret your text, voice transcripts, and relevant context from your plans. By choosing Agree and finish setup, you consent to this processing. You can withdraw consent in /privacy."
-- RU: "Pin использует внешние ИИ-сервисы для обработки вашего текста, расшифровок голоса и релевантного контекста ваших планов. Нажимая «Согласиться и завершить настройку», вы соглашаетесь на эту обработку. Отозвать согласие можно в /privacy."
+Bind the grant action to a fresh opaque callback with the owner, current consent revision, expiry, action, and displayed policy version. The explicit grant and eligible one-time trial activation share one transaction. Preferences, active paid coverage, and prior trial usage survive acceptance. Plain yes/confirm, legacy setup callbacks, stale policy/revision, and foreign actors cannot grant consent. Preferences-only confirmation leaves consent untouched.
 
-Show one explicit primary action, EN "Agree and finish setup" / RU "Согласиться и завершить настройку", plus Details and Cancel. Do not add a checkbox or a second consent confirmation step. The primary action atomically accepts the displayed current policy, saves the exact current preference draft, activates/restores access through the existing Billing contract, and completes onboarding. Failure rolls back that unit of work. Cancel grants nothing and preserves the existing trial/preference behavior.
-
-Initial acceptance must use a fresh opaque callback binding owner, draft ID, draft revision, current consent revision, action, and displayed policy version. A plain yes/confirm, a historical Confirm button, an earlier draft, a foreign actor, or an old policy must not grant consent. Ask for the current explicit preview instead. Preferences-only confirmation keeps its existing meaning and cannot silently grant/regrant consent. Editing a language or time zone does not withdraw valid consent.
-
-The Details button displays the full current bilingual privacy notice inside Telegram through the same deterministic rendering as `/privacy`; it must not require a website or AI call. Keep the active onboarding draft intact and provide a way to display its current preview again. Viewing details never accepts anything. The detailed notice names OpenRouter and the selected model-provider role, explains local voice transcription and possible external transcript processing, and retains the existing truthful retention/deletion/provider-copy limits and unresolved statutory-payment wording.
-
-For an existing profile with missing, revoked, or obsolete consent, the next AI-required text/voice interaction returns a localized consent prompt with Details and explicit "Agree and enable AI" / "Согласиться и включить ИИ". `/privacy` provides the same acceptance entry and current status. This action records consent only; it does not restart onboarding/trial, edit preferences, buy anything, accept payment terms, or reset allowance. Tell the user to resend the request after acceptance. The denied request is completed once, not silently retained for later execution or submitted automatically when consent is granted.
+AI-required text and voice without current consent give localized directions to /privacy. Ask the user to resend the request after acceptance. A later grant cannot submit or authorize the earlier input. Deterministic bot features remain accessible according to their own access rules.
 
 ### C3. Admission, provider egress, and result fencing
 
@@ -98,8 +93,8 @@ All criteria require recorded evidence against the final changed source. No chec
 
 | ID | Observable contract and meaningful proof |
 |---|---|
-| PC-01 | New RU/EN onboarding shows the notice and in-Telegram Details; only the bound explicit final action atomically saves preferences, records current-policy acceptance, and starts/restores access once. Restart resumes the same draft. Plain yes, cancellation, stale draft/policy, foreign actor, callback replay, and transactional failure do not create unauthorized grants or duplicate trials. |
-| PC-02 | An existing profile/payment/trial without consent is denied on text and voice with zero provider, download/transcription, or AI-turn spend. `/privacy` and its Details work before a profile and during onboarding. Accepting preserves profile/access/quota and requires request resubmission. |
+| PC-01 | New RU/EN users receive default preferences on first private text. /privacy shows the in-Telegram notice. Its bound explicit action records consent and activates one eligible trial atomically. Plain yes, legacy callbacks, stale policy/revision, foreign actors, replay, and transactional failure cannot create unauthorized grants or duplicate trials. |
+| PC-02 | An existing profile/payment/trial without consent is denied on text and voice with zero provider, download/transcription, or AI-turn spend. `/privacy` works as a first message and during a preference edit. Accepting preserves saved preferences, prior access, and usage and requires request resubmission. |
 | PC-03 | Separate fake-transport cases prove denial before call one leaves the counter zero, while withdrawal after call one and before repair leaves it one with zero additional calls. Assert provider receipts/unknown cost independently from the existing applicable user-reservation settlement/refund behavior. The obsolete late result, cached replay, AI-derived Save/Confirm and pending reply are suppressed; regrant does not revive old-grant work. No real provider request is needed. |
 | PC-04 | Durable native database cases prove admission/grant binding, concurrent grant/revoke/version checks, duplicate job/token processing, restarts, and voice-transcript replay; missing or unavailable consent storage fails closed. In separate sessions, barriers pause immediately after the final grant authorization and before effect/marker commit while withdrawal runs. For provider dispatch, AI-result/proposal/proof application, AI-derived Save/Confirm and reply-attempt authorization, prove either the protected commit precedes withdrawal acknowledgement or withdrawal wins and that commit is denied. Regrant never authorizes the old tuple. Exercise the actual ingress/application/speech/provider-attempt/delivery composition, not only mocked UI branches. |
 | PC-05 | Deterministic `/help`, `/privacy`, `/support`, `/settings`, `/today`, `/week`, subscription/payment support, Billing receipts and cancellation, deletion, normal reminders, and deterministic owner-confirmed task actions keep their existing behavior without consent. None treats processing consent as payment consent or changes money. |

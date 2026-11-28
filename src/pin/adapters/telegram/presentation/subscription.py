@@ -56,9 +56,9 @@ def render_subscription_status(
             )
         lines.append(
             "Просмотр, выполнение и отмена планов доступны. Для новых планов, ИИ, голоса "
-            "и напоминаний нужна активная подписка."
+            "и напоминаний нужен активный доступ."
             if russian
-            else "You can still view, complete and cancel plans. An active subscription is needed "
+            else "You can still view, complete and cancel plans. Active access is needed "
             "for new plans, AI, voice and reminders."
         )
         text = "\n".join(lines)

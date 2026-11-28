@@ -1,4 +1,4 @@
-"""Durable onboarding and preference-preview commands."""
+"""Initial preference defaults and durable preference previews."""
 
 from __future__ import annotations
 
@@ -6,18 +6,12 @@ import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, time
 from uuid import UUID
+from zoneinfo import available_timezones
 
-from pin.contexts.billing.api import TrialActivationResult
 from pin.contexts.identity.application.contracts import (
     HomeZoneChangeHandoff,
     IdentityStore,
     PreferencesSnapshot,
-    TrialActivator,
-)
-from pin.contexts.identity.application.processing_consent import (
-    ProcessingConsentAcceptance,
-    ProcessingConsentConflict,
-    accept_processing_consent,
 )
 from pin.contexts.identity.domain.preferences import Preferences, validate_home_zone
 
@@ -39,7 +33,6 @@ class OnboardingResult:
     preferences: PreferencesSnapshot | None = None
     home_zone_change: HomeZoneChangeHandoff | None = None
     draft: dict[str, object] | None = None
-    trial: TrialActivationResult | None = None
 
 
 def _draft_values(preferences: PreferencesSnapshot) -> dict[str, object]:
@@ -82,37 +75,32 @@ async def get_preferences(store: IdentityStore, owner_id: UUID) -> PreferencesSn
     return await store.get_preferences(owner_id)
 
 
-async def begin_onboarding(
-    store: IdentityStore, *, owner_id: UUID, now: datetime
-) -> OnboardingResult:
-    _require_aware(now)
-    profile = await store.get_preferences(owner_id)
-    if profile is not None:
-        return OnboardingResult("existing_profile", preferences=profile)
-    draft = await store.begin_onboarding(
+async def initialize_preferences(
+    store: IdentityStore, *, owner_id: UUID, language: str
+) -> PreferencesSnapshot:
+    """Create defaults once under the caller's owner fence."""
+    profile = await store.save_preferences(
         owner_id=owner_id,
-        mode="initial",
-        initial_values={},
-        base_profile_version=None,
+        expected_version=None,
+        preferences=Preferences(language=language, home_zone="UTC"),
     )
-    if draft.step == OnboardingStep.COMPLETE:
-        return OnboardingResult(
-            "existing_profile", preferences=await store.get_preferences(owner_id)
-        )
-    return OnboardingResult(
-        "started" if draft.version == 1 else "resumed",
-        draft.step,
-        draft.mode,
-        draft=dict(draft.values),
-    )
+    if profile is not None:
+        draft = await store.get_onboarding(owner_id)
+        if draft is not None and draft.mode == "initial":
+            await store.cancel_onboarding(owner_id)
+        return profile
+    profile = await store.get_preferences(owner_id)
+    if profile is None:
+        raise RuntimeError("initial preferences were not visible after insert conflict")
+    return profile
 
 
 async def begin_preferences_edit(
-    store: IdentityStore, *, owner_id: UUID, now: datetime
+    store: IdentityStore, *, owner_id: UUID
 ) -> OnboardingResult:
     profile = await store.get_preferences(owner_id)
     if profile is None:
-        return await begin_onboarding(store, owner_id=owner_id, now=now)
+        return OnboardingResult("not_in_progress")
     draft = await store.begin_onboarding(
         owner_id=owner_id,
         mode="preferences",
@@ -139,17 +127,13 @@ async def cancel_onboarding(store: IdentityStore, *, owner_id: UUID) -> Onboardi
 
 
 async def answer_onboarding(store: IdentityStore, *, owner_id: UUID, text: str) -> OnboardingResult:
+    draft = await store.get_onboarding(owner_id)
+    if draft is None or draft.mode != "preferences" or draft.step == OnboardingStep.COMPLETE:
+        return OnboardingResult("not_in_progress")
     normalized = text.strip()
     if normalized.casefold() in {"/cancel", "cancel", "отмена"}:
         return await cancel_onboarding(store, owner_id=owner_id)
 
-    draft = await store.get_onboarding(owner_id)
-    if draft is None:
-        return OnboardingResult("not_in_progress")
-    if draft.step == OnboardingStep.COMPLETE:
-        return OnboardingResult(
-            "already_complete", preferences=await store.get_preferences(owner_id)
-        )
     if draft.step == OnboardingStep.CONFIRM:
         if normalized.casefold() not in {"confirm", "yes", "да", "подтверждаю"}:
             return OnboardingResult(
@@ -159,7 +143,7 @@ async def answer_onboarding(store: IdentityStore, *, owner_id: UUID, text: str) 
             "ready_to_confirm", draft.step, draft.mode, draft=dict(draft.values)
         )
 
-    parsed = _apply_answer(draft.step, normalized, dict(draft.values), draft.mode)
+    parsed = _apply_answer(draft.step, normalized)
     if parsed is None:
         return OnboardingResult("invalid_input", draft.step, draft.mode, draft=dict(draft.values))
     values = dict(draft.values)
@@ -176,19 +160,16 @@ async def answer_onboarding(store: IdentityStore, *, owner_id: UUID, text: str) 
     return OnboardingResult("advanced", next_step, advanced.mode, draft=dict(advanced.values))
 
 
-async def confirm_onboarding(
+async def confirm_preferences_edit(
     store: IdentityStore,
-    trial_activator: TrialActivator,
     *,
     owner_id: UUID,
-    telegram_user_id: int,
     now: datetime,
-    consent_acceptance: ProcessingConsentAcceptance | None = None,
 ) -> OnboardingResult:
     _require_aware(now)
     await store.lock_processing_consent(owner_id)
     draft = await store.get_onboarding(owner_id)
-    if draft is None:
+    if draft is None or draft.mode != "preferences":
         return OnboardingResult("not_in_progress")
     if draft.step == OnboardingStep.COMPLETE:
         return OnboardingResult(
@@ -196,26 +177,13 @@ async def confirm_onboarding(
         )
     if draft.step != OnboardingStep.CONFIRM:
         return OnboardingResult("confirmation_not_ready", draft.step, draft.mode)
-    if draft.mode == "initial":
-        if (
-            consent_acceptance is None
-            or consent_acceptance.draft_id != draft.draft_id
-            or consent_acceptance.draft_version != draft.version
-            or not consent_acceptance.policy_version
-        ):
-            return OnboardingResult(
-                "consent_required", draft.step, draft.mode, draft=dict(draft.values)
-            )
-        await trial_activator.lock_account_lifecycle(owner_id)
-
     current = await store.get_preferences(owner_id)
-    if (current.version if current else None) != draft.base_profile_version:
+    if current is None or current.version != draft.base_profile_version:
         await store.cancel_onboarding(owner_id)
         return OnboardingResult(
             "version_conflict", draft.step, draft.mode, draft=dict(draft.values)
         )
-    next_version = 1 if current is None else current.version + 1
-    preferences = _preferences_from_draft(draft.values, next_version)
+    preferences = _preferences_from_draft(draft.values, current.version + 1)
     saved = await store.save_preferences(
         owner_id=owner_id,
         expected_version=draft.base_profile_version,
@@ -227,29 +195,7 @@ async def confirm_onboarding(
             "version_conflict", draft.step, draft.mode, draft=dict(draft.values)
         )
 
-    if draft.mode == "initial":
-        assert consent_acceptance is not None
-        consent = await store.get_processing_consent(owner_id)
-        if consent.revision != consent_acceptance.expected_revision:
-            raise ProcessingConsentConflict("processing consent preview is stale")
-        await accept_processing_consent(
-            store,
-            owner_id=owner_id,
-            expected_revision=consent_acceptance.expected_revision,
-            policy_version=consent_acceptance.policy_version,
-            language=consent_acceptance.language,
-            accepted_at=consent_acceptance.accepted_at,
-            telegram_user_id=consent_acceptance.telegram_user_id,
-            inbox_update_id=consent_acceptance.inbox_update_id,
-        )
-    previous_zone = current.home_zone if current else None
-    trial = None
-    if draft.mode == "initial":
-        trial = await trial_activator.activate_trial(
-            owner_id=owner_id,
-            telegram_user_id=telegram_user_id,
-            at=now.astimezone(UTC),
-        )
+    previous_zone = current.home_zone
     if not await store.complete_onboarding(
         draft, values=_draft_values(saved), profile_version=saved.version
     ):
@@ -260,16 +206,14 @@ async def confirm_onboarding(
         HomeZoneChangeHandoff(
             owner_id, previous_zone, saved.home_zone, saved.version, now.astimezone(UTC)
         )
-        if previous_zone is not None and previous_zone != saved.home_zone
+        if previous_zone != saved.home_zone
         else None
     )
-    return OnboardingResult("confirmed", preferences=saved, home_zone_change=handoff, trial=trial)
+    return OnboardingResult("confirmed", preferences=saved, home_zone_change=handoff)
 
 
-def _apply_answer(
-    step: str, text: str, draft: dict[str, object], mode: str
-) -> dict[str, object] | None:
-    if mode == "preferences" and text.casefold() in {"keep", "same", "оставить"}:
+def _apply_answer(step: str, text: str) -> dict[str, object] | None:
+    if text.casefold() in {"keep", "same", "оставить"}:
         return {}
     if step == OnboardingStep.LANGUAGE:
         language = {
@@ -282,10 +226,8 @@ def _apply_answer(
         }.get(text.casefold())
         return {"language": language} if language else None
     if step == OnboardingStep.HOME_ZONE:
-        try:
-            return {"home_zone": validate_home_zone(text)}
-        except ValueError:
-            return None
+        zone = _resolve_home_zone(text)
+        return {"home_zone": zone} if zone else None
     if step == OnboardingStep.REMINDERS:
         if text.casefold() in {"suggested", "default", "по умолчанию", "предложенные"}:
             return {"reminder_calendar_days": 1, "reminder_elapsed_hours": 1}
@@ -322,6 +264,31 @@ def _apply_answer(
     return None
 
 
+def _resolve_home_zone(text: str) -> str | None:
+    try:
+        return validate_home_zone(text)
+    except ValueError:
+        pass
+    city = "_".join(text.casefold().split())
+    aliases = {
+        "алматы": "Asia/Almaty",
+        "астана": "Asia/Almaty",
+        "astana": "Asia/Almaty",
+        "лондон": "Europe/London",
+        "москва": "Europe/Moscow",
+        "нью-йорк": "America/New_York",
+        "париж": "Europe/Paris",
+    }
+    if city in aliases:
+        return aliases[city]
+    matches = [
+        zone
+        for zone in available_timezones()
+        if "/" in zone and zone.rsplit("/", 1)[-1].casefold() == city
+    ]
+    return matches[0] if len(matches) == 1 else None
+
+
 def _require_aware(value: datetime) -> None:
     if value.utcoffset() is None:
-        raise ValueError("onboarding timestamps must be timezone-aware")
+        raise ValueError("preference timestamps must be timezone-aware")

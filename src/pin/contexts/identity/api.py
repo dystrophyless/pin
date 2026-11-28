@@ -1,4 +1,4 @@
-"""Published contracts for preference readers and onboarding consumers."""
+"""Published contracts for preferences and processing consent."""
 
 from pin.contexts.identity.application.contracts import (
     HomeZoneChangeHandoff,
@@ -7,20 +7,18 @@ from pin.contexts.identity.application.contracts import (
     PreferencesSnapshot,
     ProcessingAuthorization,
     ProcessingConsentSnapshot,
-    TrialActivator,
 )
 from pin.contexts.identity.application.onboarding import (
     OnboardingResult,
     answer_onboarding,
-    begin_onboarding,
     begin_preferences_edit,
     cancel_onboarding,
-    confirm_onboarding,
+    confirm_preferences_edit,
     get_preferences,
+    initialize_preferences,
 )
 from pin.contexts.identity.application.processing_consent import (
     PROCESSING_CONSENT_POLICY_VERSION,
-    ProcessingConsentAcceptance,
     ProcessingConsentConflict,
     accept_processing_consent,
     authorize_processing_consent,
@@ -49,7 +47,6 @@ __all__ = [
     "PreferencesSnapshot",
     "ProcessingAuthorization",
     "ProcessingConsentSnapshot",
-    "ProcessingConsentAcceptance",
     "ProcessingConsentConflict",
     "PROCESSING_CONSENT_POLICY_VERSION",
     "accept_processing_consent",
@@ -62,11 +59,10 @@ __all__ = [
     "PreferencesPage",
     "ReviewProfilesReadStore",
     "list_review_profiles",
-    "TrialActivator",
     "answer_onboarding",
-    "begin_onboarding",
     "begin_preferences_edit",
     "cancel_onboarding",
-    "confirm_onboarding",
+    "confirm_preferences_edit",
     "get_preferences",
+    "initialize_preferences",
 ]

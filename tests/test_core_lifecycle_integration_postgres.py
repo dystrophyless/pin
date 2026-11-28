@@ -230,13 +230,19 @@ async def _send_text(
     user_id: int,
     text_value: str,
     at: datetime,
+    language_code: str | None = None,
     assistant: BoundedPlanningAssistant | None = None,
 ) -> tuple[UUID, JobClaim, dict[str, object]]:
     update_id = uuid4().int % 9_000_000_000_000_000
     payload: dict[str, object] = {
         "update_id": update_id,
         "message": {
-            "from": {"id": user_id, "is_bot": False, "first_name": "Fixture"},
+            "from": {
+                "id": user_id,
+                "is_bot": False,
+                "first_name": "Fixture",
+                **({"language_code": language_code} if language_code else {}),
+            },
             "chat": {"id": user_id, "type": "private"},
             "date": int(at.timestamp()),
             "text": text_value,
@@ -329,9 +335,15 @@ async def _run_application_text(
     user_id: int,
     value: str,
     at: datetime,
+    language_code: str | None = None,
 ) -> tuple[UUID, JobClaim, dict[str, object]]:
     result = await _send_text(
-        sessions, bot_id=bot_id, user_id=user_id, text_value=value, at=at
+        sessions,
+        bot_id=bot_id,
+        user_id=user_id,
+        text_value=value,
+        at=at,
+        language_code=language_code,
     )
     await _drain_delivery(sessions, transport, at=at)
     return result
@@ -371,8 +383,8 @@ def test_private_core_lifecycle_runs_through_real_producers_and_consumers(
         delivery = _FakeTelegramTransport(sessions)
         owner_id: UUID | None = None
         try:
-            # A real persisted private inbox starts and completes onboarding. No profile,
-            # Billing account, plan, occurrence, intent, or Accountability cycle is seeded.
+            # A first private message creates defaults from Telegram's language code;
+            # consent and the trial still require the explicit privacy.grant action.
             start_owner, _, _ = await _run_application_text(
                 sessions,
                 delivery,
@@ -380,64 +392,25 @@ def test_private_core_lifecycle_runs_through_real_producers_and_consumers(
                 user_id=user_id,
                 value="/start",
                 at=clock.now(),
+                language_code=language,
             )
             owner_id = start_owner
-            language_answer = "en" if language == "en" else "ru"
-            await _run_application_text(
+            privacy = await _run_application_text(
                 sessions,
                 delivery,
                 bot_id=bot_id,
                 user_id=user_id,
-                value=language_answer,
+                value="/privacy",
                 at=clock.now(),
             )
-            await _run_application_text(
-                sessions,
-                delivery,
-                bot_id=bot_id,
-                user_id=user_id,
-                value="Asia/Almaty",
-                at=clock.now(),
-            )
-            suggested = "suggested" if language == "en" else "по умолчанию"
-            await _run_application_text(
-                sessions,
-                delivery,
-                bot_id=bot_id,
-                user_id=user_id,
-                value=suggested,
-                at=clock.now(),
-            )
-            await _run_application_text(
-                sessions,
-                delivery,
-                bot_id=bot_id,
-                user_id=user_id,
-                value=suggested,
-                at=clock.now(),
-            )
-            confirmed_word = "confirm" if language == "en" else "подтверждаю"
-            consent_prompt = await _run_application_text(
-                sessions,
-                delivery,
-                bot_id=bot_id,
-                user_id=user_id,
-                value=confirmed_word,
-                at=clock.now(),
-            )
-            accept_label = (
-                "Agree and finish setup"
-                if language == "en"
-                else "Согласиться и завершить настройку"
-            )
-            accept_token = _callback_data(
-                consent_prompt[2], prefix="", label=accept_label
-            )
+            privacy_buttons = privacy[2]["reply_markup"]["inline_keyboard"]
+            assert len(privacy_buttons) == 1 and len(privacy_buttons[0]) == 1
+            grant_token = privacy_buttons[0][0]["callback_data"]
             await _send_callback(
                 sessions,
                 bot_id=bot_id,
                 user_id=user_id,
-                callback_data=accept_token,
+                callback_data=grant_token,
                 at=clock.now(),
             )
             await _drain_delivery(sessions, delivery, at=clock.now())
@@ -449,11 +422,10 @@ def test_private_core_lifecycle_runs_through_real_producers_and_consumers(
                 )
                 assert consent is not None and consent.state == "granted"
                 assert profile is not None and profile.language == language
-                assert profile.home_zone == "Asia/Almaty"
+                assert profile.home_zone == "UTC"
                 assert profile.reminder_calendar_days == 1
                 assert profile.reminder_elapsed_hours == 1
-                assert onboarding is not None and onboarding.step == "complete"
-
+                assert onboarding is None
             if recovery_scenario:
                 # Put the controlled recovery instant just before quiet hours so the
                 # late initial check can send, while its one-hour nudge must wait.
@@ -467,7 +439,7 @@ def test_private_core_lifecycle_runs_through_real_producers_and_consumers(
             # One deterministic model proposal intentionally omits appointment duration.
             # The production capture path must ask, bind a choice to the owner/draft, and
             # remain unsaved until a separate confirmation callback arrives.
-            zone = ZoneInfo("Asia/Almaty")
+            zone = ZoneInfo(profile.home_zone)
             local_now = clock.now().astimezone(zone)
             appointment_date = local_now.date() + timedelta(days=3)
             start_local = datetime.combine(appointment_date, time(15, 0))
@@ -488,7 +460,7 @@ def test_private_core_lifecycle_runs_through_real_producers_and_consumers(
                             "schedule": {
                                 "kind": "appointment",
                                 "local_start": start_local.isoformat(timespec="minutes"),
-                                "timezone": "Asia/Almaty",
+                                "timezone": profile.home_zone,
                             },
                         },
                     }
@@ -647,7 +619,7 @@ def test_private_core_lifecycle_runs_through_real_producers_and_consumers(
             if recovery_scenario:
                 # No delivery worker runs from the two advance-reminder deadlines through
                 # appointment end. Recovery begins five hours after the saved end, still
-                # before quiet hours in Asia/Almaty; no initial intent or attempt exists.
+                # before quiet hours in the saved profile zone; no initial intent or attempt exists.
                 recovery_at = appointment_end + timedelta(hours=5)
                 clock.at = recovery_at
                 assert clock.now().astimezone(zone).time() == time(20, 30)
@@ -1072,7 +1044,7 @@ def test_private_core_lifecycle_runs_through_real_producers_and_consumers(
             record_property("occurrence_id", str(occurrence_id))
             record_property("language", language)
             record_property("reference_instant_utc", at.isoformat())
-            record_property("reference_zone", "Asia/Almaty")
+            record_property("reference_zone", "UTC")
             record_property(
                 "local_fake_reminder_attempts", json.dumps([x[0] for x in delivery.reminders])
             )

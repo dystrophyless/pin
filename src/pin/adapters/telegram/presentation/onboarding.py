@@ -1,4 +1,4 @@
-"""Deterministic RU/EN onboarding and preference-preview rendering."""
+"""Localized bot start and preference previews."""
 
 from __future__ import annotations
 
@@ -7,7 +7,6 @@ from dataclasses import dataclass
 from datetime import time
 
 from pin.adapters.telegram.presentation.formatting import escape_markdown_v2
-from pin.contexts.billing.api import TrialActivationResult
 from pin.contexts.identity.application.contracts import PreferencesSnapshot
 from pin.contexts.identity.application.onboarding import OnboardingResult
 
@@ -27,174 +26,116 @@ class OnboardingReply:
     buttons: tuple[OnboardingButton, ...] = ()
 
 
+def render_start(profile: PreferencesSnapshot, *, ai_enabled: bool) -> OnboardingReply:
+    if profile.language == "ru":
+        intro = (
+            "Отправьте задачу текстом или голосом."
+            if ai_enabled
+            else "Для задач текстом и голосом включите ИИ в /privacy."
+        )
+        zone = f"Часовой пояс для планов и напоминаний: {profile.home_zone}."
+    else:
+        intro = (
+            "Send a task as text or voice."
+            if ai_enabled
+            else "Enable AI in /privacy to add tasks by text or voice."
+        )
+        zone = f"Time zone for plans and reminders: {profile.home_zone}."
+    return _reply(
+        f"{intro}\n{zone}",
+        buttons=(_button(profile.language, "settings", "settings"),),
+    )
+
+
+def render_device_timezone(profile: PreferencesSnapshot) -> OnboardingReply:
+    text = (
+        f"Текущий часовой пояс — {profile.home_zone}. Вручную его можно выбрать в /settings."
+        if profile.language == "ru"
+        else f"Your time zone is {profile.home_zone}. To choose it manually, open /settings."
+    )
+    return _reply(text)
+
+
 def render_onboarding(result: OnboardingResult) -> OnboardingReply | None:
-    if result.state in {"cancelled", "not_in_progress", "version_conflict", "draft_conflict"}:
-        language = result.preferences.language if result.preferences else _language(result.draft)
-        if result.state == "cancelled":
-            if result.mode == "preferences" or result.preferences is not None:
-                text = {
-                    "en": "Preview cancelled. Saved preferences and access are unchanged.",
-                    "ru": "Предпросмотр отменён. Сохранённые настройки и доступ не изменились.",
-                }[language]
-            else:
-                text = {
-                    "en": (
-                        "Onboarding was cancelled. No preferences were saved and "
-                        "no trial was started."
-                    ),
-                    "ru": "Настройка отменена. Параметры не сохранены, пробный период не начат.",
-                }[language]
-        else:
-            text = {
-                "en": {
-                    "not_in_progress": "Send /start to set up your preferences.",
-                    "version_conflict": (
-                        "Preferences changed in another session. Send /settings to "
-                        "review the current version."
-                    ),
-                    "draft_conflict": (
-                        "This setup changed in another session. Send /settings to "
-                        "load the latest version."
-                    ),
-                },
-                "ru": {
-                    "not_in_progress": "Отправьте /start, чтобы настроить параметры.",
-                    "version_conflict": (
-                        "Настройки изменились в другой сессии. Отправьте /settings, "
-                        "чтобы проверить текущую версию."
-                    ),
-                    "draft_conflict": (
-                        "Эта настройка изменилась в другой сессии. Отправьте /settings, "
-                        "чтобы загрузить последнюю версию."
-                    ),
-                },
-            }[language][result.state]
-        return _reply(text)
-    if result.state in {"existing_profile", "already_complete"} and result.preferences:
-        language = result.preferences.language
+    language = result.preferences.language if result.preferences else _language(result.draft)
+    messages = {
+        "cancelled": (
+            "Preview cancelled. Saved preferences and access are unchanged.",
+            "Предпросмотр отменён. Сохранённые настройки и доступ не изменились.",
+        ),
+        "not_in_progress": (
+            "Send /settings to open preferences.",
+            "Отправьте /settings, чтобы открыть настройки.",
+        ),
+        "version_conflict": (
+            "Preferences changed in another session. Send /settings to review the current version.",
+            "Настройки изменились в другой сессии. Отправьте /settings, чтобы проверить версию.",
+        ),
+        "draft_conflict": (
+            "This edit changed in another session. Send /settings to load the latest version.",
+            "Настройки изменились в другой сессии. Отправьте /settings, чтобы загрузить версию.",
+        ),
+        "unhandled": (
+            "Plan capture is not available in this local version. Your message was not saved.",
+            "Создание планов пока недоступно в этой локальной версии. Сообщение не сохранено.",
+        ),
+    }
+    language_index = 0 if language == "en" else 1
+    if result.state in messages:
+        handling = "unhandled" if result.state == "unhandled" else "handled"
+        return _reply(messages[result.state][language_index], handling=handling)
+    if result.state == "confirmed" and result.preferences:
         return _reply(
             _profile_text(result.preferences),
             buttons=(_button(language, "settings", "settings"),),
         )
-    if result.state == "unhandled":
-        language = result.preferences.language if result.preferences else _language(result.draft)
-        text = (
-            "Создание планов пока недоступно в этой локальной версии. Сообщение не сохранено."
-            if language == "ru"
-            else "Plan capture is not available in this local version. Your message was not saved."
-        )
-        return _reply(text, handling="unhandled")
 
-    language = _language(result.draft)
+    if result.state not in {"started", "resumed", "advanced", "invalid_input", "confirm_required"}:
+        return None
+
+    draft = result.draft or {}
+    home_zone = draft.get("home_zone")
     prompts = {
-        "en": {
-            "started": "Choose your language: reply `en` or `ru`.",
-            "resumed": "Continuing your saved setup.\n",
-            "language": "Choose your conversation language: reply `en` or `ru`.",
-            "home_zone": (
-                "Send your home time zone as an IANA name, e.g. `Asia/Almaty`. "
-                "Use the example only if it is your zone; I will not infer it from "
-                "language or location."
-            ),
-            "reminders": (
-                "Reminder suggestions: one calendar day and one elapsed hour before "
-                "timed plans. Reply `suggested` or send two numbers: calendar days, "
-                "elapsed hours (example: `1, 1`)."
-            ),
-            "quiet_review": (
-                "Quiet hours and evening review suggestions: `22:00-08:00; 20:00`. "
-                "Reply `suggested` or send `quiet-start quiet-end; review-time`."
-            ),
-            "confirm": (
-                "{summary}\nReply `confirm` to save these preferences{trial}; "
-                "send /cancel to leave without saving."
-            ),
-            "invalid_input": "That value is not valid. Please try again.",
-            "confirm_required": "Reply `confirm` to save, or send /cancel.",
-            "already_complete": "Your preferences are already saved.",
-        },
-        "ru": {
-            "started": "Выберите язык: отправьте `ru` или `en`.",
-            "resumed": "Продолжаем сохранённую настройку.\n",
-            "language": "Выберите язык общения: отправьте `ru` или `en`.",
-            "home_zone": (
-                "Введите домашний часовой пояс IANA, например `Asia/Almaty`. "
-                "Кнопка с примером выберет его только по вашему нажатию; язык и "
-                "местоположение не используются для определения."
-            ),
-            "reminders": (
-                "Предлагаемые напоминания: за календарный день и за час до планов "
-                "со временем. Отправьте `по умолчанию` или два числа: календарные "
-                "дни и часы (пример: `1, 1`)."
-            ),
-            "quiet_review": (
-                "Предлагаемые тихие часы и время обзора: `22:00-08:00; 20:00`. "
-                "Отправьте `по умолчанию` или `начало-конец; время-обзора`."
-            ),
-            "confirm": (
-                "{summary}\nОтправьте `подтверждаю`, чтобы сохранить{trial}; "
-                "отправьте /cancel, чтобы выйти без сохранения."
-            ),
-            "invalid_input": "Это значение не подходит. Попробуйте ещё раз.",
-            "confirm_required": "Отправьте `подтверждаю`, чтобы сохранить, или /cancel.",
-            "already_complete": "Ваши настройки уже сохранены.",
-        },
-    }[language]
-
-    if result.state in {"started", "resumed", "advanced"}:
-        if result.state in {"started", "resumed"} and result.step == "language":
-            text = (
-                prompts["started"]
-                if result.state == "started"
-                else prompts["resumed"] + prompts["language"]
-            )
-        elif result.step == "confirm":
-            summary = _summary(result.draft or {}, language)
-            trial = (
-                (
-                    " (if eligible: 7 days, 250 AI interactions and 15 voice minutes)"
-                    if language == "en"
-                    else (
-                        " (если условия выполнены: 7 дней, 250 обращений к ИИ и "
-                        "15 минут голосовых сообщений)"
-                    )
-                )
-                if result.mode == "initial"
-                else ""
-            )
-            if result.mode == "initial":
-                text = _consent_prompt(summary, language)
-            else:
-                text = prompts["confirm"].format(summary=summary, trial=trial)
-        else:
-            text = prompts.get(result.step or "language", prompts["language"])
-        buttons = _step_buttons(language, result.step or "language", result.mode or "initial")
-        if result.mode == "preferences" and result.step not in {"language", "confirm"}:
-            text += (
-                "\nReply `keep` to retain this current value."
-                if language == "en"
-                else "\nОтправьте `оставить`, чтобы сохранить текущее значение."
-            )
-        return _reply(text, buttons=buttons)
-    if result.state in {"invalid_input", "confirm_required", "consent_required"}:
-        if result.state == "consent_required" and result.mode == "initial":
-            summary = _summary(result.draft or {}, language)
-            text = _consent_prompt(summary, language)
-            return _reply(text, buttons=_consent_buttons(language))
-        return _reply(
-            prompts[result.state],
-            buttons=_step_buttons(language, result.step or "language", result.mode or "initial"),
-        )
-    if result.state == "confirmed" and result.preferences:
-        language = result.preferences.language
-        return _reply(
-            _profile_text(result.preferences, confirmed=True, trial=result.trial),
-            buttons=(_button(language, "settings", "settings"),),
-        )
-    return None
+        "language": (
+            "Choose your conversation language.",
+            "Выберите язык общения.",
+        ),
+        "home_zone": (
+            "Send a city in your time zone, e.g. London or New York. "
+            f"You can also send a zone name like `Europe/London`. Current time zone: {home_zone}.",
+            "Напишите город в вашем часовом поясе, например Москва или Алматы. "
+            f"Можно также указать пояс, например `Europe/Moscow`. Текущий пояс: {home_zone}.",
+        ),
+        "reminders": (
+            "Reminder suggestions: one calendar day and one elapsed hour before "
+            "timed plans. Reply `suggested` or send two numbers: calendar days, "
+            "elapsed hours (example: `1, 1`).",
+            "Предлагаемые напоминания: за календарный день и за час до планов "
+            "со временем. Отправьте `по умолчанию` или два числа: календарные "
+            "дни и часы (пример: `1, 1`).",
+        ),
+        "quiet_review": (
+            "Quiet hours and evening review suggestions: `22:00-08:00; 20:00`. "
+            "Reply `suggested` or send `quiet-start quiet-end; review-time`.",
+            "Предлагаемые тихие часы и время обзора: `22:00-08:00; 20:00`. "
+            "Отправьте `по умолчанию` или `начало-конец; время-обзора`.",
+        ),
+        "confirm": (
+            "Reply `confirm` to save these preferences, or send /cancel.",
+            "Отправьте `подтверждаю`, чтобы сохранить настройки, или /cancel.",
+        ),
+    }
+    step = result.step or "language"
+    text = prompts[step][language_index]
+    if step == "confirm" and result.state != "confirm_required":
+        text = f"{_summary(draft, language)}\n{text}"
+    if result.state == "invalid_input":
+        retry = ("That value is not valid. Please try again.", "Это значение не подходит.")
+        text = f"{retry[language_index]}\n{text}"
+    return _reply(text, buttons=_step_buttons(language, step))
 
 
-def _step_buttons(language: str, step: str, mode: str) -> tuple[OnboardingButton, ...]:
+def _step_buttons(language: str, step: str) -> tuple[OnboardingButton, ...]:
     buttons: list[OnboardingButton] = []
     if step == "language":
         buttons.extend(
@@ -205,39 +146,12 @@ def _step_buttons(language: str, step: str, mode: str) -> tuple[OnboardingButton
         )
     elif step in {"reminders", "quiet_review"}:
         buttons.append(_button(language, "suggested", "answer", f"{step}|suggested"))
-    elif step == "home_zone":
-        buttons.append(_button(language, "zone_example", "answer", "home_zone|Asia/Almaty"))
-    elif step == "confirm" and mode == "preferences":
-        buttons.append(_button(language, "confirm", "answer", "confirm|confirm"))
     elif step == "confirm":
-        return _consent_buttons(language)
-    if mode == "preferences" and step not in {"language", "confirm"}:
+        buttons.append(_button(language, "confirm", "answer", "confirm|confirm"))
+    if step != "confirm":
         buttons.append(_button(language, "keep", "answer", f"{step}|keep"))
     buttons.append(_button(language, "cancel", "cancel", "draft"))
     return tuple(buttons)
-
-
-def _consent_prompt(summary: str, language: str) -> str:
-    if language == "ru":
-        return (
-            f"{summary}\nPin использует внешние ИИ-сервисы для обработки вашего "
-            "текста, расшифровок голоса и релевантного контекста ваших планов. "
-            "Нажимая «Согласиться и завершить настройку», вы соглашаетесь на эту "
-            "обработку. Отозвать согласие можно в /privacy."
-        )
-    return (
-        f"{summary}\nPin uses external AI services to interpret your text, voice "
-        "transcripts, and relevant context from your plans. By choosing Agree and "
-        "finish setup, you consent to this processing. You can withdraw consent in /privacy."
-    )
-
-
-def _consent_buttons(language: str) -> tuple[OnboardingButton, ...]:
-    return (
-        _button(language, "consent_accept", "consent.accept", "accept"),
-        _button(language, "consent_details", "consent.details", "details"),
-        _button(language, "cancel", "cancel", "draft"),
-    )
 
 
 def _button(language: str, key: str, action: str, value: str | None = None) -> OnboardingButton:
@@ -246,12 +160,8 @@ def _button(language: str, key: str, action: str, value: str | None = None) -> O
             "en": "English",
             "ru": "Русский",
             "suggested": "Use suggestions",
-            "zone_example": "Asia/Almaty (example)",
             "keep": "Keep current",
             "confirm": "Confirm",
-            "consent_accept": "Agree and finish setup",
-            "consent_details": "Details",
-            "consent_preview": "Back to setup",
             "cancel": "Cancel",
             "settings": "Edit preferences",
         },
@@ -259,12 +169,8 @@ def _button(language: str, key: str, action: str, value: str | None = None) -> O
             "en": "English",
             "ru": "Русский",
             "suggested": "Использовать предложенное",
-            "zone_example": "Asia/Almaty (пример)",
             "keep": "Оставить текущие",
             "confirm": "Подтвердить",
-            "consent_accept": "Согласиться и завершить настройку",
-            "consent_details": "Подробнее",
-            "consent_preview": "Вернуться к настройке",
             "cancel": "Отмена",
             "settings": "Изменить настройки",
         },
@@ -297,47 +203,26 @@ def _summary(draft: dict[str, object], language: str) -> str:
     )
 
 
-def _profile_text(
-    preferences: PreferencesSnapshot,
-    *,
-    confirmed: bool = False,
-    trial: TrialActivationResult | None = None,
-) -> str:
-    prefix = "Preferences saved." if confirmed else "Your saved preferences:"
-    trial_text = _trial_text(preferences.language, trial) if confirmed else ""
+def _profile_text(preferences: PreferencesSnapshot) -> str:
     if preferences.language == "ru":
-        prefix = "Настройки сохранены." if confirmed else "Сохранённые настройки:"
         return (
-            f"{prefix}\nЯзык: {preferences.language}\nДомашний пояс: {preferences.home_zone}\n"
+            f"Настройки сохранены.\nЯзык: {preferences.language}\n"
+            f"Домашний пояс: {preferences.home_zone}\n"
             f"Напоминания: за {preferences.reminder_calendar_days} календарный день "
             f"и {preferences.reminder_elapsed_hours} ч.\n"
             f"Тихие часы: {_clock(preferences.quiet_start.isoformat())}–"
             f"{_clock(preferences.quiet_end.isoformat())}\n"
-            f"Вечерний обзор: {_clock(preferences.review_time.isoformat())}{trial_text}"
+            f"Вечерний обзор: {_clock(preferences.review_time.isoformat())}"
         )
     return (
-        f"{prefix}\nLanguage: {preferences.language}\nHome zone: {preferences.home_zone}\n"
+        f"Preferences saved.\nLanguage: {preferences.language}\n"
+        f"Home zone: {preferences.home_zone}\n"
         f"Reminders: {preferences.reminder_calendar_days} calendar day(s) and "
         f"{preferences.reminder_elapsed_hours} elapsed hour(s) before\n"
         f"Quiet hours: {_clock(preferences.quiet_start.isoformat())}–"
         f"{_clock(preferences.quiet_end.isoformat())}\n"
-        f"Evening review: {_clock(preferences.review_time.isoformat())}{trial_text}"
+        f"Evening review: {_clock(preferences.review_time.isoformat())}"
     )
-
-
-def _trial_text(language: str, trial: TrialActivationResult | None) -> str:
-    if trial is None:
-        return ""
-    status = trial.status.value
-    messages = {
-        "activated": ("\nПробный период начат.", "\nTrial started."),
-        "previously_activated": (
-            "\nПробный период уже использован; новый не начат.",
-            "\nThe trial was already used; no new trial was started.",
-        ),
-        "already_active": ("\nДействующий доступ сохранён.", "\nExisting access was kept."),
-    }
-    return messages.get(status, ("", ""))[0 if language == "ru" else 1]
 
 
 def _clock(value: str) -> str:

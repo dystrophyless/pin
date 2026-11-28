@@ -1,16 +1,16 @@
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
 
 from pin.adapters.telegram.application_worker import _privacy_status_text
-from pin.adapters.telegram.presentation.onboarding import render_onboarding
+from pin.adapters.telegram.presentation.onboarding import render_start
 from pin.adapters.telegram.presentation.templates import (
     plain_help,
     plain_privacy,
     render_privacy,
 )
 from pin.contexts.identity.application.contracts import ProcessingAuthorization
-from pin.contexts.identity.application.onboarding import OnboardingResult
 from pin.contexts.identity.application.processing_consent import authorize_processing_consent
 from pin.persistence import run_local_async
 
@@ -72,57 +72,16 @@ def test_privacy_copy_rejects_unsupported_languages() -> None:
         plain_privacy("kk")
 
 
-@pytest.mark.parametrize(
-    ("language", "button", "notice"),
-    [
-        (
-            "en",
-            "Agree and finish setup",
-            "By choosing Agree and finish setup, you consent to this processing.",
-        ),
-        (
-            "ru",
-            "Согласиться и завершить настройку",
-            "Нажимая «Согласиться и завершить настройку», вы соглашаетесь на эту обработку.",
-        ),
-    ],
-)
-def test_initial_onboarding_requires_the_explicit_processing_consent_action(
-    language: str, button: str, notice: str
-) -> None:
-    reply = render_onboarding(
-        OnboardingResult(
-            "advanced",
-            step="confirm",
-            mode="initial",
-            draft={
-                "language": language,
-                "home_zone": "Asia/Almaty",
-                "reminder_calendar_days": 1,
-                "reminder_elapsed_hours": 1,
-                "quiet_start": "22:00",
-                "quiet_end": "08:00",
-                "review_time": "20:00",
-            },
-        )
+@pytest.mark.parametrize("language", ("en", "ru"))
+def test_start_intro_shows_zone_and_settings_without_grant(language: str) -> None:
+    reply = render_start(
+        SimpleNamespace(language=language, home_zone="Asia/Almaty"),
+        ai_enabled=False,
     )
-    assert reply is not None
-    assert notice in reply.plain_text
-    separator_and_copy = (
-        "\nPin uses external AI services"
-        if language == "en"
-        else "\nPin использует внешние ИИ-сервисы"
-    )
-    assert separator_and_copy in reply.plain_text
-    assert r"\n" not in reply.plain_text
-    assert r"\n" not in reply.markdown
-    assert [item.text for item in reply.buttons] == [
-        button,
-        "Details" if language == "en" else "Подробнее",
-        "Cancel" if language == "en" else "Отмена",
-    ]
-    assert reply.buttons[0].action == "consent.accept"
-
+    assert "Asia/Almaty" in reply.plain_text
+    assert "/privacy" in reply.plain_text
+    assert len(reply.buttons) == 1
+    assert reply.buttons[0].action == "settings"
 
 def test_privacy_consent_status_uses_visible_paragraph_breaks() -> None:
     notice = "Privacy details"
