@@ -5,23 +5,61 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from pin.adapters.telegram.home_zone_runtime import preview_device_home_zone
+from pin.adapters.telegram.home_zone_runtime import preview_home_zone_edit
 from pin.adapters.telegram.onboarding import DispatchDisposition, PrivateMessageResult
 from pin.adapters.telegram.presentation.callbacks import CallbackTokens, InvalidCallbackToken
 from pin.adapters.telegram.presentation.formatting import escape_markdown_v2
-from pin.adapters.telegram.presentation.onboarding import OnboardingReply, render_onboarding
+from pin.adapters.telegram.presentation.onboarding import (
+    OnboardingReply,
+    render_device_timezone,
+    render_onboarding,
+)
 from pin.adapters.telegram.presentation.timezone_widget import render_timezone_widget
 from pin.adapters.telegram.presentation.tokens import SqlAlchemyCallbackTokenStore
 from pin.contexts.identity.api import (
     IdentityStore,
+    OnboardingDraft,
     OnboardingResult,
     PreferencesSnapshot,
     answer_onboarding,
+    resolve_home_zone,
 )
 from pin.contexts.identity.domain.preferences import validate_home_zone
 
 _PROFILE_ACTION = "device_zone.profile"
 _DRAFT_ACTION = "device_zone.draft"
+
+
+async def handle_timezone_command(
+    session: AsyncSession,
+    identity: IdentityStore,
+    *,
+    profile: PreferencesSnapshot,
+    zone_input: str | None,
+    now: datetime,
+) -> PrivateMessageResult:
+    if _active_edit(await identity.get_onboarding(profile.owner_id)):
+        text = (
+            "Завершите текущее изменение настроек или отправьте /cancel, затем /timezone."
+            if profile.language == "ru"
+            else "Finish the current edit or send /cancel, then /timezone."
+        )
+        return _timezone_reply(profile, text)
+    if zone_input is None:
+        return PrivateMessageResult(
+            DispatchDisposition.HANDLED,
+            OnboardingResult("device_timezone", preferences=profile),
+            render_device_timezone(profile),
+        )
+    zone = resolve_home_zone(zone_input)
+    if zone is None:
+        text = (
+            "Не удалось определить пояс. Попробуйте /timezone Алматы или /timezone Asia/Almaty."
+            if profile.language == "ru"
+            else "Could not identify that zone. Try /timezone London or /timezone Europe/London."
+        )
+        return _timezone_reply(profile, text)
+    return await _preview_timezone(session, identity, profile, zone, now)
 
 
 async def issue_timezone_widget(
@@ -72,7 +110,7 @@ async def handle_timezone_widget(
 ) -> PrivateMessageResult:
     language = profile.language if profile else "en"
     draft = await identity.get_onboarding(owner_id)
-    editing = draft is not None and draft.mode == "preferences" and draft.step != "complete"
+    editing = _active_edit(draft)
     try:
         if profile is None or not isinstance(data, str) or len(data.encode("utf-8")) > 64:
             raise InvalidCallbackToken("invalid widget response")
@@ -109,22 +147,37 @@ async def handle_timezone_widget(
             else "Could not accept the time zone. Reopen /timezone or continue in /settings."
         )
     else:
-        if zone != profile.home_zone:
-            outcome = await preview_device_home_zone(
-                session,
-                identity,
-                profile=profile,
-                zone=zone,
-                now=now,
-            )
-            return PrivateMessageResult(
-                DispatchDisposition.HANDLED, outcome.onboarding, outcome.reply
-            )
-        text = (
-            f"Текущий часовой пояс уже {zone}."
-            if language == "ru"
-            else f"Your time zone is already {zone}."
+        return await _preview_timezone(session, identity, profile, zone, now)
+    return _timezone_reply(profile, text)
+
+
+def _active_edit(draft: OnboardingDraft | None) -> bool:
+    return draft is not None and draft.mode == "preferences" and draft.step != "complete"
+
+
+async def _preview_timezone(
+    session: AsyncSession,
+    identity: IdentityStore,
+    profile: PreferencesSnapshot,
+    zone: str,
+    now: datetime,
+) -> PrivateMessageResult:
+    if zone != profile.home_zone:
+        outcome = await preview_home_zone_edit(
+            session, identity, profile=profile, zone=zone, now=now
         )
+        return PrivateMessageResult(DispatchDisposition.HANDLED, outcome.onboarding, outcome.reply)
+    text = (
+        f"Текущий часовой пояс уже {zone}."
+        if profile.language == "ru"
+        else f"Your time zone is already {zone}."
+    )
+    return _timezone_reply(profile, text)
+
+
+def _timezone_reply(
+    profile: PreferencesSnapshot | None, text: str
+) -> PrivateMessageResult:
     return PrivateMessageResult(
         DispatchDisposition.HANDLED,
         OnboardingResult("device_zone_reply", preferences=profile),

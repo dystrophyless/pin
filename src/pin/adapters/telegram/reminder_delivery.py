@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
+from logging import getLogger
 from uuid import UUID
 
 from aiogram import Bot
@@ -32,6 +33,8 @@ from pin.contexts.notifications.application.delivery import (
     TelegramReplySend,
     UnknownDeliveryFailure,
 )
+
+logger = getLogger("pin.telegram.reminder_delivery")
 
 
 class TelegramReminderTransport:
@@ -84,7 +87,13 @@ class TelegramReminderTransport:
                             allow_queries=True,
                         )
                     )
-                except (TelegramBadRequest, TelegramNotFound):
+                except (TelegramBadRequest, TelegramNotFound) as error:
+                    reason = (
+                        "widget_not_allowed"
+                        if "INPUT_MEDIA_WIDGET_NOT_ALLOWED" in error.message
+                        else type(error).__name__
+                    )
+                    logger.info("telegram_widget_send_fallback reason=%s", reason)
                     try:
                         result = await self._bot.send_message(
                             chat_id=message.destination_id,

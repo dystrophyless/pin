@@ -16,6 +16,7 @@ from pin.contexts.identity.application.onboarding import (
     confirm_preferences_edit,
     get_preferences,
     initialize_preferences,
+    resolve_home_zone,
 )
 from pin.contexts.identity.application.processing_consent import (
     PROCESSING_CONSENT_POLICY_VERSION,
@@ -65,4 +66,5 @@ __all__ = [
     "confirm_preferences_edit",
     "get_preferences",
     "initialize_preferences",
+    "resolve_home_zone",
 ]

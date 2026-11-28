@@ -10,7 +10,6 @@ from uuid import UUID
 from pin.adapters.telegram.presentation.formatting import escape_markdown_v2
 from pin.adapters.telegram.presentation.onboarding import (
     OnboardingReply,
-    render_device_timezone,
     render_onboarding,
     render_start,
 )
@@ -58,28 +57,6 @@ async def handle_private_text(
         result = OnboardingResult("not_in_progress")
     elif command == "/settings":
         result = await begin_preferences_edit(store, owner_id=owner_id)
-    elif command == "/timezone":
-        profile = await store.get_preferences(owner_id)
-        if profile is None:
-            result = OnboardingResult("not_in_progress")
-        else:
-            draft = await store.get_onboarding(owner_id)
-            if draft is not None and draft.mode == "preferences" and draft.step != "complete":
-                text = (
-                    "Завершите текущую настройку или отправьте /cancel, затем /timezone."
-                    if profile.language == "ru"
-                    else "Finish the current edit or send /cancel, then /timezone."
-                )
-                return PrivateMessageResult(
-                    DispatchDisposition.HANDLED,
-                    OnboardingResult("device_zone_reply", preferences=profile),
-                    OnboardingReply(escape_markdown_v2(text), text),
-                )
-            return PrivateMessageResult(
-                DispatchDisposition.HANDLED,
-                OnboardingResult("device_timezone", preferences=profile),
-                render_device_timezone(profile),
-            )
     else:
         result = await answer_onboarding(store, owner_id=owner_id, text=text)
         if result.state == "not_in_progress":

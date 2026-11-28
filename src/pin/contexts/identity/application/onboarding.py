@@ -226,7 +226,7 @@ def _apply_answer(step: str, text: str) -> dict[str, object] | None:
         }.get(text.casefold())
         return {"language": language} if language else None
     if step == OnboardingStep.HOME_ZONE:
-        zone = _resolve_home_zone(text)
+        zone = resolve_home_zone(text)
         return {"home_zone": zone} if zone else None
     if step == OnboardingStep.REMINDERS:
         if text.casefold() in {"suggested", "default", "по умолчанию", "предложенные"}:
@@ -264,7 +264,7 @@ def _apply_answer(step: str, text: str) -> dict[str, object] | None:
     return None
 
 
-def _resolve_home_zone(text: str) -> str | None:
+def resolve_home_zone(text: str) -> str | None:
     try:
         return validate_home_zone(text)
     except ValueError:

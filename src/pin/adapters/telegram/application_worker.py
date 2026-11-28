@@ -24,7 +24,11 @@ from pin.adapters.telegram.agenda import (
     remember_agenda_navigation,
 )
 from pin.adapters.telegram.capture import PlanningAssistant, process_capture_application_job
-from pin.adapters.telegram.device_timezone import handle_timezone_widget, issue_timezone_widget
+from pin.adapters.telegram.device_timezone import (
+    handle_timezone_command,
+    handle_timezone_widget,
+    issue_timezone_widget,
+)
 from pin.adapters.telegram.home_zone_runtime import (
     HOME_ZONE_ACTIONS,
     begin_home_zone_review,
@@ -433,6 +437,14 @@ async def process_application_job(
                     DispatchDisposition.HANDLED,
                     OnboardingResult("unhandled", preferences=command_profile),
                     presentation_reply,
+                )
+            elif command.casefold() == "/timezone" and command_profile is not None:
+                result = await handle_timezone_command(
+                    session,
+                    store,
+                    profile=command_profile,
+                    zone_input=words[1] if len(words) == 2 else None,
+                    now=now.astimezone(UTC),
                 )
             elif command.casefold() == "/delete_account":
                 if len(words) != 1:

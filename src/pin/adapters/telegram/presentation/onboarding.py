@@ -49,9 +49,11 @@ def render_start(profile: PreferencesSnapshot, *, ai_enabled: bool) -> Onboardin
 
 def render_device_timezone(profile: PreferencesSnapshot) -> OnboardingReply:
     text = (
-        f"Текущий часовой пояс — {profile.home_zone}. Вручную его можно выбрать в /settings."
+        f"Текущий часовой пояс — {profile.home_zone}.\n"
+        "Чтобы сменить пояс, отправьте `/timezone Алматы` или `/timezone Europe/Moscow`."
         if profile.language == "ru"
-        else f"Your time zone is {profile.home_zone}. To choose it manually, open /settings."
+        else f"Your time zone is {profile.home_zone}.\n"
+        "To change it, send `/timezone London` or `/timezone Europe/London`."
     )
     return _reply(text)
 

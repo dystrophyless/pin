@@ -122,7 +122,7 @@ async def begin_home_zone_review(
     return _scope_choice(profile, changed.values)
 
 
-async def preview_device_home_zone(
+async def preview_home_zone_edit(
     session: AsyncSession,
     identity: IdentityStore,
     *,

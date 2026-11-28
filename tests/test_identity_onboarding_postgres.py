@@ -543,6 +543,24 @@ def test_private_timezone_widget_previews_and_confirms_device_zone(
             assert match is not None
             return cast(str, json.loads(match[1]))
 
+        async def confirm_zone(preview: dict[str, object]) -> None:
+            markup = cast(dict[str, list[list[dict[str, str]]]], preview["reply_markup"])
+            confirmation = next(
+                button["callback_data"]
+                for row in markup["inline_keyboard"]
+                for button in row
+                if button["text"] == "Confirm zone change"
+            )
+            await dispatch(
+                "callback_query",
+                {
+                    "id": f"zone-confirm-{update_id + 1}",
+                    "from": {"id": user_id, "is_bot": False},
+                    "message": {"chat": {"id": user_id, "type": "private"}},
+                    "data": confirmation,
+                },
+            )
+
         try:
             token = token_from(await dispatch("message", message("/start")))
             denied = await dispatch("widget_query", query(token, "Europe/Paris", user_id + 1))
@@ -563,25 +581,12 @@ def test_private_timezone_widget_previews_and_confirms_device_zone(
                 profile = await session.get(PreferencesRecord, owner_id)
                 assert profile is not None and profile.home_zone == "UTC"
 
-            markup = cast(dict[str, list[list[dict[str, str]]]], preview["reply_markup"])
-            confirmation = next(
-                button["callback_data"]
-                for row in markup["inline_keyboard"]
-                for button in row
-                if button["text"] == "Confirm zone change"
-            )
-            await dispatch(
-                "callback_query",
-                {
-                    "id": "zone-widget-confirm",
-                    "from": {"id": user_id, "is_bot": False},
-                    "message": {"chat": {"id": user_id, "type": "private"}},
-                    "data": confirmation,
-                },
-            )
+            await confirm_zone(preview)
             replay = await dispatch("widget_query", query(token, "Europe/Paris"))
             assert "Could not accept" in str(replay["plain_text"])
-            assert "widget_html" in await dispatch("message", message("/timezone"))
+            entry = await dispatch("message", message("/timezone"))
+            assert "widget_html" in entry
+            assert "/timezone London" in str(entry["plain_text"])
             assert "widget_html" not in await dispatch("message", message("/start"))
 
             await dispatch("message", message("/settings"))
@@ -597,6 +602,23 @@ def test_private_timezone_widget_previews_and_confirms_device_zone(
                 draft = await session.get(OnboardingRecord, owner_id)
                 assert draft is not None and draft.step == "reminders"
                 assert draft.draft["home_zone"] == "Europe/Paris"
+
+            active_edit = await dispatch("message", message("/timezone New York"))
+            assert "Finish the current edit" in str(active_edit["plain_text"])
+            await dispatch("message", message("/cancel"))
+            invalid_city = await dispatch("message", message("/timezone Unknown City"))
+            assert "Could not identify" in str(invalid_city["plain_text"])
+            same_zone = await dispatch("message", message("/timezone Almaty"))
+            assert "already Asia/Almaty" in str(same_zone["plain_text"])
+
+            manual_preview = await dispatch("message", message("/timezone New York"))
+            assert "America/New_York" in str(manual_preview["plain_text"])
+            assert "widget_html" not in manual_preview
+            await confirm_zone(manual_preview)
+            async with sessions() as session:
+                profile = await session.get(PreferencesRecord, owner_id)
+                assert profile is not None and profile.home_zone == "America/New_York"
+                assert profile.version == 3 and profile.reminder_calendar_days == 1
         finally:
             await engine.dispose()
 
